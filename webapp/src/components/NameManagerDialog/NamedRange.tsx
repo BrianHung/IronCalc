@@ -14,26 +14,44 @@ import { useEffect, useState } from "react";
 interface NamedRangeProperties {
   model: Model;
   worksheets: WorksheetProperties[];
-  name?: string;
+  name: string;
   scope?: number;
   formula: string;
-  onDelete?: () => void;
-  toggleShowNewName?: () => void;
-  toggleOptions: () => void;
-  showOptions?: boolean;
+  onSave: () => void;
+  onCancel: () => void;
 }
 
-function NamedRange({
-  model,
-  worksheets,
-  name,
-  scope,
-  formula,
-  onDelete,
-  toggleShowNewName,
-  toggleOptions,
-  showOptions,
-}: NamedRangeProperties) {
+interface NamedRangeInactiveProperties {
+  name: string;
+  scope?: number;
+  formula: string;
+  onDelete: () => void;
+  onEdit: () => void;
+}
+
+export function NamedRangeInactive(properties: NamedRangeInactiveProperties) {
+  const { name, scope, formula, onDelete, onEdit } = properties;
+  const showOptions = true;
+  return (
+    <WrappedLine>
+      <StyledDiv>{name}</StyledDiv>
+      <StyledDiv>{scope}</StyledDiv>
+      <StyledDiv>{formula}</StyledDiv>
+      <WrappedIcons>
+        <IconButton onClick={onEdit} disabled={!showOptions}>
+          <StyledPencilLine size={12} />
+        </IconButton>
+        <StyledIconButton onClick={onDelete} disabled={!showOptions}>
+          <Trash2 size={12} />
+        </StyledIconButton>
+      </WrappedIcons>
+    </WrappedLine>
+  );
+}
+
+function NamedRangeActive(properties: NamedRangeProperties) {
+  const { model, worksheets, name, scope, formula, onCancel, onSave } =
+    properties;
   const [newName, setNewName] = useState(name || "");
   const [newScope, setNewScope] = useState(scope);
   const [newFormula, setNewFormula] = useState(formula);
@@ -64,7 +82,7 @@ function NamedRange({
           scope,
           newName,
           newScope,
-          newFormula,
+          newFormula
         );
       } catch (error) {
         console.log("DefinedName update failed", error);
@@ -79,24 +97,18 @@ function NamedRange({
       setReadOnly(true);
     }
     setShowEditDelete(false);
-    toggleOptions();
   };
 
   const handleCancel = () => {
     setReadOnly(true);
     setShowEditDelete(false);
-    toggleOptions();
     setNewName(name || "");
     setNewScope(scope);
-
-    // if it's newName remove it from modal
-    toggleShowNewName?.();
   };
 
   const handleEdit = () => {
     setReadOnly(false);
     setShowEditDelete(true);
-    toggleOptions();
   };
 
   const handleDelete = () => {
@@ -105,7 +117,6 @@ function NamedRange({
     } catch (error) {
       console.log("DefinedName delete failed", error);
     }
-    onDelete?.(); // refresh modal
   };
 
   return (
@@ -117,7 +128,6 @@ function NamedRange({
           size="small"
           margin="none"
           fullWidth
-          InputProps={{ readOnly: readOnly }}
           error={nameError}
           value={newName}
           onChange={(event) => setNewName(event.target.value)}
@@ -133,7 +143,6 @@ function NamedRange({
           size="small"
           margin="none"
           fullWidth
-          InputProps={{ readOnly: readOnly }}
           value={newScope ?? "global"}
           onChange={(event) => {
             event.target.value === "global"
@@ -156,7 +165,6 @@ function NamedRange({
           size="small"
           margin="none"
           fullWidth
-          InputProps={{ readOnly: readOnly }}
           error={formulaError}
           value={newFormula}
           onChange={(event) => setNewFormula(event.target.value)}
@@ -165,44 +173,43 @@ function NamedRange({
           }}
           onClick={(event) => event.stopPropagation()}
         />
-
-        {showEditDelete ? (
-          // save cancel
-          <>
-            <IconButton onClick={handleSaveUpdate}>
-              <Check size={12} />
-            </IconButton>
-            <StyledIconButton onClick={handleCancel}>
-              <X size={12} />
-            </StyledIconButton>
-          </>
-        ) : (
-          // edit delete
-          <>
-            <IconButton onClick={handleEdit} disabled={!showOptions}>
-              <PencilLine size={12} />
-            </IconButton>
-            <StyledIconButton onClick={handleDelete} disabled={!showOptions}>
-              <Trash2 size={12} />
-            </StyledIconButton>
-          </>
-        )}
+        <>
+          <IconButton onClick={handleSaveUpdate}>
+            <StyledCheck size={12} />
+          </IconButton>
+          <StyledIconButton onClick={onCancel}>
+            <X size={12} />
+          </StyledIconButton>
+        </>
       </StyledBox>
-      <Divider />
     </>
   );
 }
 
 const StyledBox = styled(Box)`
-display: flex;
-gap: 12px;
-width: 577px;
+  display: flex;
+  width: 577px;
 `;
 
+const StyledPencilLine = styled(PencilLine)(({ theme }) => ({
+  color: theme.palette.common.black,
+}));
+
+const StyledCheck = styled(Check)(({ theme }) => ({
+  color: theme.palette.success.main,
+}));
+
 const StyledTextField = styled(TextField)(() => ({
+  padding: "0px",
+  width: "163px",
+  marginRight: "8px",
   "& .MuiInputBase-root": {
     height: "28px",
     margin: 0,
+  },
+  "& .MuiInputBase-input": {
+    padding: "6px",
+    fontSize: "12px",
   },
 }));
 
@@ -214,4 +221,24 @@ const StyledIconButton = styled(IconButton)(({ theme }) => ({
   },
 }));
 
-export default NamedRange;
+
+const WrappedLine = styled(Box)({
+  display: "flex",
+  paddingLeft: "6px",
+  height: "28px",
+});
+
+const StyledDiv = styled("div")(({ theme }) => ({
+  fontFamily: theme.typography.fontFamily,
+  fontSize: "12px",
+  fontWeight: "400",
+  color: theme.palette.common.black,
+  width: "171px",
+}));
+
+const WrappedIcons = styled(Box)({
+  display: "flex",
+  gap: "0px",
+});
+
+export default NamedRangeActive;

@@ -36,7 +36,7 @@ import {
   DecimalPlacesIncreaseIcon,
 } from "../icons";
 import { theme } from "../theme";
-import NameManagerDialog from "./NameManager/NameManagerDialog";
+import NameManagerDialog from "./NameManagerDialog";
 import BorderPicker from "./borderPicker";
 import ColorPicker from "./colorPicker";
 import { TOOLBAR_HEIGHT } from "./constants";
@@ -63,7 +63,6 @@ type ToolbarProperties = {
   onFillColorPicked: (hex: string) => void;
   onNumberFormatPicked: (numberFmt: string) => void;
   onBorderChanged: (border: BorderOptions) => void;
-  onNamedRangesUpdate: () => void;
   fillColor: string;
   fontColor: string;
   bold: boolean;
@@ -76,6 +75,7 @@ type ToolbarProperties = {
   numFmt: string;
   showGridLines: boolean;
   onToggleShowGridLines: (show: boolean) => void;
+  onNamesChanged: () => void;
   model: Model;
 };
 
@@ -399,6 +399,7 @@ function Toolbar(properties: ToolbarProperties) {
           setNameManagerDialogOpen(false);
         }}
         model={properties.model}
+        onNamesChanged={properties.onNamesChanged}
       />
     </ToolbarContainer>
   );

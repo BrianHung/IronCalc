@@ -68,7 +68,7 @@ export function rangeToStr(
 
 export function getFullRangeToString(
   selectedView: SelectedView,
-  worksheets: WorksheetProperties[], // solo pasar names
+  worksheets: WorksheetProperties[],
 ): string {
   // order of values is confusing compared to rangeToStr range type, needs refactoring for consistency
   const [rowStart, columnStart, rowEnd, columnEnd] = selectedView.range;

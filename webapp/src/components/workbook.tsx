@@ -137,16 +137,17 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
     // FIXME: This is so that the cursor indicates there are styles to be pasted
     const el = rootRef.current?.getElementsByClassName("sheet-container")[0];
     if (el) {
-      (el as HTMLElement).style.cursor =
-        `url('data:image/svg+xml;utf8,${encodeURIComponent(
-          ReactDOMServer.renderToString(
-            <PaintRoller
-              width={24}
-              height={24}
-              style={{ transform: "rotate(-8deg)" }}
-            />,
-          ),
-        )}'), auto`;
+      (
+        el as HTMLElement
+      ).style.cursor = `url('data:image/svg+xml;utf8,${encodeURIComponent(
+        ReactDOMServer.renderToString(
+          <PaintRoller
+            width={24}
+            height={24}
+            style={{ transform: "rotate(-8deg)" }}
+          />
+        )
+      )}'), auto`;
     }
   };
 
@@ -168,12 +169,12 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
         row,
         column,
         row + height,
-        column + width,
+        column + width
       );
       setRedrawId((id) => id + 1);
     },
     onExpandAreaSelectedKeyboard: (
-      key: "ArrowRight" | "ArrowLeft" | "ArrowUp" | "ArrowDown",
+      key: "ArrowRight" | "ArrowLeft" | "ArrowUp" | "ArrowDown"
     ): void => {
       model.onExpandSelectedRange(key);
       setRedrawId((id) => id + 1);
@@ -327,7 +328,7 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
     } = model.getSelectedView();
     return getCellAddress(
       { rowStart, rowEnd, columnStart, columnEnd },
-      { row, column },
+      { row, column }
     );
   }, [model]);
 
@@ -404,7 +405,7 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
             source.sheet,
             source.area,
             data,
-            source.type === "cut",
+            source.type === "cut"
           );
           setRedrawId((id) => id + 1);
         } else if (mimeType === "text/plain") {
@@ -435,7 +436,7 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
         // '2024-10-18T14:07:37.599Z'
 
         let clipboardId = sessionStorage.getItem(
-          CLIPBOARD_ID_SESSION_STORAGE_KEY,
+          CLIPBOARD_ID_SESSION_STORAGE_KEY
         );
         if (!clipboardId) {
           clipboardId = getNewClipboardId();
@@ -473,7 +474,7 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
         // '2024-10-18T14:07:37.599Z'
 
         let clipboardId = sessionStorage.getItem(
-          CLIPBOARD_ID_SESSION_STORAGE_KEY,
+          CLIPBOARD_ID_SESSION_STORAGE_KEY
         );
         if (!clipboardId) {
           clipboardId = getNewClipboardId();
@@ -545,7 +546,7 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
           };
           model.setAreaWithBorder(
             { sheet, row, column, width, height },
-            borderArea,
+            borderArea
           );
           setRedrawId((id) => id + 1);
         }}
@@ -570,6 +571,9 @@ const Workbook = (props: { model: Model; workbookState: WorkbookState }) => {
           setRedrawId((id) => id + 1);
         }}
         model={model}
+        onNamesChanged={() => {
+          setRedrawId((id) => id + 1);
+        }}
       />
       <FormulaBar
         cellAddress={cellAddress()}
