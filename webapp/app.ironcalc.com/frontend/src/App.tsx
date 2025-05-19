@@ -2,7 +2,7 @@ import "./App.css";
 import styled from "@emotion/styled";
 import { useCallback, useEffect, useState } from "react";
 import { FileBar } from "./components/FileBar";
-import LeftDrawer from "./components/LeftDrawer";
+import LeftDrawer from "./components/LeftDrawer/LeftDrawer";
 import {
   get_documentation_model,
   get_model,

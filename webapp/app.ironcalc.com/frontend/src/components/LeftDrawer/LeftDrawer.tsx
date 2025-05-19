@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
-import UserMenu from "./UserMenu";
+import UserMenu from "../UserMenu";
 
 interface LeftDrawerProps {
   open: boolean;
