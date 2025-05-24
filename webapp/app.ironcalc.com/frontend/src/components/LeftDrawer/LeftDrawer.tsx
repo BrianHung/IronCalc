@@ -2,7 +2,7 @@ import styled from "@emotion/styled";
 import { IronCalcLogo } from "@ironcalc/workbook";
 import { Avatar, Drawer, IconButton, Menu, MenuItem } from "@mui/material";
 import {
-  Database,
+  FileSpreadsheet,
   EllipsisVertical,
   FileDown,
   Plus,
@@ -74,7 +74,7 @@ const LeftDrawer: React.FC<LeftDrawerProps> = ({
           disableRipple
         >
           <StorageIndicator>
-            <Database />
+            <FileSpreadsheet />
           </StorageIndicator>
           <WorkbookListText>{models[uuid]}</WorkbookListText>
           <EllipsisButton
