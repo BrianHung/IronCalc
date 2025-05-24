@@ -29,7 +29,6 @@ const LeftDrawer: React.FC<LeftDrawerProps> = ({
   models,
   selectedUuid,
 }) => {
-  const [hoveredUuid, setHoveredUuid] = useState<string | null>(null);
   const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
   const [selectedWorkbookUuid, setSelectedWorkbookUuid] = useState<
     string | null
@@ -72,8 +71,6 @@ const LeftDrawer: React.FC<LeftDrawerProps> = ({
             setModel(uuid);
           }}
           selected={uuid === selectedUuid}
-          onMouseEnter={() => setHoveredUuid(uuid)}
-          onMouseLeave={() => setHoveredUuid(null)}
           disableRipple
         >
           <StorageIndicator>
