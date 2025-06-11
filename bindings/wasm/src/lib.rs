@@ -7,8 +7,9 @@ use wasm_bindgen::{
 use ironcalc_base::{
     expressions::{lexer::util::get_tokens as tokenizer, types::Area, utils::number_to_column},
     types::{CellType, Style},
-    BorderArea, ClipboardData, UserModel as BaseModel,
+    BorderArea, ClipboardData, UserModel as BaseModel, Model as CalcModel,
 };
+use ironcalc::import::{load_from_xlsx_bytes, load_from_icalc_bytes};
 
 fn to_js_error(error: String) -> JsError {
     JsError::new(&error.to_string())
@@ -53,6 +54,30 @@ impl Model {
     pub fn from_bytes(bytes: &[u8]) -> Result<Model, JsError> {
         let model = BaseModel::from_bytes(bytes).map_err(to_js_error)?;
         Ok(Model { model })
+    }
+
+    #[wasm_bindgen(js_name = "fromXlsxBytes")]
+    pub fn from_xlsx_bytes(
+        bytes: &[u8],
+        name: &str,
+        locale: &str,
+        timezone: &str,
+    ) -> Result<Model, JsError> {
+        let workbook = load_from_xlsx_bytes(bytes, name, locale, timezone)
+            .map_err(|e| to_js_error(e.to_string()))?;
+        let model = CalcModel::from_workbook(workbook).map_err(to_js_error)?;
+        Ok(Model {
+            model: BaseModel::from_model(model),
+        })
+    }
+
+    #[wasm_bindgen(js_name = "fromIcalcBytes")]
+    pub fn from_icalc_bytes(bytes: &[u8]) -> Result<Model, JsError> {
+        let model = load_from_icalc_bytes(bytes)
+            .map_err(|e| to_js_error(e.to_string()))?;
+        Ok(Model {
+            model: BaseModel::from_model(model),
+        })
     }
 
     pub fn undo(&mut self) -> Result<(), JsError> {
