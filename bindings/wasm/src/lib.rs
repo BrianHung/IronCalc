@@ -9,6 +9,8 @@ use ironcalc_base::{
     types::{CellType, Style},
     BorderArea, ClipboardData, UserModel as BaseModel,
 };
+use ironcalc::export::save_xlsx_to_writer;
+use std::io::{Cursor, BufWriter};
 
 fn to_js_error(error: String) -> JsError {
     JsError::new(&error.to_string())
@@ -577,6 +579,21 @@ impl Model {
     #[wasm_bindgen(js_name = "toBytes")]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.model.to_bytes()
+    }
+
+    #[wasm_bindgen(js_name = "saveToCalc")]
+    pub fn save_to_calc(&self) -> Vec<u8> {
+        self.model.to_bytes()
+    }
+
+    #[wasm_bindgen(js_name = "saveToXlsx")]
+    pub fn save_to_xlsx(&self) -> Result<Vec<u8>, JsError> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let cursor = Cursor::new(&mut buffer);
+        let writer = BufWriter::new(cursor);
+        save_xlsx_to_writer(&self.model, writer)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(buffer)
     }
 
     #[wasm_bindgen(js_name = "getName")]
