@@ -201,40 +201,23 @@ defined_name_list_types = r"""
   getDefinedNameList(): DefinedName[];
 """
 
-def fix_types(text):
-    text = text.replace(get_tokens_str, get_tokens_str_types)
-    text = text.replace(update_style_str, update_style_str_types)
-    text = text.replace(properties, properties_types)
-    text = text.replace(style, style_types)
-    text = text.replace(view, view_types)
-    text = text.replace(autofill_rows, autofill_rows_types)
-    text = text.replace(autofill_columns, autofill_columns_types)
-    text = text.replace(set_cell_style, set_cell_style_types)
-    text = text.replace(set_area_border, set_area_border_types)
-    text = text.replace(paste_csv_string, paste_csv_string_types)
-    text = text.replace(clipboard, clipboard_types)
-    text = text.replace(paste_from_clipboard, paste_from_clipboard_types)
-    text = text.replace(defined_name_list, defined_name_list_types)
-    with open("types.ts") as f:
-        types_str = f.read()
-        header_types = "{}\n\n{}".format(header, types_str)
-    text = text.replace(header, header_types)
+def check_types(text: str) -> None:
+    """Ensure generated definitions don't contain any stray 'any' types."""
     if text.find("any") != -1:
         print("There are 'unfixed' types. Please check.")
         exit(1)
-    return text
-    
 
 
-if __name__ == "__main__":
-    types_file = "pkg/wasm.d.ts"
-    with open(types_file) as f:
+def fix_types(ts_file: str) -> None:
+    """Validate generated TypeScript definitions."""
+    with open(ts_file) as f:
         text = f.read()
-    text = fix_types(text)
-    with open(types_file, "wb") as f:
-        f.write(bytes(text, "utf8"))
+    check_types(text)
 
-    js_file = "pkg/wasm.js"
+
+def append_js(js_file: str) -> None:
+    """Prepend the generated TypeScript enums JS to the wasm bundle."""
+
     with open("types.js") as f:
         text_js = f.read()
     with open(js_file) as f:
@@ -242,6 +225,15 @@ if __name__ == "__main__":
 
     with open(js_file, "wb") as f:
         f.write(bytes("{}\n{}".format(text_js, text), "utf8"))
+    
+
+
+if __name__ == "__main__":
+    ts_file = "pkg/wasm.d.ts"
+    fix_types(ts_file)
+
+    js_file = "pkg/wasm.js"
+    append_js(js_file)
     
 
     
