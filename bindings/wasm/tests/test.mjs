@@ -130,5 +130,45 @@ test("autofill", () => {
     assert.strictEqual(result, "23");
 });
 
+test('saveToXlsx returns data', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    const bytes = model.saveToXlsx();
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(bytes.length > 0);
+});
+
+test('saveToIcalc returns data', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    const bytes = model.saveToIcalc();
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(bytes.length > 0);
+});
+
+test('fromIcalcBytes loads model', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '42');
+    const bytes = model.saveToIcalc();
+    const m2 = Model.fromIcalcBytes(bytes);
+    assert.strictEqual(m2.getCellContent(0, 1, 1), '42');
+});
+
+test('fromXlsxBytes loads model', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '5');
+    const bytes = model.saveToXlsx();
+    const m2 = Model.fromXlsxBytes(bytes, 'Workbook1', 'en', 'UTC');
+    assert.strictEqual(m2.getCellContent(0, 1, 1), '5');
+});
+
+test('roundtrip via xlsx bytes', () => {
+    const m1 = new Model('Workbook1', 'en', 'UTC');
+    m1.setUserInput(0, 1, 1, '7');
+    m1.setUserInput(0, 1, 2, '=A1*3');
+    const bytes = m1.saveToXlsx();
+    const m2 = Model.fromXlsxBytes(bytes, 'Workbook1', 'en', 'UTC');
+    m2.evaluate();
+    assert.strictEqual(m2.getFormattedCellValue(0, 1, 2), '21');
+});
+
 
 
