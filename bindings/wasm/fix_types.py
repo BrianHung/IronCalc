@@ -1,17 +1,34 @@
-def check_types(text: str) -> None:
-    """Ensure generated definitions don't contain any stray 'any' types."""
-    if text.find("any") != -1:
-        print("There are 'unfixed' types. Please check.")
-        exit(1)
+header = r"""
+/* tslint:disable */
+/* eslint-disable */
+""".strip()
 
-def fix_types(ts_file: str) -> None:
-    """Validate generated TypeScript definitions."""
-    with open(ts_file) as f:
+def fix_types(text: str):
+    with open("types.ts") as f:
+        types_str = f.read()
+        header_types = "{}\n\n{}".format(header, types_str)
+    
+    text = text.replace(header, header_types)
+    for line in text.splitlines():
+        line = line.lstrip()
+        # Skip internal methods
+        if line.startswith("readonly model_"):
+            continue
+        if line.find("any") != -1:
+            print("There are 'unfixed' public types. Please check.")
+            exit(1)
+
+    return text
+
+if __name__ == "__main__":
+    types_file = "pkg/wasm.d.ts"
+    with open(types_file) as f:
         text = f.read()
-    check_types(text)
+    text = fix_types(text)
+    with open(types_file, "wb") as f:
+        f.write(bytes(text, "utf8"))
 
-def append_js(js_file: str) -> None:
-    """Prepend the generated TypeScript enums JS to the wasm bundle."""
+    js_file = "pkg/wasm.js"
     with open("types.js") as f:
         text_js = f.read()
     with open(js_file) as f:
@@ -19,11 +36,4 @@ def append_js(js_file: str) -> None:
 
     with open(js_file, "wb") as f:
         f.write(bytes("{}\n{}".format(text_js, text), "utf8"))
-
-if __name__ == "__main__":
-    ts_file = "pkg/wasm.d.ts"
-    fix_types(ts_file)
-
-    js_file = "pkg/wasm.js"
-    append_js(js_file)
     
