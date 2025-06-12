@@ -59,13 +59,13 @@ impl Model {
         Ok(Model { model })
     }
 
-    #[wasm_bindgen(js_name = "fromIcalcBytes")]
+    #[wasm_bindgen(js_name = "fromICalcBytes")]
     pub fn from_icalc_bytes(bytes: &[u8]) -> Result<Model, JsError> {
         let model = BaseModel::from_bytes(bytes).map_err(to_js_error)?;
         Ok(Model { model })
     }
 
-    #[wasm_bindgen(js_name = "fromXlsxBytes")]
+    #[wasm_bindgen(js_name = "fromXLSXBytes")]
     pub fn from_xlsx_bytes(
         bytes: &[u8],
         name: &str,
@@ -604,12 +604,12 @@ impl Model {
         self.model.to_bytes()
     }
 
-    #[wasm_bindgen(js_name = "saveToIcalc")]
+    #[wasm_bindgen(js_name = "saveToICalc")]
     pub fn save_to_icalc(&self) -> Vec<u8> {
         self.model.to_bytes()
     }
 
-    #[wasm_bindgen(js_name = "saveToXlsx")]
+    #[wasm_bindgen(js_name = "saveToXLSX")]
     pub fn save_to_xlsx(&self) -> Result<Vec<u8>, JsError> {
         let mut buffer: Vec<u8> = Vec::new();
         let cursor = Cursor::new(&mut buffer);
