@@ -4,15 +4,13 @@ use wasm_bindgen::{
     JsValue,
 };
 
+use ironcalc::{
+    base::Model as BaseWorkbookModel, export::save_xlsx_to_writer, import::load_from_xlsx_bytes,
+};
 use ironcalc_base::{
     expressions::{lexer::util::get_tokens as tokenizer, types::Area, utils::number_to_column},
     types::{CellType, Style},
     BorderArea, ClipboardData, UserModel as BaseModel,
-};
-use ironcalc::{
-    export::save_xlsx_to_writer,
-    import::load_from_xlsx_bytes,
-    base::Model as BaseWorkbookModel,
 };
 use std::io::{BufWriter, Cursor};
 
@@ -74,8 +72,8 @@ impl Model {
         locale: &str,
         timezone: &str,
     ) -> Result<Model, JsError> {
-        let workbook =
-            load_from_xlsx_bytes(bytes, name, locale, timezone).map_err(|e| to_js_error(e.to_string()))?;
+        let workbook = load_from_xlsx_bytes(bytes, name, locale, timezone)
+            .map_err(|e| to_js_error(e.to_string()))?;
         let base_model =
             BaseWorkbookModel::from_workbook(workbook).map_err(|e| to_js_error(e.to_string()))?;
         let user_model = BaseModel::from_model(base_model);

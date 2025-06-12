@@ -8,10 +8,7 @@ use uuid::Uuid;
 use ironcalc::compare::{test_file, test_load_and_saving};
 use ironcalc::export::save_to_xlsx;
 use ironcalc::import::{
-    load_from_icalc,
-    load_from_icalc_bytes,
-    load_from_xlsx,
-    load_from_xlsx_bytes,
+    load_from_icalc, load_from_icalc_bytes, load_from_xlsx, load_from_xlsx_bytes,
 };
 use ironcalc_base::types::{HorizontalAlignment, VerticalAlignment};
 use ironcalc_base::{Model, UserModel};
