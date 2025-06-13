@@ -678,6 +678,12 @@ impl Model {
         let changed_cells = self.model.get_changed_cells();
         serde_wasm_bindgen::to_value(&changed_cells).unwrap_or_else(|_| JsValue::undefined())
     }
+
+    #[wasm_bindgen(js_name = "getRecentDiffs")]
+    pub fn get_recent_diffs(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.model.get_recent_diffs())
+            .unwrap_or_else(|_| JsValue::undefined())
+    }
 }
 
 #[wasm_bindgen]
