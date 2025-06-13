@@ -350,7 +350,7 @@ export interface CellClearAllDiff {
 export interface CellClearFormattingDiff {
   sheet: number;
   row: number;
-  column: number
+  column: number;
   old_style?: Style | null;
 }
 
