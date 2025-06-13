@@ -26,13 +26,6 @@ pub enum DiffType {
     Redo,
 }
 
-#[derive(Clone, Encode, Decode, Serialize)]
-pub struct CellReference {
-    pub sheet: u32,
-    pub row: i32,
-    pub column: i32,
-}
-
 #[allow(missing_docs)]
 #[derive(Clone, Encode, Decode, Serialize)]
 pub enum Diff {

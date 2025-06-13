@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use js_sys::Function;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::{
@@ -182,12 +182,10 @@ impl Model {
             .map_err(to_js_error)
     }
 
-    #[wasm_bindgen(js_name = "newSheet")]
+    #[wasm_bindgen(js_name = "newSheet", unchecked_return_type = "NewSheetResult")]
     pub fn new_sheet(&mut self) -> Result<JsValue, JsError> {
         let (name, sheet_index) = self.model.new_sheet().map_err(to_js_error)?;
-
         let result = NewSheetResult { name, sheet_index };
-
         serde_wasm_bindgen::to_value(&result).map_err(|e| to_js_error(e.to_string()))
     }
 
@@ -417,7 +415,10 @@ impl Model {
             .unwrap_or_default())
     }
 
-    #[wasm_bindgen(js_name = "getSheetDimensions")]
+    #[wasm_bindgen(
+        js_name = "getSheetDimensions",
+        unchecked_return_type = "WorksheetDimension"
+    )]
     pub fn get_sheet_dimensions(&self, sheet: u32) -> Result<JsValue, JsError> {
         let dimension = self
             .model
@@ -786,13 +787,13 @@ impl Model {
             .map_err(|e| to_js_error(e.to_string()))
     }
 
-    #[wasm_bindgen(js_name = "getChangedCells")]
+    #[wasm_bindgen(js_name = "getChangedCells", unchecked_return_type = "CellReference[]")]
     pub fn get_changed_cells(&self) -> JsValue {
         let changed_cells = self.model.get_changed_cells();
         serde_wasm_bindgen::to_value(&changed_cells).unwrap_or_else(|_| JsValue::undefined())
     }
 
-    #[wasm_bindgen(js_name = "getRecentDiffs")]
+    #[wasm_bindgen(js_name = "getRecentDiffs", unchecked_return_type = "Diff[]")]
     pub fn get_recent_diffs(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.model.get_recent_diffs())
             .unwrap_or_else(|_| JsValue::undefined())

@@ -62,11 +62,11 @@ pub use model::Model;
 
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
-pub use user_model::ModelEvent;
 pub use user_model::Diff;
 pub use user_model::DiffType;
-pub use user_model::QueueDiffs;
-pub use user_model::UserModel;
 pub use user_model::EventEmitter;
-pub use user_model::Subscription;
+pub use user_model::ModelEvent;
+pub use user_model::QueueDiffs;
 pub use user_model::SelectedView;
+pub use user_model::Subscription;
+pub use user_model::UserModel;

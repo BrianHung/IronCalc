@@ -107,7 +107,6 @@ test("newSheet returns sheet result", (t) => {
     
     // Test first new sheet - should be at index 1
     const result1 = model.newSheet();
-    console.log(result1);
     assert.strictEqual(result1.name, "Sheet2");
     assert.strictEqual(result1.sheet_index, 1);  // This is the sheet index (position)
     
@@ -389,6 +388,7 @@ test('track changed cells - move column updates formulas', () => {
     assert.strictEqual(changedCells.length, 1, 'One cell should be marked as changed after column insertion');
     assert.deepEqual(changedCells[0], { sheet: 0, row: 1, column: 3 }, 'Changed cell should be C1 due to formula update after column shift');
 });
+
 test('onDiffs', async () => {
     const model = new Model('Workbook1', 'en', 'UTC');
     const events = [];

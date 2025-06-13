@@ -9,10 +9,13 @@ pub mod ui;
 
 pub use common::UserModel;
 
-#[cfg(test)]
 pub use ui::SelectedView;
 
 pub use common::BorderArea;
 pub use common::ClipboardData;
 pub use history::DiffType;
 pub use history::QueueDiffs;
+
+pub use common::ModelEvent;
+pub use event::{EventEmitter, Subscription};
+pub use history::Diff;

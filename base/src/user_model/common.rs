@@ -18,9 +18,7 @@ use crate::{
     },
     user_model::{
         event::{EventEmitter, Subscription},
-        history::{
-            CellReference, ColumnData, Diff, DiffList, DiffType, History, QueueDiffs, RowData,
-        },
+        history::{ColumnData, Diff, DiffList, DiffType, History, QueueDiffs, RowData},
     },
     utils::is_valid_hex_color,
 };
@@ -403,11 +401,6 @@ impl UserModel {
             self.event_emitter
                 .emit(&ModelEvent::CellsEvaluated(evaluated_cells));
         }
-    }
-
-    /// Returns a list of all cells that have been changed or are being evaluated
-    pub fn get_changed_cells(&self) -> Vec<CellReference> {
-        self.model.get_changed_cells()
     }
 
     /// Returns the list of pending diffs and removes them from the queue
@@ -2432,7 +2425,7 @@ impl UserModel {
     pub fn get_changed_cells(&self) -> Vec<CellReference> {
         self.model.get_changed_cells()
     }
-    
+
     /// Returns the current send queue as a vector of QueueDiffs without removing the diffs.
     ///
     /// This is used to inspect recent changes without affecting the queue.
