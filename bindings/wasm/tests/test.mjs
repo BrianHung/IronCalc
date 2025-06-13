@@ -270,7 +270,38 @@ test('getRecentDiffs captures setCellValue diff', () => {
     }
     assert.ok(foundSetCellDiff, 'Should find a SetCellValue diff after setting cell value');
 });
-
+test("getSheetDimensions", () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    
+    // Test empty sheet - should return default dimensions
+    let dimensions = model.getSheetDimensions(0);
+    assert.deepEqual(dimensions, {
+        min_row: 1,
+        max_row: 1,
+        min_column: 1,
+        max_column: 1
+    });
+    
+    // Add a single cell at A1
+    model.setUserInput(0, 1, 1, "Hello");
+    dimensions = model.getSheetDimensions(0);
+    assert.deepEqual(dimensions, {
+        min_row: 1,
+        max_row: 1,
+        min_column: 1,
+        max_column: 1
+    });
+    
+    // Add another cell to expand the range
+    model.setUserInput(0, 5, 8, "World");
+    dimensions = model.getSheetDimensions(0);
+    assert.deepEqual(dimensions, {
+        min_row: 1,
+        max_row: 5,
+        min_column: 1,
+        max_column: 8
+    });
+});
 
 test('track changed cells - circular dependency with external dependent', () => {
     const model = new Model('Workbook1', 'en', 'UTC');

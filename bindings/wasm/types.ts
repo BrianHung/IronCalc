@@ -525,3 +525,9 @@ export interface QueueDiffs {
   type: "Undo" | "Redo";
   list: Diff[];
 }
+export interface WorksheetDimension {
+  min_row: number;
+  max_row: number;
+  min_column: number;
+  max_column: number;
+}
