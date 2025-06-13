@@ -92,7 +92,7 @@ impl UserModel {
 
   #[napi(js_name = "newSheet")]
   pub fn new_sheet(&mut self) -> Result<()> {
-    self.model.new_sheet().map_err(to_js_error)
+    self.model.new_sheet().map(|_| ()).map_err(to_js_error)
   }
 
   #[napi(js_name = "deleteSheet")]
@@ -649,6 +649,14 @@ impl UserModel {
     self
       .model
       .delete_defined_name(&name, scope)
+      .map_err(|e| to_js_error(e.to_string()))
+  }
+
+  #[napi(js_name = "getRecentDiffs")]
+  pub fn get_recent_diffs(&self, env: Env) -> Result<JsUnknown> {
+    let diffs = self.model.get_recent_diffs();
+    env
+      .to_js_value(&diffs)
       .map_err(|e| to_js_error(e.to_string()))
   }
 }

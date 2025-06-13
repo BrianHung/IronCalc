@@ -1,7 +1,10 @@
-use serde::Serialize;
+use js_sys::Function;
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::{
     prelude::{wasm_bindgen, JsError},
-    JsValue,
+    JsCast, JsValue,
 };
 
 use ironcalc_base::{
@@ -16,7 +19,7 @@ fn to_js_error(error: String) -> JsError {
 
 /// Return an array with a list of all the tokens from a formula
 /// This is used by the UI to color them according to a theme.
-#[wasm_bindgen(js_name = "getTokens")]
+#[wasm_bindgen(js_name = "getTokens", unchecked_return_type = "MarkedToken[]")]
 pub fn get_tokens(formula: &str) -> Result<JsValue, JsError> {
     let tokens = tokenizer(formula);
     serde_wasm_bindgen::to_value(&tokens).map_err(JsError::from)
@@ -37,6 +40,12 @@ struct DefinedName {
     formula: String,
 }
 
+#[derive(Serialize)]
+struct NewSheetResult {
+    name: String,
+    sheet_index: u32,
+}
+
 #[wasm_bindgen]
 pub struct Model {
     model: BaseModel,
@@ -50,6 +59,7 @@ impl Model {
         Ok(Model { model })
     }
 
+    #[wasm_bindgen(js_name = "fromBytes")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Model, JsError> {
         let model = BaseModel::from_bytes(bytes).map_err(to_js_error)?;
         Ok(Model { model })
@@ -83,6 +93,74 @@ impl Model {
         self.model.resume_evaluation()
     }
 
+    #[wasm_bindgen(js_name = "onDiffs")]
+    pub fn on_diffs(&mut self, callback: Function) -> Function {
+        let subscription = self.model.subscribe(move |event| {
+            if let ironcalc_base::ModelEvent::Diffs(diffs) = event {
+                match serde_wasm_bindgen::to_value(diffs) {
+                    Ok(js_diffs) => {
+                        let _ = callback.call1(&JsValue::NULL, &js_diffs);
+                    }
+                    Err(_e) => {
+                        // Silent skip: if serialization fails, we skip this diff event
+                    }
+                }
+            }
+        });
+
+        // Store subscription in an Rc<RefCell<>> so it can be moved into the closure
+        let subscription_rc = Rc::new(RefCell::new(Some(subscription)));
+        let subscription_clone = subscription_rc.clone();
+
+        // Create the unsubscribe function
+        let unsubscribe_fn = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            if let Ok(mut sub) = subscription_clone.try_borrow_mut() {
+                if let Some(subscription) = sub.take() {
+                    subscription.unsubscribe();
+                }
+            }
+        }) as Box<dyn FnMut()>);
+
+        let js_function = unsubscribe_fn.as_ref().unchecked_ref::<Function>().clone();
+        unsubscribe_fn.forget(); // Prevent the closure from being dropped
+
+        js_function
+    }
+
+    #[wasm_bindgen(js_name = "onCellsEvaluated")]
+    pub fn on_cells_evaluated(&mut self, callback: Function) -> Function {
+        let subscription = self.model.subscribe(move |event| {
+            if let ironcalc_base::ModelEvent::CellsEvaluated(cells) = event {
+                match serde_wasm_bindgen::to_value(cells) {
+                    Ok(js_cells) => {
+                        let _ = callback.call1(&JsValue::NULL, &js_cells);
+                    }
+                    Err(_e) => {
+                        // Silent skip: if serialization fails, we skip this event
+                    }
+                }
+            }
+        });
+
+        // Store subscription in an Rc<RefCell<>> so it can be moved into the closure
+        let subscription_rc = Rc::new(RefCell::new(Some(subscription)));
+        let subscription_clone = subscription_rc.clone();
+
+        // Create the unsubscribe function
+        let unsubscribe_fn = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            if let Ok(mut sub) = subscription_clone.try_borrow_mut() {
+                if let Some(subscription) = sub.take() {
+                    subscription.unsubscribe();
+                }
+            }
+        }) as Box<dyn FnMut()>);
+
+        let js_function = unsubscribe_fn.as_ref().unchecked_ref::<Function>().clone();
+        unsubscribe_fn.forget(); // Prevent the closure from being dropped
+
+        js_function
+    }
+
     pub fn evaluate(&mut self) {
         self.model.evaluate();
     }
@@ -104,9 +182,11 @@ impl Model {
             .map_err(to_js_error)
     }
 
-    #[wasm_bindgen(js_name = "newSheet")]
-    pub fn new_sheet(&mut self) -> Result<(), JsError> {
-        self.model.new_sheet().map_err(to_js_error)
+    #[wasm_bindgen(js_name = "newSheet", unchecked_return_type = "NewSheetResult")]
+    pub fn new_sheet(&mut self) -> Result<JsValue, JsError> {
+        let (name, sheet_index) = self.model.new_sheet().map_err(to_js_error)?;
+        let result = NewSheetResult { name, sheet_index };
+        serde_wasm_bindgen::to_value(&result).map_err(|e| to_js_error(e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "deleteSheet")]
@@ -335,10 +415,26 @@ impl Model {
             .unwrap_or_default())
     }
 
+    #[wasm_bindgen(
+        js_name = "getSheetDimensions",
+        unchecked_return_type = "WorksheetDimension"
+    )]
+    pub fn get_sheet_dimensions(&self, sheet: u32) -> Result<JsValue, JsError> {
+        let dimension = self
+            .model
+            .get_model()
+            .workbook
+            .worksheet(sheet)
+            .map_err(to_js_error)?
+            .dimension();
+
+        serde_wasm_bindgen::to_value(&dimension).map_err(|e| to_js_error(e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = "updateRangeStyle")]
     pub fn update_range_style(
         &mut self,
-        range: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Area")] range: JsValue,
         style_path: &str,
         value: &str,
     ) -> Result<(), JsError> {
@@ -349,7 +445,7 @@ impl Model {
             .map_err(to_js_error)
     }
 
-    #[wasm_bindgen(js_name = "getCellStyle")]
+    #[wasm_bindgen(js_name = "getCellStyle", unchecked_return_type = "CellStyle")]
     pub fn get_cell_style(
         &mut self,
         sheet: u32,
@@ -365,7 +461,10 @@ impl Model {
     }
 
     #[wasm_bindgen(js_name = "onPasteStyles")]
-    pub fn on_paste_styles(&mut self, styles: JsValue) -> Result<(), JsError> {
+    pub fn on_paste_styles(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "CellStyle[][]")] styles: JsValue,
+    ) -> Result<(), JsError> {
         let styles: &Vec<Vec<Style>> =
             &serde_wasm_bindgen::from_value(styles).map_err(|e| to_js_error(e.to_string()))?;
         self.model.on_paste_styles(styles).map_err(to_js_error)
@@ -391,7 +490,10 @@ impl Model {
 
     // I don't _think_ serializing to JsValue can't fail
     // FIXME: Remove this clippy directive
-    #[wasm_bindgen(js_name = "getWorksheetsProperties")]
+    #[wasm_bindgen(
+        js_name = "getWorksheetsProperties",
+        unchecked_return_type = "WorksheetProperties[]"
+    )]
     #[allow(clippy::unwrap_used)]
     pub fn get_worksheets_properties(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.model.get_worksheets_properties()).unwrap()
@@ -410,7 +512,7 @@ impl Model {
 
     // I don't _think_ serializing to JsValue can't fail
     // FIXME: Remove this clippy directive
-    #[wasm_bindgen(js_name = "getSelectedView")]
+    #[wasm_bindgen(js_name = "getSelectedView", unchecked_return_type = "SelectedView")]
     #[allow(clippy::unwrap_used)]
     pub fn get_selected_view(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.model.get_selected_view()).unwrap()
@@ -469,7 +571,11 @@ impl Model {
     }
 
     #[wasm_bindgen(js_name = "autoFillRows")]
-    pub fn auto_fill_rows(&mut self, source_area: JsValue, to_row: i32) -> Result<(), JsError> {
+    pub fn auto_fill_rows(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Area")] source_area: JsValue,
+        to_row: i32,
+    ) -> Result<(), JsError> {
         let area: Area =
             serde_wasm_bindgen::from_value(source_area).map_err(|e| to_js_error(e.to_string()))?;
         self.model
@@ -480,7 +586,7 @@ impl Model {
     #[wasm_bindgen(js_name = "autoFillColumns")]
     pub fn auto_fill_columns(
         &mut self,
-        source_area: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Area")] source_area: JsValue,
         to_column: i32,
     ) -> Result<(), JsError> {
         let area: Area =
@@ -561,8 +667,8 @@ impl Model {
     #[wasm_bindgen(js_name = "setAreaWithBorder")]
     pub fn set_area_with_border(
         &mut self,
-        area: JsValue,
-        border_area: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Area")] area: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "BorderArea")] border_area: JsValue,
     ) -> Result<(), JsError> {
         let range: Area =
             serde_wasm_bindgen::from_value(area).map_err(|e| to_js_error(e.to_string()))?;
@@ -589,7 +695,7 @@ impl Model {
         self.model.set_name(name);
     }
 
-    #[wasm_bindgen(js_name = "copyToClipboard")]
+    #[wasm_bindgen(js_name = "copyToClipboard", unchecked_return_type = "Clipboard")]
     pub fn copy_to_clipboard(&self) -> Result<JsValue, JsError> {
         let data = self
             .model
@@ -603,8 +709,9 @@ impl Model {
     pub fn paste_from_clipboard(
         &mut self,
         source_sheet: u32,
+        #[wasm_bindgen(unchecked_param_type = "[number, number, number, number]")]
         source_range: JsValue,
-        clipboard: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ClipboardData")] clipboard: JsValue,
         is_cut: bool,
     ) -> Result<(), JsError> {
         let source_range: (i32, i32, i32, i32) =
@@ -617,7 +724,11 @@ impl Model {
     }
 
     #[wasm_bindgen(js_name = "pasteCsvText")]
-    pub fn paste_csv_string(&mut self, area: JsValue, csv: &str) -> Result<(), JsError> {
+    pub fn paste_csv_string(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Area")] area: JsValue,
+        csv: &str,
+    ) -> Result<(), JsError> {
         let range: Area =
             serde_wasm_bindgen::from_value(area).map_err(|e| to_js_error(e.to_string()))?;
         self.model
@@ -625,7 +736,10 @@ impl Model {
             .map_err(|e| to_js_error(e.to_string()))
     }
 
-    #[wasm_bindgen(js_name = "getDefinedNameList")]
+    #[wasm_bindgen(
+        js_name = "getDefinedNameList",
+        unchecked_return_type = "DefinedName[]"
+    )]
     pub fn get_defined_name_list(&self) -> Result<JsValue, JsError> {
         let data: Vec<DefinedName> = self
             .model
@@ -672,4 +786,24 @@ impl Model {
             .delete_defined_name(name, scope)
             .map_err(|e| to_js_error(e.to_string()))
     }
+
+    #[wasm_bindgen(js_name = "getChangedCells", unchecked_return_type = "CellReference[]")]
+    pub fn get_changed_cells(&self) -> JsValue {
+        let changed_cells = self.model.get_changed_cells();
+        serde_wasm_bindgen::to_value(&changed_cells).unwrap_or_else(|_| JsValue::undefined())
+    }
+
+    #[wasm_bindgen(js_name = "getRecentDiffs", unchecked_return_type = "QueueDiffs[]")]
+    pub fn get_recent_diffs(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.model.get_recent_diffs())
+            .unwrap_or_else(|_| JsValue::undefined())
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CellReference {
+    pub sheet: u32,
+    pub row: i32,
+    pub column: i32,
 }
