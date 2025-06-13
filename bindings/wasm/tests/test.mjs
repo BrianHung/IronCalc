@@ -173,87 +173,6 @@ test('track changed cells - basic update', () => {
     assert.deepEqual(changedCells[0], { sheet: 0, row: 1, column: 2 }, 'Second changed cell should be B1');
 });
 
-test('getRecentDiffs returns recent diffs without modifying queue', () => {
-    const model = new Model('Workbook1', 'en', 'UTC');
-    // Perform some actions to generate diffs
-    model.setUserInput(0, 1, 1, "42");
-    model.setUserInput(0, 1, 2, "=A1*2");
-    
-    // Get recent diffs
-    const diffs = model.getRecentDiffs();
-    assert.strictEqual(diffs.length > 0, true, 'Diffs array should not be empty after actions');
-    
-    // Check structure of diffs - regular operations are marked as "Redo" type
-    const firstDiff = diffs[0];
-    assert.strictEqual(firstDiff.type, 'Redo', 'Regular operations should be of type Redo');
-    assert.strictEqual(Array.isArray(firstDiff.list), true, 'Diff entry should have a list of diffs');
-    assert.strictEqual(firstDiff.list.length > 0, true, 'Diff list should not be empty');
-    
-    // Look for SetCellValue diff in any of the diff entries
-    let foundSetCellValue = false;
-    for (const diffEntry of diffs) {
-        const setCellDiff = diffEntry.list.find(d => d.SetCellValue && d.SetCellValue.row === 1 && d.SetCellValue.column === 1);
-        if (setCellDiff) {
-            assert.strictEqual(setCellDiff.SetCellValue.new_value, '42', 'New value for A1 should be 42');
-            foundSetCellValue = true;
-            break;
-        }
-    }
-    assert.ok(foundSetCellValue, 'Should find a SetCellValue diff for cell A1 somewhere in the diffs');
-    
-    // Verify queue is not modified by checking again
-    const diffsAgain = model.getRecentDiffs();
-    assert.strictEqual(diffsAgain.length, diffs.length, 'Queue length should remain the same after multiple calls');
-    assert.deepStrictEqual(diffsAgain, diffs, 'Queue contents should remain unchanged after multiple calls');
-});
-
-test('getRecentDiffs captures style changes', () => {
-    const model = new Model('Workbook1', 'en', 'UTC');
-    // Perform a style change
-    model.updateRangeStyle({ sheet: 0, row: 1, column: 1, width: 1, height: 1 }, 'font.b', 'true');
-    
-    // Get recent diffs
-    const diffs = model.getRecentDiffs();
-    assert.strictEqual(diffs.length > 0, true, 'Diffs array should not be empty after style change');
-    
-    // Look for SetCellStyle diff in any of the diff entries 
-    let foundStyleDiff = false;
-    for (const diffEntry of diffs) {
-        const styleDiff = diffEntry.list.find(d => d.SetCellStyle);
-        if (styleDiff) {
-            assert.strictEqual(styleDiff.SetCellStyle.sheet, 0, 'Sheet index should be 0');
-            assert.strictEqual(styleDiff.SetCellStyle.row, 1, 'Row should be 1');
-            assert.strictEqual(styleDiff.SetCellStyle.column, 1, 'Column should be 1');
-            assert.ok(styleDiff.SetCellStyle.new_value.font.b, 'New style should have bold set to true');
-            foundStyleDiff = true;
-            break;
-        }
-    }
-    assert.ok(foundStyleDiff, 'Should find a SetCellStyle diff after style update');
-});
-
-test('getRecentDiffs captures undo and redo diffs', () => {
-    const model = new Model('Workbook1', 'en', 'UTC');
-    // Perform an action and undo it
-    model.setUserInput(0, 1, 1, "100");
-    model.undo();
-    
-    // Get recent diffs
-    const diffs = model.getRecentDiffs();
-    assert.strictEqual(diffs.length > 0, true, 'Diffs array should not be empty after undo');
-    
-    // Check for Undo type in diffs
-    const undoDiff = diffs.find(d => d.type === 'Undo');
-    assert.ok(undoDiff, 'Should find an Undo diff entry after undo operation');
-    assert.strictEqual(undoDiff.list.length > 0, true, 'Undo diff list should not be empty');
-    
-    // Redo the action
-    model.redo();
-    const diffsAfterRedo = model.getRecentDiffs();
-    const redoDiff = diffsAfterRedo.find(d => d.type === 'Redo');
-    assert.ok(redoDiff, 'Should find a Redo diff entry after redo operation');
-});
-
 test('getRecentDiffs captures setCellValue diff', () => {
     const model = new Model('Workbook1', 'en', 'UTC');
     // Set a cell value to generate a SetCellValue diff
@@ -262,22 +181,187 @@ test('getRecentDiffs captures setCellValue diff', () => {
     // Get recent diffs
     const diffs = model.getRecentDiffs();
     assert.strictEqual(diffs.length > 0, true, 'Diffs array should not be empty after setting cell value');
-    
-    // Look for SetCellValue diff in any of the diff entries
-    let foundSetCellDiff = false;
-    for (const diffEntry of diffs) {
-        const setCellDiff = diffEntry.list.find(d => d.SetCellValue);
-        if (setCellDiff) {
-            assert.strictEqual(setCellDiff.SetCellValue.sheet, 0, 'Sheet index should be 0');
-            assert.strictEqual(setCellDiff.SetCellValue.row, 2, 'Row should be 2');
-            assert.strictEqual(setCellDiff.SetCellValue.column, 3, 'Column should be 3');
-            assert.strictEqual(setCellDiff.SetCellValue.new_value, '99', 'New value should be 99');
-            foundSetCellDiff = true;
-            break;
+
+    const expectedDiffs = [
+        {
+            type: 'Redo',
+            list: [{
+                type: "setCellValue",
+                sheet: 0,
+                row: 2,
+                column: 3,
+                new_value: "99",
+                old_value: undefined
+            }]
         }
+    ];
+
+    // Verify we got the expected number of diffs
+    assert.strictEqual(diffs.length, expectedDiffs.length, `Should have exactly ${expectedDiffs.length} diffs`);
+    
+    // Compare each diff with deep equality
+    for (let i = 0; i < expectedDiffs.length; i++) {
+        assert.deepStrictEqual(diffs[i], expectedDiffs[i], `Diff ${i} should match expected diff`);
     }
-    assert.ok(foundSetCellDiff, 'Should find a SetCellValue diff after setting cell value');
 });
+
+test('getRecentDiffs returns recent diffs without modifying queue', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+
+    // Perform two separate actions that should generate **two** QueueDiffs in the send queue
+    model.setUserInput(0, 1, 1, '42');          // first diff list
+    model.setUserInput(0, 1, 2, '=A1*2');       // second diff list
+
+    const diffs = model.getRecentDiffs();
+
+    const expectedDiffs = [
+        {
+            type: 'Redo',
+            list: [
+                {
+                    type: 'setCellValue',
+                    sheet: 0,
+                    row: 1,
+                    column: 1,
+                    new_value: '42',
+                    old_value: undefined,
+                },
+            ],
+        },
+        {
+            type: 'Redo',
+            list: [
+                {
+                    type: 'setCellValue',
+                    sheet: 0,
+                    row: 1,
+                    column: 2,
+                    new_value: '=A1*2',
+                    old_value: undefined,
+                },
+            ],
+        },
+    ];
+
+    // Validate that we received exactly the expected diff objects
+    assert.deepStrictEqual(diffs, expectedDiffs, 'Diffs should match expected structure');
+
+    // Subsequent calls should not modify the queue
+    const diffsAgain = model.getRecentDiffs();
+    assert.deepStrictEqual(diffsAgain, diffs, 'Queue contents should remain unchanged after multiple calls');
+});
+
+test('getRecentDiffs captures style changes', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+
+    // Perform a style change
+    model.updateRangeStyle(
+        { sheet: 0, row: 1, column: 1, width: 1, height: 1 },
+        'font.b',
+        'true',
+    );
+
+    const diffs = model.getRecentDiffs();
+
+    const expectedDiffs = [
+        {
+            type: 'Redo',
+            list: [
+                {
+                    type: 'setCellStyle',
+                    sheet: 0,
+                    row: 1,
+                    column: 1,
+                    new_value: {
+                        num_fmt: 'general',
+                        fill: { pattern_type: 'none' },
+                        font: {
+                            sz: 13,
+                            color: '#000000',
+                            name: 'Calibri',
+                            family: 2,
+                            scheme: 'minor',
+                            b: true,
+                        },
+                        border: {},
+                        quote_prefix: false,
+                    },
+                    old_value: undefined,
+                },
+            ],
+        },
+    ];
+
+    assert.deepStrictEqual(diffs, expectedDiffs, 'Style diff should match expected structure');
+});
+
+test('getRecentDiffs captures undo and redo diffs', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+
+    // Initial action
+    model.setUserInput(0, 1, 1, '100');     // QueueDiffs[0] (Redo)
+
+    // Undo that action -> QueueDiffs[1] (Undo)
+    model.undo();
+
+    const diffsAfterUndo = model.getRecentDiffs();
+
+    const expectedAfterUndo = [
+        {
+            type: 'Redo',
+            list: [
+                {
+                    type: 'setCellValue',
+                    sheet: 0,
+                    row: 1,
+                    column: 1,
+                    new_value: '100',
+                    old_value: undefined,
+                },
+            ],
+        },
+        {
+            type: 'Undo',
+            list: [
+                {
+                    type: 'setCellValue',
+                    sheet: 0,
+                    row: 1,
+                    column: 1,
+                    new_value: '100',
+                    old_value: undefined,
+                },
+            ],
+        },
+    ];
+
+    assert.deepStrictEqual(diffsAfterUndo, expectedAfterUndo, 'Undo diff should be recorded correctly');
+
+    // Redo the action -> QueueDiffs[2] (Redo)
+    model.redo();
+
+    const diffsAfterRedo = model.getRecentDiffs();
+
+    const expectedAfterRedo = [
+        ...expectedAfterUndo,
+        {
+            type: 'Redo',
+            list: [
+                {
+                    type: 'setCellValue',
+                    sheet: 0,
+                    row: 1,
+                    column: 1,
+                    new_value: '100',
+                    old_value: undefined,
+                },
+            ],
+        },
+    ];
+
+    assert.deepStrictEqual(diffsAfterRedo, expectedAfterRedo, 'Redo diff should be recorded correctly');
+});
+
 test("getSheetDimensions", () => {
     const model = new Model('Workbook1', 'en', 'UTC');
     
@@ -402,14 +486,13 @@ test('onDiffs', async () => {
     
     const expectedEvents = [
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 1,
-                new_value: 'test',
-                old_value: undefined
-            }
-        },
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 1,
+            new_value: "test",
+            old_value: undefined
+        }
     ];
     
     // Verify we got the expected number of events
@@ -459,68 +542,59 @@ test('onDiffs emits correct diff types for various operations', async () => {
     
     const expectedEvents = [
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 1,
-                new_value: '42',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 1,
+            new_value: "42",
+            old_value: undefined
         },
         {
-            InsertRow: {
-                sheet: 0,
-                row: 2
-            }
+            type: "insertRow",
+            sheet: 0,
+            row: 2
         },
         {
-            SetRowHeight: {
-                sheet: 0,
-                row: 1,
-                new_value: 35,
-                old_value: 28
-            }
+            type: "setRowHeight",
+            sheet: 0,
+            row: 1,
+            new_value: 35,
+            old_value: 28
         },
         {
-            InsertColumn: {
-                sheet: 0,
-                column: 2
-            }
+            type: "insertColumn",
+            sheet: 0,
+            column: 2
         },
         {
-            SetColumnWidth: {
-                sheet: 0,
-                column: 1,
-                new_value: 120,
-                old_value: 125
-            }
+            type: "setColumnWidth",
+            sheet: 0,
+            column: 1,
+            new_value: 120,
+            old_value: 125
         },
         {
-            NewSheet: {
-                index: 1,
-                name: 'Sheet2'
-            }
+            type: "newSheet",
+            index: 1,
+            name: "Sheet2"
         },
         {
-            RenameSheet: {
-                index: 1,
-                old_value: 'Sheet2',
-                new_value: 'TestSheet'
-            }
+            type: "renameSheet",
+            index: 1,
+            old_value: "Sheet2",
+            new_value: "TestSheet"
         },
         {
-            SetFrozenRowsCount: {
-                sheet: 0,
-                new_value: 2,
-                old_value: 0
-            }
+            type: "setFrozenRowsCount",
+            sheet: 0,
+            new_value: 2,
+            old_value: 0
         },
         {
-            SetFrozenColumnsCount: {
-                sheet: 0,
-                new_value: 3,
-                old_value: 0
-            }
+            type: "setFrozenColumnsCount",
+            sheet: 0,
+            new_value: 3,
+            old_value: 0
         }
     ];
     
@@ -559,60 +633,53 @@ test('onDiffs emits full diff objects for undo/redo operations', async () => {
     const expectedEvents = [
         // Initial operations (3 events)
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 1,
-                new_value: 'Hello',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 1,
+            new_value: "Hello",
+            old_value: undefined
         },
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 2,
-                new_value: 'World',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 2,
+            new_value: "World",
+            old_value: undefined
         },
         {
-            InsertRow: {
-                sheet: 0,
-                row: 2
-            }
+            type: "insertRow",
+            sheet: 0,
+            row: 2
         },
         // Undo operations (2 events) - Note: these emit the same diff structures as the forward operations
         {
-            InsertRow: {
-                sheet: 0,
-                row: 2
-            }
+            type: "insertRow",
+            sheet: 0,
+            row: 2
         },
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 2,
-                new_value: 'World',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 2,
+            new_value: "World",
+            old_value: undefined
         },
         // Redo operations (2 events) - These also emit the same diff structures
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 2,
-                new_value: 'World',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 2,
+            new_value: "World",
+            old_value: undefined
         },
         {
-            InsertRow: {
-                sheet: 0,
-                row: 2
-            }
+            type: "insertRow",
+            sheet: 0,
+            row: 2
         }
     ];
     
@@ -651,82 +718,74 @@ test('onDiffs handles multiple subscribers and provides full diff objects', asyn
     const expectedEvents = [
         // SetUserInput operations (4 events)
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 1,
-                column: 1,
-                new_value: '=SUM(A2:A5)',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 1,
+            column: 1,
+            new_value: "=SUM(A2:A5)",
+            old_value: undefined
         },
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 2,
-                column: 1,
-                new_value: '10',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 2,
+            column: 1,
+            new_value: "10",
+            old_value: undefined
         },
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 3,
-                column: 1,
-                new_value: '20',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 3,
+            column: 1,
+            new_value: "20",
+            old_value: undefined
         },
         {
-            SetCellValue: {
-                sheet: 0,
-                row: 4,
-                column: 1,
-                new_value: '30',
-                old_value: undefined
-            }
+            type: "setCellValue",
+            sheet: 0,
+            row: 4,
+            column: 1,
+            new_value: "30",
+            old_value: undefined
         },
         // Row operations (2 events)
         {
-            InsertRow: {
-                sheet: 0,
-                row: 2
-            }
+            type: "insertRow",
+            sheet: 0,
+            row: 2
         },
         {
-            DeleteRow: {
-                sheet: 0,
-                row: 2,
-                old_data: {
-                    data: new Map(),
-                    row: undefined
-                }
+            type: "deleteRow",
+            sheet: 0,
+            row: 2,
+            old_data: {
+                data: new Map(),
+                row: undefined,
             }
         },
         // Range clear operations (2 events)
         {
-            CellClearContents: {
-                sheet: 0,
-                row: 2,
-                column: 1,
-                old_value: {
-                    NumberCell: {
-                        v: 10,
-                        s: 0
-                    }
+            type: "cellClearContents",
+            sheet: 0,
+            row: 2,
+            column: 1,
+            old_value: {
+                NumberCell: {
+                    v: 10,
+                    s: 0
                 }
             }
         },
         {
-            CellClearContents: {
-                sheet: 0,
-                row: 3,
-                column: 1,
-                old_value: {
-                    NumberCell: {
-                        v: 20,
-                        s: 0
-                    }
+            type: "cellClearContents",
+            sheet: 0,
+            row: 3,
+            column: 1,
+            old_value: {
+                NumberCell: {
+                    v: 20,
+                    s: 0
                 }
             }
         }

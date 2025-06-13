@@ -331,6 +331,7 @@ export interface Worksheet {
 
 // Individual Diff type interfaces for better developer experience
 export interface SetCellValueDiff {
+  type: "setCellValue";
   sheet: number;
   row: number;
   column: number;
@@ -339,6 +340,7 @@ export interface SetCellValueDiff {
 }
 
 export interface CellClearContentsDiff {
+  type: "cellClearContents";
   sheet: number;
   row: number;
   column: number;
@@ -346,6 +348,7 @@ export interface CellClearContentsDiff {
 }
 
 export interface CellClearAllDiff {
+  type: "cellClearAll";
   sheet: number;
   row: number;
   column: number;
@@ -354,6 +357,7 @@ export interface CellClearAllDiff {
 }
 
 export interface CellClearFormattingDiff {
+  type: "cellClearFormatting";
   sheet: number;
   row: number;
   column: number;
@@ -361,6 +365,7 @@ export interface CellClearFormattingDiff {
 }
 
 export interface SetCellStyleDiff {
+  type: "setCellStyle";
   sheet: number;
   row: number;
   column: number;
@@ -369,6 +374,7 @@ export interface SetCellStyleDiff {
 }
 
 export interface SetColumnWidthDiff {
+  type: "setColumnWidth";
   sheet: number;
   column: number;
   new_value: number;
@@ -376,6 +382,7 @@ export interface SetColumnWidthDiff {
 }
 
 export interface SetRowHeightDiff {
+  type: "setRowHeight";
   sheet: number;
   row: number;
   new_value: number;
@@ -383,6 +390,7 @@ export interface SetRowHeightDiff {
 }
 
 export interface SetColumnStyleDiff {
+  type: "setColumnStyle";
   sheet: number;
   column: number;
   old_value?: Style | null;
@@ -390,6 +398,7 @@ export interface SetColumnStyleDiff {
 }
 
 export interface SetRowStyleDiff {
+  type: "setRowStyle";
   sheet: number;
   row: number;
   old_value?: Style | null;
@@ -397,98 +406,115 @@ export interface SetRowStyleDiff {
 }
 
 export interface DeleteColumnStyleDiff {
+  type: "deleteColumnStyle";
   sheet: number;
   column: number;
   old_value?: Style | null;
 }
 
 export interface DeleteRowStyleDiff {
+  type: "deleteRowStyle";
   sheet: number;
   row: number;
   old_value?: Style | null;
 }
 
 export interface InsertRowDiff {
+  type: "insertRow";
   sheet: number;
   row: number;
 }
 
 export interface DeleteRowDiff {
+  type: "deleteRow";
   sheet: number;
   row: number;
   old_data: RowData;
 }
 
 export interface InsertColumnDiff {
+  type: "insertColumn";
   sheet: number;
   column: number;
 }
 
 export interface DeleteColumnDiff {
+  type: "deleteColumn";
   sheet: number;
   column: number;
   old_data: ColumnData;
 }
 
 export interface DeleteSheetDiff {
+  type: "deleteSheet";
   sheet: number;
   old_data: Worksheet;
 }
 
 export interface SetFrozenRowsCountDiff {
+  type: "setFrozenRowsCount";
   sheet: number;
   new_value: number;
   old_value: number;
 }
 
 export interface SetFrozenColumnsCountDiff {
+  type: "setFrozenColumnsCount";
   sheet: number;
   new_value: number;
   old_value: number;
 }
 
 export interface NewSheetDiff {
+  type: "newSheet";
   index: number;
   name: string;
 }
 
 export interface RenameSheetDiff {
+  type: "renameSheet";
   index: number;
   old_value: string;
   new_value: string;
 }
 
 export interface SetSheetColorDiff {
+  type: "setSheetColor";
   index: number;
   old_value: string;
   new_value: string;
 }
 
 export interface SetSheetStateDiff {
+  type: "setSheetState";
   index: number;
   old_value: string;
   new_value: string;
 }
 
 export interface SetShowGridLinesDiff {
+  type: "setShowGridLines";
   sheet: number;
   old_value: boolean;
   new_value: boolean;
 }
 
 export interface CreateDefinedNameDiff {
+  type: "createDefinedName";
   name: string;
   scope?: number;
   value: string;
 }
 
 export interface DeleteDefinedNameDiff {
+  type: "deleteDefinedName";
   name: string;
   scope?: number;
   old_value: string;
 }
 
 export interface UpdateDefinedNameDiff {
+  type: "updateDefinedName";
   name: string;
   scope?: number;
   old_formula: string;
@@ -497,38 +523,37 @@ export interface UpdateDefinedNameDiff {
   new_formula: string;
 }
 
-// Union type for all Diff variants - these are serialized as tagged enums with variant names as keys
-export type Diff =
-  | { SetCellValue: SetCellValueDiff }
-  | { CellClearContents: CellClearContentsDiff }
-  | { CellClearAll: CellClearAllDiff }
-  | { CellClearFormatting: CellClearFormattingDiff }
-  | { SetCellStyle: SetCellStyleDiff }
-  | { SetColumnWidth: SetColumnWidthDiff }
-  | { SetRowHeight: SetRowHeightDiff }
-  | { SetColumnStyle: SetColumnStyleDiff }
-  | { SetRowStyle: SetRowStyleDiff }
-  | { DeleteColumnStyle: DeleteColumnStyleDiff }
-  | { DeleteRowStyle: DeleteRowStyleDiff }
-  | { InsertRow: InsertRowDiff }
-  | { DeleteRow: DeleteRowDiff }
-  | { InsertColumn: InsertColumnDiff }
-  | { DeleteColumn: DeleteColumnDiff }
-  | { DeleteSheet: DeleteSheetDiff }
-  | { SetFrozenRowsCount: SetFrozenRowsCountDiff }
-  | { SetFrozenColumnsCount: SetFrozenColumnsCountDiff }
-  | { NewSheet: NewSheetDiff }
-  | { RenameSheet: RenameSheetDiff }
-  | { SetSheetColor: SetSheetColorDiff }
-  | { SetSheetState: SetSheetStateDiff }
-  | { SetShowGridLines: SetShowGridLinesDiff }
-  | { CreateDefinedName: CreateDefinedNameDiff }
-  | { DeleteDefinedName: DeleteDefinedNameDiff }
-  | { UpdateDefinedName: UpdateDefinedNameDiff };
+export type Diff = 
+  | SetCellValueDiff
+  | CellClearContentsDiff
+  | CellClearAllDiff
+  | CellClearFormattingDiff
+  | SetCellStyleDiff
+  | SetColumnWidthDiff
+  | SetRowHeightDiff
+  | SetColumnStyleDiff
+  | SetRowStyleDiff
+  | DeleteColumnStyleDiff
+  | DeleteRowStyleDiff
+  | InsertRowDiff
+  | DeleteRowDiff
+  | InsertColumnDiff
+  | DeleteColumnDiff
+  | DeleteSheetDiff
+  | SetFrozenRowsCountDiff
+  | SetFrozenColumnsCountDiff
+  | NewSheetDiff
+  | RenameSheetDiff
+  | SetSheetColorDiff
+  | SetSheetStateDiff
+  | SetShowGridLinesDiff
+  | CreateDefinedNameDiff
+  | DeleteDefinedNameDiff
+  | UpdateDefinedNameDiff;
 
-  // Interface for QueueDiffs
+// Interface for QueueDiffs
 export interface QueueDiffs {
-  type: "Undo" | "Redo";
+  type: "undo" | "redo";
   list: Diff[];
 }
 export interface WorksheetDimension {

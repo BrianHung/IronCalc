@@ -28,6 +28,7 @@ pub enum DiffType {
 
 #[allow(missing_docs)]
 #[derive(Clone, Encode, Decode, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum Diff {
     // Cell diffs
     SetCellValue {
@@ -213,6 +214,7 @@ impl History {
 /// A collection of diffs that can be applied to a model.
 /// This represents a single operation that can be undone or redone.
 #[derive(Clone, Encode, Decode, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub struct QueueDiffs {
     /// The type of operation this represents (Undo or Redo)
     pub r#type: DiffType,

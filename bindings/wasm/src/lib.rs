@@ -793,7 +793,7 @@ impl Model {
         serde_wasm_bindgen::to_value(&changed_cells).unwrap_or_else(|_| JsValue::undefined())
     }
 
-    #[wasm_bindgen(js_name = "getRecentDiffs", unchecked_return_type = "Diff[]")]
+    #[wasm_bindgen(js_name = "getRecentDiffs", unchecked_return_type = "QueueDiffs[]")]
     pub fn get_recent_diffs(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&self.model.get_recent_diffs())
             .unwrap_or_else(|_| JsValue::undefined())
