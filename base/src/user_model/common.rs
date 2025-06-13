@@ -27,8 +27,8 @@ use super::border_utils::is_max_border;
 
 /// Events that the `UserModel` can emit.
 pub enum ModelEvent {
-    /// A diff that can be undone/redone.
-    Diff(Diff),
+    /// A list of diffs (a single user action) that can be undone/redone.
+    Diffs(DiffList),
     /// An informational event that cells have been evaluated.
     CellsEvaluated(Vec<CellReference>),
 }
@@ -1917,15 +1917,12 @@ impl UserModel {
     // **** Private methods ****** //
 
     pub(crate) fn push_diff_list(&mut self, diff_list: DiffList) {
-        // Emit events for each diff before storing them
-        for diff in &diff_list {
-            self.event_emitter.emit(&ModelEvent::Diff(diff.clone()));
-        }
-
         self.send_queue.push(QueueDiffs {
             r#type: DiffType::Redo,
             list: diff_list.clone(),
         });
+        self.event_emitter
+            .emit(&ModelEvent::Diffs(diff_list.clone()));
         self.history.push(diff_list);
     }
 
@@ -1938,7 +1935,6 @@ impl UserModel {
     fn apply_undo_diff_list(&mut self, diff_list: &DiffList) -> Result<(), String> {
         let mut needs_evaluation = false;
         for diff in diff_list.iter().rev() {
-            self.event_emitter.emit(&ModelEvent::Diff(diff.clone()));
             match diff {
                 Diff::SetCellValue {
                     sheet,
@@ -2212,6 +2208,8 @@ impl UserModel {
                 }
             }
         }
+        self.event_emitter
+            .emit(&ModelEvent::Diffs(diff_list.clone()));
         if needs_evaluation {
             self.evaluate_if_not_paused();
         }
@@ -2222,7 +2220,6 @@ impl UserModel {
     fn apply_diff_list(&mut self, diff_list: &DiffList) -> Result<(), String> {
         let mut needs_evaluation = false;
         for diff in diff_list {
-            self.event_emitter.emit(&ModelEvent::Diff(diff.clone()));
             match diff {
                 Diff::SetCellValue {
                     sheet,
@@ -2414,7 +2411,8 @@ impl UserModel {
                 }
             }
         }
-
+        self.event_emitter
+            .emit(&ModelEvent::Diffs(diff_list.clone()));
         if needs_evaluation {
             self.evaluate_if_not_paused();
         }
