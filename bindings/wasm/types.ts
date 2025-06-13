@@ -249,6 +249,12 @@ export interface DefinedName {
 }
 
 // Types for Diffs and QueueDiffs used in getRecentDiffs
+export interface CellReference {
+  sheet: number;
+  row: number;
+  column: number;
+}
+
 export interface Cell {
   type: string; // e.g., "NumberCell", "SharedString", "BooleanCell"
   v?: number | boolean | string; // value, if applicable
@@ -520,7 +526,7 @@ export type Diff =
   | { DeleteDefinedName: DeleteDefinedNameDiff }
   | { UpdateDefinedName: UpdateDefinedNameDiff };
 
-// Interface for QueueDiffs
+  // Interface for QueueDiffs
 export interface QueueDiffs {
   type: "Undo" | "Redo";
   list: Diff[];
