@@ -164,13 +164,15 @@ pub(crate) fn stringify_reference(
                         }
                     }
                 }
-                DisplaceData::RowMove { sheet, row: move_row, delta } => {
+                DisplaceData::RowMove {
+                    sheet,
+                    row: move_row,
+                    delta,
+                } => {
                     if sheet_index == *sheet {
                         if row == *move_row {
                             row += *delta;
-                        } else if (*delta > 0
-                            && row > *move_row
-                            && row <= *move_row + *delta)
+                        } else if (*delta > 0 && row > *move_row && row <= *move_row + *delta)
                             || (*delta < 0 && row < *move_row && row >= *move_row + *delta)
                         {
                             row -= *delta;

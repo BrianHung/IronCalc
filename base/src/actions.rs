@@ -479,9 +479,7 @@ impl Model {
             let style_idx = cell.get_style();
             let formula_or_value = self
                 .get_cell_formula(sheet, r.row, column)?
-                .unwrap_or_else(|| {
-                    cell.get_text(&self.workbook.shared_strings, &self.language)
-                });
+                .unwrap_or_else(|| cell.get_text(&self.workbook.shared_strings, &self.language));
             original_cells.push((r.row, formula_or_value, style_idx));
             self.cell_clear_all(sheet, r.row, column)?;
         }
@@ -498,8 +496,7 @@ impl Model {
 
                 let w = self.workbook.worksheet(sheet)?.get_column_width(c)?;
                 let s = self.workbook.worksheet(sheet)?.get_column_style(c)?;
-                self
-                    .workbook
+                self.workbook
                     .worksheet_mut(sheet)?
                     .set_column_width_and_style(c - 1, w, s)?;
             }
@@ -512,8 +509,7 @@ impl Model {
 
                 let w = self.workbook.worksheet(sheet)?.get_column_width(c)?;
                 let s = self.workbook.worksheet(sheet)?.get_column_style(c)?;
-                self
-                    .workbook
+                self.workbook
                     .worksheet_mut(sheet)?
                     .set_column_width_and_style(c + 1, w, s)?;
             }
@@ -525,8 +521,7 @@ impl Model {
                 .worksheet_mut(sheet)?
                 .set_cell_style(r, target_column, style_idx)?;
         }
-        self
-            .workbook
+        self.workbook
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, style)?;
 
@@ -546,12 +541,7 @@ impl Model {
     /// from initial_row to target_row = initial_row + row_delta
     /// References will be updated following the same rules as move_column_action
     /// NOTE: This moves the data and row styles along with the formulas
-    pub fn move_row_action(
-        &mut self,
-        sheet: u32,
-        row: i32,
-        delta: i32,
-    ) -> Result<(), String> {
+    pub fn move_row_action(&mut self, sheet: u32, row: i32, delta: i32) -> Result<(), String> {
         // Check boundaries
         let target_row = row + delta;
         if !(1..=LAST_ROW).contains(&target_row) {
@@ -576,9 +566,7 @@ impl Model {
             let style_idx = cell.get_style();
             let formula_or_value = self
                 .get_cell_formula(sheet, row, *c)?
-                .unwrap_or_else(|| {
-                    cell.get_text(&self.workbook.shared_strings, &self.language)
-                });
+                .unwrap_or_else(|| cell.get_text(&self.workbook.shared_strings, &self.language));
             original_cells.push((*c, formula_or_value, style_idx));
             self.cell_clear_all(sheet, row, *c)?;
         }
@@ -628,13 +616,7 @@ impl Model {
         worksheet.rows = new_rows;
 
         // Update all formulas in the workbook
-        self.displace_cells(
-            &(DisplaceData::RowMove {
-                sheet,
-                row,
-                delta,
-            }),
-        )?;
+        self.displace_cells(&(DisplaceData::RowMove { sheet, row, delta }))?;
 
         Ok(())
     }

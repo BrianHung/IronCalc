@@ -216,7 +216,12 @@ impl Model {
     }
 
     #[wasm_bindgen(js_name = "moveColumn")]
-    pub fn move_column_action(&mut self, sheet: u32, column: i32, delta: i32) -> Result<(), JsError> {
+    pub fn move_column_action(
+        &mut self,
+        sheet: u32,
+        column: i32,
+        delta: i32,
+    ) -> Result<(), JsError> {
         self.model
             .move_column_action(sheet, column, delta)
             .map_err(to_js_error)
