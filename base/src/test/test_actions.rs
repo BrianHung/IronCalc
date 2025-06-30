@@ -679,8 +679,8 @@ fn test_move_row_down_mixed_refs() {
     assert_eq!(model._get_formula("E5"), "=SUM($G4:$J4)");
     assert_eq!(model._get_formula("E6"), "=SUM($G4:$G4)");
     assert_eq!(model._get_formula("E7"), "=SUM($G3:$G3)");
-    assert_eq!(model._get_formula("F3"), "=H$3");
-    assert_eq!(model._get_formula("F4"), "=G$3");
+    assert_eq!(model._get_formula("F3"), "=G$4");
+    assert_eq!(model._get_formula("F4"), "=H$4");
 }
 
 #[test]
@@ -704,8 +704,8 @@ fn test_move_column_right_mixed_refs() {
     assert_eq!(model._get_formula("E5"), "=SUM($H3:$J7)");
     assert_eq!(model._get_formula("E6"), "=SUM($H3:$H7)");
     assert_eq!(model._get_formula("E7"), "=SUM($G3:$G7)");
-    assert_eq!(model._get_formula("F3"), "=H$3");
-    assert_eq!(model._get_formula("F4"), "=H$3");
+    assert_eq!(model._get_formula("F3"), "=G$3");
+    assert_eq!(model._get_formula("F4"), "=G$3");
 }
 
 // A  B  C  D  E  F  G   H  I  J   K   L   M   N   O   P   Q   R
