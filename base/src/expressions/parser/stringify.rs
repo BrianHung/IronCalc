@@ -204,16 +204,16 @@ pub(crate) fn stringify_reference(
                 return "#REF!".to_string();
             }
             let mut row_abs = if absolute_row {
-                format!("${}", row)
+                format!("${row}")
             } else {
-                format!("{}", row)
+                format!("{row}")
             };
             let column = match crate::expressions::utils::number_to_column(column) {
                 Some(s) => s,
                 None => return "#REF!".to_string(),
             };
             let mut col_abs = if absolute_column {
-                format!("${}", column)
+                format!("${column}")
             } else {
                 column
             };
@@ -228,27 +228,27 @@ pub(crate) fn stringify_reference(
                     format!("{}!{}{}", quote_name(name), col_abs, row_abs)
                 }
                 None => {
-                    format!("{}{}", col_abs, row_abs)
+                    format!("{col_abs}{row_abs}")
                 }
             }
         }
         None => {
             let row_abs = if absolute_row {
-                format!("R{}", row)
+                format!("R{row}")
             } else {
-                format!("R[{}]", row)
+                format!("R[{row}]")
             };
             let col_abs = if absolute_column {
-                format!("C{}", column)
+                format!("C{column}")
             } else {
-                format!("C[{}]", column)
+                format!("C[{column}]")
             };
             match &sheet_name {
                 Some(name) => {
                     format!("{}!{}{}", quote_name(name), row_abs, col_abs)
                 }
                 None => {
-                    format!("{}{}", row_abs, col_abs)
+                    format!("{row_abs}{col_abs}")
                 }
             }
         }
@@ -276,7 +276,7 @@ fn format_function(
             arguments = stringify(el, context, displace_data, export_to_excel);
         }
     }
-    format!("{}({})", name, arguments)
+    format!("{name}({arguments})")
 }
 
 // There is just one representation in the AST (Abstract Syntax Tree) of a formula.
@@ -312,9 +312,9 @@ fn stringify(
 ) -> String {
     use self::Node::*;
     match node {
-        BooleanKind(value) => format!("{}", value).to_ascii_uppercase(),
+        BooleanKind(value) => format!("{value}").to_ascii_uppercase(),
         NumberKind(number) => to_excel_precision_str(*number),
-        StringKind(value) => format!("\"{}\"", value),
+        StringKind(value) => format!("\"{value}\""),
         WrongReferenceKind {
             sheet_name,
             column,
@@ -404,7 +404,7 @@ fn stringify(
                 full_row,
                 full_column,
             );
-            format!("{}:{}", s1, s2)
+            format!("{s1}:{s2}")
         }
         WrongRangeKind {
             sheet_name,
@@ -453,7 +453,7 @@ fn stringify(
                 full_row,
                 full_column,
             );
-            format!("{}:{}", s1, s2)
+            format!("{s1}:{s2}")
         }
         OpRangeKind { left, right } => format!(
             "{}:{}",
@@ -504,7 +504,7 @@ fn stringify(
                 ),
                 _ => stringify(right, context, displace_data, export_to_excel),
             };
-            format!("{}{}{}", x, kind, y)
+            format!("{x}{kind}{y}")
         }
         OpPowerKind { left, right } => {
             let x = match **left {
@@ -567,7 +567,7 @@ fn stringify(
                     stringify(right, context, displace_data, export_to_excel)
                 ),
             };
-            format!("{}^{}", x, y)
+            format!("{x}^{y}")
         }
         InvalidFunctionKind { name, args } => {
             format_function(name, args, context, displace_data, export_to_excel)
@@ -602,7 +602,7 @@ fn stringify(
                 }
                 matrix_string.push_str(&row_string);
             }
-            format!("{{{}}}", matrix_string)
+            format!("{{{matrix_string}}}")
         }
         TableNameKind(value) => value.to_string(),
         DefinedNameKind((name, ..)) => name.to_string(),
@@ -621,7 +621,7 @@ fn stringify(
                 )
             }
         },
-        ErrorKind(kind) => format!("{}", kind),
+        ErrorKind(kind) => format!("{kind}"),
         ParseErrorKind {
             formula,
             position: _,
