@@ -142,8 +142,8 @@ test("move row", () => {
     model.moveRow(0, 3, 1);
     model.evaluate();
 
-    assert.strictEqual(model.getCellContent(0, 3, 5), "=G4");
-    assert.strictEqual(model.getCellContent(0, 4, 5), "=G3");
+    assert.strictEqual(model.getCellContent(0, 3, 5), "=G3");
+    assert.strictEqual(model.getCellContent(0, 4, 5), "=G4");
     assert.strictEqual(model.getCellContent(0, 5, 5), "=SUM(G4:J4)");
     assert.strictEqual(model.getCellContent(0, 6, 5), "=SUM(G4:G4)");
     assert.strictEqual(model.getCellContent(0, 7, 5), "=SUM(G3:G3)");
