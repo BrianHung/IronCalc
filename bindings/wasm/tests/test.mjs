@@ -132,3 +132,16 @@ test("autofill", () => {
 
 
 
+
+// Test onDiffs event
+import { setTimeout } from 'node:timers/promises';
+
+// New test for onDiffs event
+test('onDiffs fires on user input', async () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    const events = [];
+    model.onDiffs(kind => events.push(kind));
+    model.setUserInput(0, 1, 1, '42');
+    await setTimeout(0); // allow callback to run
+    assert.deepEqual(events, ['SetCellValue']);
+});

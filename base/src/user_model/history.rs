@@ -16,8 +16,9 @@ pub(crate) struct ColumnData {
     pub(crate) data: HashMap<i32, Cell>,
 }
 
+#[allow(missing_docs)]
 #[derive(Clone, Encode, Decode)]
-pub(crate) enum Diff {
+pub enum Diff {
     // Cell diffs
     SetCellValue {
         sheet: u32,

@@ -3,6 +3,7 @@ use wasm_bindgen::{
     prelude::{wasm_bindgen, JsError},
     JsValue,
 };
+use js_sys::Function;
 
 use ironcalc_base::{
     expressions::{lexer::util::get_tokens as tokenizer, types::Area, utils::number_to_column},
@@ -10,8 +11,41 @@ use ironcalc_base::{
     BorderArea, ClipboardData, UserModel as BaseModel,
 };
 
+use ironcalc_base::Diff;
+
 fn to_js_error(error: String) -> JsError {
     JsError::new(&error.to_string())
+}
+
+fn diff_kind(diff: &Diff) -> &'static str {
+    match diff {
+        Diff::SetCellValue { .. } => "SetCellValue",
+        Diff::CellClearContents { .. } => "CellClearContents",
+        Diff::CellClearAll { .. } => "CellClearAll",
+        Diff::CellClearFormatting { .. } => "CellClearFormatting",
+        Diff::SetCellStyle { .. } => "SetCellStyle",
+        Diff::SetColumnWidth { .. } => "SetColumnWidth",
+        Diff::SetRowHeight { .. } => "SetRowHeight",
+        Diff::SetColumnStyle { .. } => "SetColumnStyle",
+        Diff::SetRowStyle { .. } => "SetRowStyle",
+        Diff::DeleteColumnStyle { .. } => "DeleteColumnStyle",
+        Diff::DeleteRowStyle { .. } => "DeleteRowStyle",
+        Diff::InsertRow { .. } => "InsertRow",
+        Diff::DeleteRow { .. } => "DeleteRow",
+        Diff::InsertColumn { .. } => "InsertColumn",
+        Diff::DeleteColumn { .. } => "DeleteColumn",
+        Diff::DeleteSheet { .. } => "DeleteSheet",
+        Diff::SetFrozenRowsCount { .. } => "SetFrozenRowsCount",
+        Diff::SetFrozenColumnsCount { .. } => "SetFrozenColumnsCount",
+        Diff::NewSheet { .. } => "NewSheet",
+        Diff::RenameSheet { .. } => "RenameSheet",
+        Diff::SetSheetColor { .. } => "SetSheetColor",
+        Diff::SetSheetState { .. } => "SetSheetState",
+        Diff::SetShowGridLines { .. } => "SetShowGridLines",
+        Diff::CreateDefinedName { .. } => "CreateDefinedName",
+        Diff::DeleteDefinedName { .. } => "DeleteDefinedName",
+        Diff::UpdateDefinedName { .. } => "UpdateDefinedName",
+    }
 }
 
 /// Return an array with a list of all the tokens from a formula
@@ -81,6 +115,14 @@ impl Model {
     #[wasm_bindgen(js_name = "resumeEvaluation")]
     pub fn resume_evaluation(&mut self) {
         self.model.resume_evaluation()
+    }
+
+    #[wasm_bindgen(js_name = "onDiffs")]
+    pub fn on_diffs(&mut self, callback: Function) {
+        self.model.subscribe(move |diff| {
+            let kind = diff_kind(diff);
+            let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(kind));
+        });
     }
 
     pub fn evaluate(&mut self) {
