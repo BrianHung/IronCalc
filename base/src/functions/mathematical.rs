@@ -378,6 +378,64 @@ impl Model {
         }
     }
 
+    pub(crate) fn fn_ceiling(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let significance = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if significance == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        if number > 0.0 && significance < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "Different signs".to_string());
+        }
+        let sig = significance.abs();
+        let result = if number >= 0.0 {
+            (number / sig).ceil() * sig
+        } else if significance > 0.0 {
+            (number / sig).ceil() * sig
+        } else {
+            (number / sig).floor() * sig
+        };
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_floor(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let significance = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if significance == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        if number > 0.0 && significance < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "Different signs".to_string());
+        }
+        let sig = significance.abs();
+        let result = if number >= 0.0 {
+            (number / sig).floor() * sig
+        } else if significance > 0.0 {
+            (number / sig).floor() * sig
+        } else {
+            (number / sig).ceil() * sig
+        };
+        CalcResult::Number(result)
+    }
+
     single_number_fn!(fn_sin, |f| Ok(f64::sin(f)));
     single_number_fn!(fn_cos, |f| Ok(f64::cos(f)));
     single_number_fn!(fn_tan, |f| Ok(f64::tan(f)));
