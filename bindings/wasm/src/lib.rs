@@ -215,6 +215,68 @@ impl Model {
         self.model.delete_column(sheet, column).map_err(to_js_error)
     }
 
+    #[wasm_bindgen(js_name = "insertRows")]
+    pub fn insert_rows(&mut self, sheet: u32, row: i32, row_count: i32) -> Result<(), JsError> {
+        if row_count <= 0 {
+            return Err(to_js_error(
+                "Cannot add a negative number of cells :)".to_string(),
+            ));
+        }
+        for i in 0..row_count {
+            self.model.insert_row(sheet, row + i).map_err(to_js_error)?;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "insertColumns")]
+    pub fn insert_columns(
+        &mut self,
+        sheet: u32,
+        column: i32,
+        column_count: i32,
+    ) -> Result<(), JsError> {
+        if column_count <= 0 {
+            return Err(to_js_error(
+                "Cannot add a negative number of cells :)".to_string(),
+            ));
+        }
+        for i in 0..column_count {
+            self.model
+                .insert_column(sheet, column + i)
+                .map_err(to_js_error)?;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "deleteRows")]
+    pub fn delete_rows(&mut self, sheet: u32, row: i32, row_count: i32) -> Result<(), JsError> {
+        if row_count <= 0 {
+            return Err(to_js_error("Please use insert rows instead".to_string()));
+        }
+        for _ in 0..row_count {
+            self.model.delete_row(sheet, row).map_err(to_js_error)?;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "deleteColumns")]
+    pub fn delete_columns(
+        &mut self,
+        sheet: u32,
+        column: i32,
+        column_count: i32,
+    ) -> Result<(), JsError> {
+        if column_count <= 0 {
+            return Err(to_js_error("Please use insert columns instead".to_string()));
+        }
+        for _ in 0..column_count {
+            self.model
+                .delete_column(sheet, column)
+                .map_err(to_js_error)?;
+        }
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = "setRowsHeight")]
     pub fn set_rows_height(
         &mut self,
