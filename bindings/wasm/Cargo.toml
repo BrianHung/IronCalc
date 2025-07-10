@@ -21,6 +21,3 @@ serde-wasm-bindgen = "0.4"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.38"
-
-[package.metadata.wasm-pack]
-wasm-opt = false
