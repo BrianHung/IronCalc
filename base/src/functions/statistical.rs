@@ -1,4 +1,5 @@
 use crate::constants::{LAST_COLUMN, LAST_ROW};
+use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
     calc_result::{CalcResult, Range},
@@ -729,5 +730,201 @@ impl Model {
             };
         }
         CalcResult::Number(product.powf(1.0 / count))
+    }
+
+    fn collect_series(
+        &mut self,
+        node: &Node,
+        cell: CellReferenceIndex,
+    ) -> Result<Vec<Option<f64>>, CalcResult> {
+        let is_reference = matches!(
+            node,
+            Node::ReferenceKind { .. } | Node::RangeKind { .. } | Node::OpRangeKind { .. }
+        );
+        match self.evaluate_node_in_context(node, cell) {
+            CalcResult::Number(v) => Ok(vec![Some(v)]),
+            CalcResult::Boolean(b) => {
+                if is_reference {
+                    Ok(vec![None])
+                } else {
+                    Ok(vec![Some(if b { 1.0 } else { 0.0 })])
+                }
+            }
+            CalcResult::String(s) => {
+                if is_reference {
+                    Ok(vec![None])
+                } else if let Ok(v) = s.parse::<f64>() {
+                    Ok(vec![Some(v)])
+                } else {
+                    Err(CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Argument cannot be cast into number".to_string(),
+                    ))
+                }
+            }
+            CalcResult::Range { left, right } => {
+                if left.sheet != right.sheet {
+                    return Err(CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Ranges are in different sheets".to_string(),
+                    ));
+                }
+                let mut values = Vec::new();
+                for row in left.row..=right.row {
+                    for column in left.column..=right.column {
+                        match self.evaluate_cell(CellReferenceIndex {
+                            sheet: left.sheet,
+                            row,
+                            column,
+                        }) {
+                            CalcResult::Number(n) => values.push(Some(n)),
+                            CalcResult::Error { .. } => {
+                                return Err(self.evaluate_cell(CellReferenceIndex {
+                                    sheet: left.sheet,
+                                    row,
+                                    column,
+                                }));
+                            }
+                            _ => values.push(None),
+                        }
+                    }
+                }
+                Ok(values)
+            }
+            CalcResult::Array(arr) => {
+                let mut values = Vec::new();
+                for row in arr {
+                    for val in row {
+                        match val {
+                            ArrayNode::Number(n) => values.push(Some(n)),
+                            ArrayNode::Boolean(b) => values.push(Some(if b { 1.0 } else { 0.0 })),
+                            ArrayNode::String(s) => match s.parse::<f64>() {
+                                Ok(v) => values.push(Some(v)),
+                                Err(_) => {
+                                    return Err(CalcResult::new_error(
+                                        Error::VALUE,
+                                        cell,
+                                        "Argument cannot be cast into number".to_string(),
+                                    ))
+                                }
+                            },
+                            ArrayNode::Error(e) => {
+                                return Err(CalcResult::Error {
+                                    error: e,
+                                    origin: cell,
+                                    message: "Error in array".to_string(),
+                                })
+                            }
+                        }
+                    }
+                }
+                Ok(values)
+            }
+            CalcResult::EmptyCell | CalcResult::EmptyArg => Ok(vec![None]),
+            error @ CalcResult::Error { .. } => Err(error),
+        }
+    }
+
+    pub(crate) fn fn_slope(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let ys = match self.collect_series(&args[0], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let xs = match self.collect_series(&args[1], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if ys.len() != xs.len() {
+            return CalcResult::new_error(
+                Error::NA,
+                cell,
+                "Ranges have different lengths".to_string(),
+            );
+        }
+        let mut pairs = Vec::new();
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut n = 0.0;
+        for (y, x) in ys.iter().zip(xs.iter()) {
+            if let (Some(yy), Some(xx)) = (y, x) {
+                pairs.push((*yy, *xx));
+                sum_x += xx;
+                sum_y += yy;
+                n += 1.0;
+            }
+        }
+        if n == 0.0 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let mean_x = sum_x / n;
+        let mean_y = sum_y / n;
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+        for (yy, xx) in pairs {
+            let dx = xx - mean_x;
+            let dy = yy - mean_y;
+            numerator += dx * dy;
+            denominator += dx * dx;
+        }
+        if denominator == 0.0 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        CalcResult::Number(numerator / denominator)
+    }
+
+    pub(crate) fn fn_intercept(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let ys = match self.collect_series(&args[0], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let xs = match self.collect_series(&args[1], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if ys.len() != xs.len() {
+            return CalcResult::new_error(
+                Error::NA,
+                cell,
+                "Ranges have different lengths".to_string(),
+            );
+        }
+        let mut pairs = Vec::new();
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut n = 0.0;
+        for (y, x) in ys.iter().zip(xs.iter()) {
+            if let (Some(yy), Some(xx)) = (y, x) {
+                pairs.push((*yy, *xx));
+                sum_x += xx;
+                sum_y += yy;
+                n += 1.0;
+            }
+        }
+        if n == 0.0 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let mean_x = sum_x / n;
+        let mean_y = sum_y / n;
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+        for (yy, xx) in pairs {
+            let dx = xx - mean_x;
+            let dy = yy - mean_y;
+            numerator += dx * dy;
+            denominator += dx * dx;
+        }
+        if denominator == 0.0 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let slope = numerator / denominator;
+        CalcResult::Number(mean_y - slope * mean_x)
     }
 }
