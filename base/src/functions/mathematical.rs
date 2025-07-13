@@ -378,6 +378,72 @@ impl Model {
         }
     }
 
+    pub(crate) fn fn_ceiling(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        if significance == 0.0 {
+            return CalcResult::Error {
+                error: Error::DIV,
+                origin: cell,
+                message: "Divide by 0".to_string(),
+            };
+        }
+        if value.signum() * significance.signum() < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid sign".to_string(),
+            };
+        }
+        if significance > 0.0 {
+            CalcResult::Number((value / significance).ceil() * significance)
+        } else {
+            CalcResult::Number((value / significance).floor() * significance)
+        }
+    }
+
+    pub(crate) fn fn_floor(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        if significance == 0.0 {
+            return CalcResult::Error {
+                error: Error::DIV,
+                origin: cell,
+                message: "Divide by 0".to_string(),
+            };
+        }
+        if value.signum() * significance.signum() < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid sign".to_string(),
+            };
+        }
+        if significance > 0.0 {
+            CalcResult::Number((value / significance).floor() * significance)
+        } else {
+            CalcResult::Number((value / significance).ceil() * significance)
+        }
+    }
+
     single_number_fn!(fn_sin, |f| Ok(f64::sin(f)));
     single_number_fn!(fn_cos, |f| Ok(f64::cos(f)));
     single_number_fn!(fn_tan, |f| Ok(f64::tan(f)));

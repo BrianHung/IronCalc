@@ -23,6 +23,7 @@ mod test_fn_minifs;
 mod test_fn_or_xor;
 mod test_fn_product;
 mod test_fn_rept;
+mod test_fn_ceiling_floor;
 mod test_fn_sum;
 mod test_fn_sumifs;
 mod test_fn_textbefore;
