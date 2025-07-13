@@ -84,8 +84,8 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | SUBTOTAL        | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUM             | <Badge type="tip" text="Available" />          | –             |
 | SUMIF           | <Badge type="tip" text="Available" />          | –             |
-| SUMIFS          | <Badge type="info" text="Not implemented yet" /> | –             |
-| SUMPRODUCT      | <Badge type="info" text="Not implemented yet" /> | –             |
+| SUMIFS          | <Badge type="tip" text="Available" />          | –             |
+| SUMPRODUCT      | <Badge type="tip" text="Available" />          | –             |
 | SUMSQ           | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUMX2MY2        | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUMX2PY2        | <Badge type="info" text="Not implemented yet" /> | –             |
