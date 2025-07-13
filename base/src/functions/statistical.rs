@@ -730,4 +730,244 @@ impl Model {
         }
         CalcResult::Number(product.powf(1.0 / count))
     }
+
+    fn get_range_bounds(
+        &mut self,
+        left: CellReferenceIndex,
+        right: CellReferenceIndex,
+        cell: CellReferenceIndex,
+    ) -> Result<(u32, i32, i32, i32, i32), CalcResult> {
+        if left.sheet != right.sheet {
+            return Err(CalcResult::new_error(
+                Error::VALUE,
+                cell,
+                "Ranges are in different sheets".to_string(),
+            ));
+        }
+        let sheet = left.sheet;
+        let row1 = left.row;
+        let mut row2 = right.row;
+        let column1 = left.column;
+        let mut column2 = right.column;
+        if row1 == 1 && row2 == LAST_ROW {
+            row2 = self
+                .workbook
+                .worksheet(sheet)
+                .map_err(|_| {
+                    CalcResult::new_error(
+                        Error::ERROR,
+                        cell,
+                        format!("Invalid worksheet index: '{sheet}'"),
+                    )
+                })?
+                .dimension()
+                .max_row;
+        }
+        if column1 == 1 && column2 == LAST_COLUMN {
+            column2 = self
+                .workbook
+                .worksheet(sheet)
+                .map_err(|_| {
+                    CalcResult::new_error(
+                        Error::ERROR,
+                        cell,
+                        format!("Invalid worksheet index: '{sheet}'"),
+                    )
+                })?
+                .dimension()
+                .max_column;
+        }
+        Ok((sheet, row1, row2, column1, column2))
+    }
+
+    fn cell_number_or_none(&self, result: CalcResult) -> Result<Option<f64>, CalcResult> {
+        match result {
+            CalcResult::Number(v) => Ok(Some(v)),
+            CalcResult::Error { .. } => Err(result),
+            _ => Ok(None),
+        }
+    }
+
+    fn calcresult_to_number(
+        &self,
+        result: CalcResult,
+        cell: CellReferenceIndex,
+    ) -> Result<f64, CalcResult> {
+        match result {
+            CalcResult::Number(f) => Ok(f),
+            CalcResult::String(s) => s.parse::<f64>().map_err(|_| {
+                CalcResult::new_error(Error::VALUE, cell, "Expecting number".to_string())
+            }),
+            CalcResult::Boolean(b) => Ok(if b { 1.0 } else { 0.0 }),
+            CalcResult::EmptyCell | CalcResult::EmptyArg => Ok(0.0),
+            error @ CalcResult::Error { .. } => Err(error),
+            CalcResult::Range { .. } | CalcResult::Array(_) => Err(CalcResult::Error {
+                error: Error::NIMPL,
+                origin: cell,
+                message: "Arrays not supported yet".to_string(),
+            }),
+        }
+    }
+
+    fn collect_pairs(
+        &mut self,
+        y_node: &Node,
+        x_node: &Node,
+        cell: CellReferenceIndex,
+    ) -> Result<(Vec<f64>, Vec<f64>), CalcResult> {
+        let y_res = self.evaluate_node_in_context(y_node, cell);
+        if y_res.is_error() {
+            return Err(y_res);
+        }
+        let x_res = self.evaluate_node_in_context(x_node, cell);
+        if x_res.is_error() {
+            return Err(x_res);
+        }
+
+        let mut ys = Vec::new();
+        let mut xs = Vec::new();
+
+        match (y_res, x_res) {
+            (
+                CalcResult::Range { left: l_y, right: r_y },
+                CalcResult::Range { left: l_x, right: r_x },
+            ) => {
+                let (sheet_y, row1_y, row2_y, col1_y, col2_y) =
+                    self.get_range_bounds(l_y, r_y, cell)?;
+                let (sheet_x, row1_x, row2_x, col1_x, col2_x) =
+                    self.get_range_bounds(l_x, r_x, cell)?;
+                let rows_y = row2_y - row1_y + 1;
+                let cols_y = col2_y - col1_y + 1;
+                let rows_x = row2_x - row1_x + 1;
+                let cols_x = col2_x - col1_x + 1;
+                if rows_y != rows_x || cols_y != cols_x {
+                    return Err(CalcResult::new_error(
+                        Error::NA,
+                        cell,
+                        "Ranges must be the same size".to_string(),
+                    ));
+                }
+                for i in 0..rows_y {
+                    for j in 0..cols_y {
+                        let y_val = self.evaluate_cell(CellReferenceIndex {
+                            sheet: sheet_y,
+                            row: row1_y + i,
+                            column: col1_y + j,
+                        });
+                        let x_val = self.evaluate_cell(CellReferenceIndex {
+                            sheet: sheet_x,
+                            row: row1_x + i,
+                            column: col1_x + j,
+                        });
+                        let y_num = self.cell_number_or_none(y_val)?;
+                        let x_num = self.cell_number_or_none(x_val)?;
+                        if let (Some(y), Some(x)) = (y_num, x_num) {
+                            ys.push(y);
+                            xs.push(x);
+                        }
+                    }
+                }
+            }
+            (CalcResult::Range { .. }, CalcResult::Number(_))
+            | (CalcResult::Number(_), CalcResult::Range { .. }) => {
+                return Err(CalcResult::new_error(
+                    Error::NA,
+                    cell,
+                    "Ranges must be the same size".to_string(),
+                ));
+            }
+            (CalcResult::Number(ny), CalcResult::Number(nx)) => {
+                ys.push(ny);
+                xs.push(nx);
+            }
+            (CalcResult::Number(ny), other) => {
+                let nx = match self.calcresult_to_number(other, cell) {
+                    Ok(f) => f,
+                    Err(e) => return Err(e),
+                };
+                ys.push(ny);
+                xs.push(nx);
+            }
+            (other, CalcResult::Number(nx)) => {
+                let ny = match self.calcresult_to_number(other, cell) {
+                    Ok(f) => f,
+                    Err(e) => return Err(e),
+                };
+                ys.push(ny);
+                xs.push(nx);
+            }
+            (other_y, other_x) => {
+                let ny = match self.calcresult_to_number(other_y, cell) {
+                    Ok(f) => f,
+                    Err(e) => return Err(e),
+                };
+                let nx = match self.calcresult_to_number(other_x, cell) {
+                    Ok(f) => f,
+                    Err(e) => return Err(e),
+                };
+                ys.push(ny);
+                xs.push(nx);
+            }
+        }
+        Ok((xs, ys))
+    }
+
+    pub(crate) fn fn_slope(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let (xs, ys) = match self.collect_pairs(&args[0], &args[1], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let n = xs.len();
+        if n < 2 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let n_f = n as f64;
+        let sum_x: f64 = xs.iter().sum();
+        let sum_y: f64 = ys.iter().sum();
+        let mean_x = sum_x / n_f;
+        let mean_y = sum_y / n_f;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            num += (x - mean_x) * (y - mean_y);
+            den += (x - mean_x).powi(2);
+        }
+        if den.abs() < f64::EPSILON {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        CalcResult::Number(num / den)
+    }
+
+    pub(crate) fn fn_intercept(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let (xs, ys) = match self.collect_pairs(&args[0], &args[1], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let n = xs.len();
+        if n < 2 {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let n_f = n as f64;
+        let sum_x: f64 = xs.iter().sum();
+        let sum_y: f64 = ys.iter().sum();
+        let mean_x = sum_x / n_f;
+        let mean_y = sum_y / n_f;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            num += (x - mean_x) * (y - mean_y);
+            den += (x - mean_x).powi(2);
+        }
+        if den.abs() < f64::EPSILON {
+            return CalcResult::new_error(Error::DIV, cell, "Division by Zero".to_string());
+        }
+        let slope = num / den;
+        CalcResult::Number(mean_y - slope * mean_x)
+    }
 }

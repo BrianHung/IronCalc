@@ -58,6 +58,7 @@ mod test_fn_fv;
 mod test_fn_type;
 mod test_frozen_rows_and_columns;
 mod test_geomean;
+mod test_fn_slope;
 mod test_get_cell_content;
 mod test_implicit_intersection;
 mod test_issue_155;
