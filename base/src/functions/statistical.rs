@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::util::{build_criteria, collect_numeric_values};
+use std::cmp::Ordering;
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -683,7 +684,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::Number(0.0);
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         let len = values.len();
         if len % 2 == 1 {
             CalcResult::Number(values[len / 2])
@@ -710,7 +711,7 @@ impl Model {
         for v in &values {
             variance += (v - mean).powi(2);
         }
-        variance /= (n as f64 - 1.0);
+        variance /= n as f64 - 1.0;
         CalcResult::Number(variance.sqrt())
     }
 
