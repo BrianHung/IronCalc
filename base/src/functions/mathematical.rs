@@ -8,6 +8,13 @@ use crate::{
 };
 use std::f64::consts::PI;
 
+/// Specifies which rounding behaviour to apply when calling `round_to_multiple`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoundKind {
+    Ceiling,
+    Floor,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn random() -> f64 {
     rand::random()
@@ -378,18 +385,32 @@ impl Model {
         }
     }
 
-    pub(crate) fn fn_ceiling(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+    /// Helper used by CEILING and FLOOR to round a value to the nearest multiple of
+    /// `significance`. When `is_ceiling` is true the behaviour matches CEILING (i.e. use
+    /// `ceil` when `significance` is positive, `floor` when it's negative). When false it
+    /// matches FLOOR (the opposite rounding direction).
+    fn round_to_multiple(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+        kind: RoundKind,
+    ) -> CalcResult {
+        // 1. Validate argument count.
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);
         }
+
+        // 2. Get numeric arguments, propagating errors.
         let value = match self.get_number(&args[0], cell) {
-            Ok(f) => f,
-            Err(s) => return s,
+            Ok(v) => v,
+            Err(e) => return e,
         };
         let significance = match self.get_number(&args[1], cell) {
-            Ok(f) => f,
-            Err(s) => return s,
+            Ok(v) => v,
+            Err(e) => return e,
         };
+
+        // 3. Error conditions identical for CEILING and FLOOR.
         if significance == 0.0 {
             return CalcResult::Error {
                 error: Error::DIV,
@@ -404,44 +425,25 @@ impl Model {
                 message: "Invalid sign".to_string(),
             };
         }
-        if significance > 0.0 {
-            CalcResult::Number((value / significance).ceil() * significance)
+
+        // 4. Perform rounding.
+        let quotient = value / significance;
+        let use_ceil = (significance > 0.0) == matches!(kind, RoundKind::Ceiling);
+        let rounded_multiple = if use_ceil {
+            quotient.ceil() * significance
         } else {
-            CalcResult::Number((value / significance).floor() * significance)
-        }
+            quotient.floor() * significance
+        };
+
+        CalcResult::Number(rounded_multiple)
+    }
+
+    pub(crate) fn fn_ceiling(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        self.round_to_multiple(args, cell, RoundKind::Ceiling)
     }
 
     pub(crate) fn fn_floor(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        if args.len() != 2 {
-            return CalcResult::new_args_number_error(cell);
-        }
-        let value = match self.get_number(&args[0], cell) {
-            Ok(f) => f,
-            Err(s) => return s,
-        };
-        let significance = match self.get_number(&args[1], cell) {
-            Ok(f) => f,
-            Err(s) => return s,
-        };
-        if significance == 0.0 {
-            return CalcResult::Error {
-                error: Error::DIV,
-                origin: cell,
-                message: "Divide by 0".to_string(),
-            };
-        }
-        if value.signum() * significance.signum() < 0.0 {
-            return CalcResult::Error {
-                error: Error::NUM,
-                origin: cell,
-                message: "Invalid sign".to_string(),
-            };
-        }
-        if significance > 0.0 {
-            CalcResult::Number((value / significance).floor() * significance)
-        } else {
-            CalcResult::Number((value / significance).ceil() * significance)
-        }
+        self.round_to_multiple(args, cell, RoundKind::Floor)
     }
 
     single_number_fn!(fn_sin, |f| Ok(f64::sin(f)));
