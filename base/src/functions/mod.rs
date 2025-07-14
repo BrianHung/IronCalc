@@ -59,9 +59,11 @@ pub enum Function {
     Ln,
     Max,
     Min,
+    Mod,
     Pi,
     Power,
     Product,
+    Quotient,
     Rand,
     Randbetween,
     Round,
@@ -253,7 +255,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 200> {
         [
             Function::And,
             Function::False,
@@ -289,7 +291,9 @@ impl Function {
             Function::Power,
             Function::Max,
             Function::Min,
+            Function::Mod,
             Function::Product,
+            Function::Quotient,
             Function::Rand,
             Function::Randbetween,
             Function::Round,
@@ -546,7 +550,9 @@ impl Function {
 
             "MAX" => Some(Function::Max),
             "MIN" => Some(Function::Min),
+            "MOD" => Some(Function::Mod),
             "PRODUCT" => Some(Function::Product),
+            "QUOTIENT" => Some(Function::Quotient),
             "RAND" => Some(Function::Rand),
             "RANDBETWEEN" => Some(Function::Randbetween),
             "ROUND" => Some(Function::Round),
@@ -767,7 +773,9 @@ impl fmt::Display for Function {
             Function::Power => write!(f, "POWER"),
             Function::Max => write!(f, "MAX"),
             Function::Min => write!(f, "MIN"),
+            Function::Mod => write!(f, "MOD"),
             Function::Product => write!(f, "PRODUCT"),
+            Function::Quotient => write!(f, "QUOTIENT"),
             Function::Rand => write!(f, "RAND"),
             Function::Randbetween => write!(f, "RANDBETWEEN"),
             Function::Round => write!(f, "ROUND"),
@@ -1003,7 +1011,9 @@ impl Model {
 
             Function::Max => self.fn_max(args, cell),
             Function::Min => self.fn_min(args, cell),
+            Function::Mod => self.fn_mod(args, cell),
             Function::Product => self.fn_product(args, cell),
+            Function::Quotient => self.fn_quotient(args, cell),
             Function::Rand => self.fn_rand(args, cell),
             Function::Randbetween => self.fn_randbetween(args, cell),
             Function::Round => self.fn_round(args, cell),

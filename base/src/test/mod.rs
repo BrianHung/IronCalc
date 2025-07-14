@@ -22,6 +22,7 @@ mod test_fn_maxifs;
 mod test_fn_minifs;
 mod test_fn_or_xor;
 mod test_fn_product;
+mod test_fn_mod;
 mod test_fn_rept;
 mod test_fn_sum;
 mod test_fn_sumifs;
