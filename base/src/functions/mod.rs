@@ -142,6 +142,10 @@ pub enum Function {
     Maxifs,
     Minifs,
     Geomean,
+    PercentileExc,
+    PercentileInc,
+    PercentrankExc,
+    PercentrankInc,
 
     // Date and time
     Date,
@@ -250,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 195> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -351,6 +355,10 @@ impl Function {
             Function::Maxifs,
             Function::Minifs,
             Function::Geomean,
+            Function::PercentileExc,
+            Function::PercentileInc,
+            Function::PercentrankExc,
+            Function::PercentrankInc,
             Function::Year,
             Function::Day,
             Function::Month,
@@ -470,6 +478,10 @@ impl Function {
             Function::Unicode => "_xlfn.UNICODE".to_string(),
             Function::Rri => "_xlfn.RRI".to_string(),
             Function::Pduration => "_xlfn.PDURATION".to_string(),
+            Function::PercentileExc => "_xlfn.PERCENTILE.EXC".to_string(),
+            Function::PercentileInc => "_xlfn.PERCENTILE.INC".to_string(),
+            Function::PercentrankExc => "_xlfn.PERCENTRANK.EXC".to_string(),
+            Function::PercentrankInc => "_xlfn.PERCENTRANK.INC".to_string(),
             Function::Bitand => "_xlfn.BITAND".to_string(),
             Function::Bitor => "_xlfn.BITOR".to_string(),
             Function::Bitxor => "_xlfn.BITXOR".to_string(),
@@ -615,6 +627,10 @@ impl Function {
             "MAXIFS" | "_XLFN.MAXIFS" => Some(Function::Maxifs),
             "MINIFS" | "_XLFN.MINIFS" => Some(Function::Minifs),
             "GEOMEAN" => Some(Function::Geomean),
+            "PERCENTILE.EXC" | "_XLFN.PERCENTILE.EXC" => Some(Function::PercentileExc),
+            "PERCENTILE.INC" | "_XLFN.PERCENTILE.INC" => Some(Function::PercentileInc),
+            "PERCENTRANK.EXC" | "_XLFN.PERCENTRANK.EXC" => Some(Function::PercentrankExc),
+            "PERCENTRANK.INC" | "_XLFN.PERCENTRANK.INC" => Some(Function::PercentrankInc),
             // Date and Time
             "YEAR" => Some(Function::Year),
             "DAY" => Some(Function::Day),
@@ -823,6 +839,10 @@ impl fmt::Display for Function {
             Function::Maxifs => write!(f, "MAXIFS"),
             Function::Minifs => write!(f, "MINIFS"),
             Function::Geomean => write!(f, "GEOMEAN"),
+            Function::PercentileExc => write!(f, "PERCENTILE.EXC"),
+            Function::PercentileInc => write!(f, "PERCENTILE.INC"),
+            Function::PercentrankExc => write!(f, "PERCENTRANK.EXC"),
+            Function::PercentrankInc => write!(f, "PERCENTRANK.INC"),
             Function::Year => write!(f, "YEAR"),
             Function::Day => write!(f, "DAY"),
             Function::Month => write!(f, "MONTH"),
@@ -1060,6 +1080,10 @@ impl Model {
             Function::Maxifs => self.fn_maxifs(args, cell),
             Function::Minifs => self.fn_minifs(args, cell),
             Function::Geomean => self.fn_geomean(args, cell),
+            Function::PercentileExc => self.fn_percentile_exc(args, cell),
+            Function::PercentileInc => self.fn_percentile_inc(args, cell),
+            Function::PercentrankExc => self.fn_percentrank_exc(args, cell),
+            Function::PercentrankInc => self.fn_percentrank_inc(args, cell),
             // Date and Time
             Function::Year => self.fn_year(args, cell),
             Function::Day => self.fn_day(args, cell),

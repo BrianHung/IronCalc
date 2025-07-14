@@ -571,6 +571,14 @@ fn args_signature_xnpv(arg_count: usize) -> Vec<Signature> {
     }
 }
 
+fn args_signature_vector_scalar(arg_count: usize) -> Vec<Signature> {
+    if arg_count == 2 {
+        vec![Signature::Vector, Signature::Scalar]
+    } else {
+        vec![Signature::Error; arg_count]
+    }
+}
+
 // FIXME: This is terrible duplications of efforts. We use the signature in at least three different places:
 // 1. When computing the function
 // 2. Checking the arguments to see if we need to insert the implicit intersection operator
@@ -778,6 +786,26 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Formulatext => args_signature_scalars(arg_count, 1, 0),
         Function::Unicode => args_signature_scalars(arg_count, 1, 0),
         Function::Geomean => vec![Signature::Vector; arg_count],
+        Function::PercentileExc => args_signature_vector_scalar(arg_count),
+        Function::PercentileInc => args_signature_vector_scalar(arg_count),
+        Function::PercentrankExc => {
+            if arg_count == 2 {
+                vec![Signature::Vector, Signature::Scalar]
+            } else if arg_count == 3 {
+                vec![Signature::Vector, Signature::Scalar, Signature::Scalar]
+            } else {
+                vec![Signature::Error; arg_count]
+            }
+        }
+        Function::PercentrankInc => {
+            if arg_count == 2 {
+                vec![Signature::Vector, Signature::Scalar]
+            } else if arg_count == 3 {
+                vec![Signature::Vector, Signature::Scalar, Signature::Scalar]
+            } else {
+                vec![Signature::Error; arg_count]
+            }
+        }
     }
 }
 
@@ -980,5 +1008,9 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Eomonth => scalar_arguments(args),
         Function::Formulatext => not_implemented(args),
         Function::Geomean => not_implemented(args),
+        Function::PercentileExc => not_implemented(args),
+        Function::PercentileInc => not_implemented(args),
+        Function::PercentrankExc => not_implemented(args),
+        Function::PercentrankInc => not_implemented(args),
     }
 }

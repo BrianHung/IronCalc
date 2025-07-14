@@ -62,6 +62,7 @@ mod test_get_cell_content;
 mod test_implicit_intersection;
 mod test_issue_155;
 mod test_percentage;
+mod test_percentile;
 mod test_set_functions_error_handling;
 mod test_today;
 mod test_types;
