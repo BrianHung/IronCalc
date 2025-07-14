@@ -1,6 +1,8 @@
 use chrono::DateTime;
 use chrono::Datelike;
 use chrono::Months;
+use chrono::NaiveDateTime;
+use chrono::NaiveTime;
 use chrono::Timelike;
 
 use crate::constants::MAXIMUM_DATE_SERIAL_NUMBER;
@@ -13,6 +15,31 @@ use crate::{
     calc_result::CalcResult, constants::EXCEL_DATE_BASE, expressions::parser::Node,
     expressions::token::Error, formatter::dates::from_excel_date, model::Model,
 };
+
+fn parse_time_string(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let patterns_time = ["%H:%M:%S", "%H:%M", "%I:%M %p", "%I %p", "%I:%M:%S %p"];
+    for p in patterns_time {
+        if let Ok(t) = NaiveTime::parse_from_str(text, p) {
+            return Some(t.num_seconds_from_midnight() as f64 / 86_400.0);
+        }
+    }
+    let patterns_dt = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ];
+    for p in patterns_dt {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(text, p) {
+            return Some(dt.time().num_seconds_from_midnight() as f64 / 86_400.0);
+        }
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(text) {
+        return Some(dt.time().num_seconds_from_midnight() as f64 / 86_400.0);
+    }
+    None
+}
 
 impl Model {
     pub(crate) fn fn_day(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -306,5 +333,111 @@ impl Model {
         let days = (local_time.num_seconds_from_midnight() as f64) / (60.0 * 60.0 * 24.0);
 
         CalcResult::Number(days_from_1900 as f64 + days.fract())
+    }
+
+    pub(crate) fn fn_time(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 3 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let hour = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let minute = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let second = match self.get_number(&args[2], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if hour < 0.0 || minute < 0.0 || second < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid time".to_string(),
+            };
+        }
+        let total_seconds = hour.floor() * 3600.0 + minute.floor() * 60.0 + second.floor();
+        let day_seconds = 24.0 * 3600.0;
+        let secs = total_seconds.rem_euclid(day_seconds);
+        CalcResult::Number(secs / day_seconds)
+    }
+
+    pub(crate) fn fn_timevalue(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let text = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match parse_time_string(&text) {
+            Some(value) => CalcResult::Number(value),
+            None => CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid time".to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn fn_hour(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if value < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid time".to_string(),
+            };
+        }
+        let hours = (value.rem_euclid(1.0) * 24.0).floor();
+        CalcResult::Number(hours)
+    }
+
+    pub(crate) fn fn_minute(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if value < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid time".to_string(),
+            };
+        }
+        let total_seconds = (value.rem_euclid(1.0) * 86400.0).floor();
+        let minutes = ((total_seconds / 60.0) as i64 % 60) as f64;
+        CalcResult::Number(minutes)
+    }
+
+    pub(crate) fn fn_second(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if value < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Invalid time".to_string(),
+            };
+        }
+        let total_seconds = (value.rem_euclid(1.0) * 86400.0).floor();
+        let seconds = (total_seconds as i64 % 60) as f64;
+        CalcResult::Number(seconds)
     }
 }
