@@ -20,7 +20,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | ISEVEN     | <Badge type="tip" text="Available" />          | –             |
 | ISFORMULA  | <Badge type="tip" text="Available" />          | –             |
 | ISLOGICAL  | <Badge type="tip" text="Available" />          | –             |
-| ISNA       | <Badge type="info" text="Not implemented yet" /> | –             |
+| ISNA       | <Badge type="tip" text="Available" />          | –
 | ISNONTEXT  | <Badge type="tip" text="Available" />          | –             |
 | ISNUMBER   | <Badge type="tip" text="Available" />          | –             |
 | ISODD      | <Badge type="tip" text="Available" />          | –             |
