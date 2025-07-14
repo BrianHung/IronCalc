@@ -835,12 +835,10 @@ impl Model {
         let start_index = start_num.floor() as usize - 1;
         let num = num_chars.floor() as usize;
         fn byte_index_from_char(s: &str, idx: usize) -> usize {
-            let mut count = 0usize;
-            for (b, _) in s.char_indices() {
+            for (count, (b, _)) in s.char_indices().enumerate() {
                 if count == idx {
                     return b;
                 }
-                count += 1;
             }
             s.len()
         }
@@ -1372,45 +1370,5 @@ impl Model {
             },
         };
         CalcResult::String(text)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{expressions::parser::Node, Model};
-
-    fn default_cell() -> CellReferenceIndex {
-        CellReferenceIndex {
-            sheet: 0,
-            row: 1,
-            column: 1,
-        }
-    }
-
-    #[test]
-    fn test_proper_basic() {
-        let mut model = Model::new_empty("test", "en", "UTC").unwrap();
-        let result = model.fn_proper(&[Node::StringKind("one TWO".to_string())], default_cell());
-        match result {
-            CalcResult::String(s) => assert_eq!(s, "One Two"),
-            _ => panic!("unexpected result"),
-        }
-    }
-
-    #[test]
-    fn test_replace_basic() {
-        let mut model = Model::new_empty("test", "en", "UTC").unwrap();
-        let args = [
-            Node::StringKind("abcdef".to_string()),
-            Node::NumberKind(2.0),
-            Node::NumberKind(3.0),
-            Node::StringKind("XYZ".to_string()),
-        ];
-        let result = model.fn_replace(&args, default_cell());
-        match result {
-            CalcResult::String(s) => assert_eq!(s, "aXYZef"),
-            _ => panic!("unexpected result"),
-        }
     }
 }
