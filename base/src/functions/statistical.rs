@@ -730,4 +730,96 @@ impl Model {
         }
         CalcResult::Number(product.powf(1.0 / count))
     }
+
+    pub(crate) fn fn_large(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let mut values = Vec::new();
+        match self.evaluate_node_in_context(&args[0], cell) {
+            CalcResult::Number(v) => values.push(v),
+            CalcResult::Range { left, right } => {
+                if left.sheet != right.sheet {
+                    return CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Ranges are in different sheets".to_string(),
+                    );
+                }
+                for row in left.row..=right.row {
+                    for column in left.column..=right.column {
+                        match self.evaluate_cell(CellReferenceIndex {
+                            sheet: left.sheet,
+                            row,
+                            column,
+                        }) {
+                            CalcResult::Number(v) => values.push(v),
+                            error @ CalcResult::Error { .. } => return error,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            error @ CalcResult::Error { .. } => return error,
+            _ => {}
+        }
+
+        let k = match self.get_number(&args[1], cell) {
+            Ok(v) => v as usize,
+            Err(e) => return e,
+        };
+
+        if k == 0 || k > values.len() {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
+        }
+        values.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        CalcResult::Number(values[k - 1])
+    }
+
+    pub(crate) fn fn_small(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let mut values = Vec::new();
+        match self.evaluate_node_in_context(&args[0], cell) {
+            CalcResult::Number(v) => values.push(v),
+            CalcResult::Range { left, right } => {
+                if left.sheet != right.sheet {
+                    return CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Ranges are in different sheets".to_string(),
+                    );
+                }
+                for row in left.row..=right.row {
+                    for column in left.column..=right.column {
+                        match self.evaluate_cell(CellReferenceIndex {
+                            sheet: left.sheet,
+                            row,
+                            column,
+                        }) {
+                            CalcResult::Number(v) => values.push(v),
+                            error @ CalcResult::Error { .. } => return error,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            error @ CalcResult::Error { .. } => return error,
+            _ => {}
+        }
+
+        let k = match self.get_number(&args[1], cell) {
+            Ok(v) => v as usize,
+            Err(e) => return e,
+        };
+
+        if k == 0 || k > values.len() {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        CalcResult::Number(values[k - 1])
+    }
 }
