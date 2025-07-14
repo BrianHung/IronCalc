@@ -1,8 +1,6 @@
 use chrono::DateTime;
 use chrono::Datelike;
-use chrono::Duration;
 use chrono::Months;
-use chrono::NaiveDate;
 use chrono::Timelike;
 
 use crate::constants::MAXIMUM_DATE_SERIAL_NUMBER;
@@ -555,35 +553,58 @@ impl Model {
                 (months % 12).abs() as f64
             }
             "YD" => {
+                // Build a comparable date in the end year. If the day does not exist (e.g. 30-Feb),
+                // fall back to the last valid day of that month.
+
+                // Helper to create a date or early-return with #NUM! if impossible
+                let make_date = |y: i32, m: u32, d: u32| -> Result<chrono::NaiveDate, CalcResult> {
+                    match chrono::NaiveDate::from_ymd_opt(y, m, d) {
+                        Some(dt) => Ok(dt),
+                        None => Err(CalcResult::Error {
+                            error: Error::NUM,
+                            origin: cell,
+                            message: "Invalid date".to_string(),
+                        }),
+                    }
+                };
+
                 let mut start_adj =
                     match chrono::NaiveDate::from_ymd_opt(end.year(), start.month(), start.day()) {
                         Some(d) => d,
                         None => {
-                            let days_in_month =
-                                chrono::NaiveDate::from_ymd_opt(end.year(), start.month(), 1)
-                                    .unwrap()
-                                    .with_month(start.month() % 12 + 1)
-                                    .unwrap_or_else(|| {
-                                        chrono::NaiveDate::from_ymd_opt(end.year() + 1, 1, 1)
-                                            .unwrap()
-                                    })
-                                    - chrono::Duration::days(1);
-                            chrono::NaiveDate::from_ymd_opt(
-                                end.year(),
-                                start.month(),
-                                days_in_month.day(),
-                            )
-                            .unwrap()
+                            // Compute last day of the target month
+                            let (next_year, next_month) = if start.month() == 12 {
+                                (end.year() + 1, 1)
+                            } else {
+                                (end.year(), start.month() + 1)
+                            };
+                            let first_of_next_month = match make_date(next_year, next_month, 1) {
+                                Ok(d) => d,
+                                Err(e) => return e,
+                            };
+                            let last_day_of_month = first_of_next_month - chrono::Duration::days(1);
+                            match make_date(end.year(), start.month(), last_day_of_month.day()) {
+                                Ok(d) => d,
+                                Err(e) => return e,
+                            }
                         }
                     };
+
+                // If the adjusted date is after the end date, shift one year back.
                 if start_adj > end {
-                    start_adj =
-                        chrono::NaiveDate::from_ymd_opt(end.year() - 1, start.month(), start.day())
-                            .unwrap_or_else(|| {
-                                chrono::NaiveDate::from_ymd_opt(end.year() - 1, start.month(), 1)
-                                    .unwrap()
-                            });
+                    start_adj = match chrono::NaiveDate::from_ymd_opt(
+                        end.year() - 1,
+                        start.month(),
+                        start.day(),
+                    ) {
+                        Some(d) => d,
+                        None => match make_date(end.year() - 1, start.month(), 1) {
+                            Ok(d) => d,
+                            Err(e) => return e,
+                        },
+                    };
                 }
+
                 (end - start_adj).num_days() as f64
             }
             "MD" => {
