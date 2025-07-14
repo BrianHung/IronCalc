@@ -773,7 +773,7 @@ impl Model {
         if k == 0 || k > values.len() {
             return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
         }
-        values.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        values.sort_by(|a, b| b.total_cmp(a));
         CalcResult::Number(values[k - 1])
     }
 
@@ -819,7 +819,7 @@ impl Model {
         if k == 0 || k > values.len() {
             return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.total_cmp(b));
         CalcResult::Number(values[k - 1])
     }
 }
