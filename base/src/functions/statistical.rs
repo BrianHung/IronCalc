@@ -8,7 +8,7 @@ use crate::{
     model::Model,
 };
 
-use super::util::build_criteria;
+use super::util::{build_criteria, collect_series};
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -732,110 +732,17 @@ impl Model {
         CalcResult::Number(product.powf(1.0 / count))
     }
 
-    fn collect_series(
-        &mut self,
-        node: &Node,
-        cell: CellReferenceIndex,
-    ) -> Result<Vec<Option<f64>>, CalcResult> {
-        let is_reference = matches!(
-            node,
-            Node::ReferenceKind { .. } | Node::RangeKind { .. } | Node::OpRangeKind { .. }
-        );
-        match self.evaluate_node_in_context(node, cell) {
-            CalcResult::Number(v) => Ok(vec![Some(v)]),
-            CalcResult::Boolean(b) => {
-                if is_reference {
-                    Ok(vec![None])
-                } else {
-                    Ok(vec![Some(if b { 1.0 } else { 0.0 })])
-                }
-            }
-            CalcResult::String(s) => {
-                if is_reference {
-                    Ok(vec![None])
-                } else if let Ok(v) = s.parse::<f64>() {
-                    Ok(vec![Some(v)])
-                } else {
-                    Err(CalcResult::new_error(
-                        Error::VALUE,
-                        cell,
-                        "Argument cannot be cast into number".to_string(),
-                    ))
-                }
-            }
-            CalcResult::Range { left, right } => {
-                if left.sheet != right.sheet {
-                    return Err(CalcResult::new_error(
-                        Error::VALUE,
-                        cell,
-                        "Ranges are in different sheets".to_string(),
-                    ));
-                }
-                let mut values = Vec::new();
-                for row in left.row..=right.row {
-                    for column in left.column..=right.column {
-                        match self.evaluate_cell(CellReferenceIndex {
-                            sheet: left.sheet,
-                            row,
-                            column,
-                        }) {
-                            CalcResult::Number(n) => values.push(Some(n)),
-                            CalcResult::Error { .. } => {
-                                return Err(self.evaluate_cell(CellReferenceIndex {
-                                    sheet: left.sheet,
-                                    row,
-                                    column,
-                                }));
-                            }
-                            _ => values.push(None),
-                        }
-                    }
-                }
-                Ok(values)
-            }
-            CalcResult::Array(arr) => {
-                let mut values = Vec::new();
-                for row in arr {
-                    for val in row {
-                        match val {
-                            ArrayNode::Number(n) => values.push(Some(n)),
-                            ArrayNode::Boolean(b) => values.push(Some(if b { 1.0 } else { 0.0 })),
-                            ArrayNode::String(s) => match s.parse::<f64>() {
-                                Ok(v) => values.push(Some(v)),
-                                Err(_) => {
-                                    return Err(CalcResult::new_error(
-                                        Error::VALUE,
-                                        cell,
-                                        "Argument cannot be cast into number".to_string(),
-                                    ))
-                                }
-                            },
-                            ArrayNode::Error(e) => {
-                                return Err(CalcResult::Error {
-                                    error: e,
-                                    origin: cell,
-                                    message: "Error in array".to_string(),
-                                })
-                            }
-                        }
-                    }
-                }
-                Ok(values)
-            }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => Ok(vec![None]),
-            error @ CalcResult::Error { .. } => Err(error),
-        }
-    }
+    // collect_series method moved to functions::util::collect_series
 
     pub(crate) fn fn_slope(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);
         }
-        let ys = match self.collect_series(&args[0], cell) {
+        let ys = match collect_series(self, &args[0], cell) {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let xs = match self.collect_series(&args[1], cell) {
+        let xs = match collect_series(self, &args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -881,11 +788,11 @@ impl Model {
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);
         }
-        let ys = match self.collect_series(&args[0], cell) {
+        let ys = match collect_series(self, &args[0], cell) {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let xs = match self.collect_series(&args[1], cell) {
+        let xs = match collect_series(self, &args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
         };
