@@ -350,7 +350,12 @@ impl Model {
         if node.is_none() {
             return Ok(weekend);
         }
-        match self.evaluate_node_in_context(node.unwrap(), cell) {
+        let node_ref = match node {
+            Some(n) => n,
+            None => return Ok(weekend),
+        };
+
+        match self.evaluate_node_in_context(node_ref, cell) {
             CalcResult::Number(n) => {
                 let code = n.trunc() as i32;
                 if (n - n.trunc()).abs() > f64::EPSILON {
