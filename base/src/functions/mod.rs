@@ -155,6 +155,14 @@ pub enum Function {
     Now,
     Today,
     Year,
+    Days,
+    Days360,
+    Weekday,
+    Weeknum,
+    Workday,
+    WorkdayIntl,
+    Yearfrac,
+    Isoweeknum,
 
     // Financial
     Cumipmt,
@@ -253,7 +261,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 206> {
         [
             Function::And,
             Function::False,
@@ -365,6 +373,14 @@ impl Function {
             Function::Edate,
             Function::Today,
             Function::Now,
+            Function::Days,
+            Function::Days360,
+            Function::Weekday,
+            Function::Weeknum,
+            Function::Workday,
+            Function::WorkdayIntl,
+            Function::Yearfrac,
+            Function::Isoweeknum,
             Function::Pmt,
             Function::Pv,
             Function::Rate,
@@ -634,6 +650,14 @@ impl Function {
             "EDATE" => Some(Function::Edate),
             "TODAY" => Some(Function::Today),
             "NOW" => Some(Function::Now),
+            "DAYS" => Some(Function::Days),
+            "DAYS360" => Some(Function::Days360),
+            "WEEKDAY" => Some(Function::Weekday),
+            "WEEKNUM" => Some(Function::Weeknum),
+            "WORKDAY" => Some(Function::Workday),
+            "WORKDAY.INTL" => Some(Function::WorkdayIntl),
+            "YEARFRAC" => Some(Function::Yearfrac),
+            "ISOWEEKNUM" => Some(Function::Isoweeknum),
             // Financial
             "PMT" => Some(Function::Pmt),
             "PV" => Some(Function::Pv),
@@ -844,6 +868,14 @@ impl fmt::Display for Function {
             Function::Edate => write!(f, "EDATE"),
             Function::Today => write!(f, "TODAY"),
             Function::Now => write!(f, "NOW"),
+            Function::Days => write!(f, "DAYS"),
+            Function::Days360 => write!(f, "DAYS360"),
+            Function::Weekday => write!(f, "WEEKDAY"),
+            Function::Weeknum => write!(f, "WEEKNUM"),
+            Function::Workday => write!(f, "WORKDAY"),
+            Function::WorkdayIntl => write!(f, "WORKDAY.INTL"),
+            Function::Yearfrac => write!(f, "YEARFRAC"),
+            Function::Isoweeknum => write!(f, "ISOWEEKNUM"),
             Function::Pmt => write!(f, "PMT"),
             Function::Pv => write!(f, "PV"),
             Function::Rate => write!(f, "RATE"),
@@ -1085,6 +1117,14 @@ impl Model {
             Function::Edate => self.fn_edate(args, cell),
             Function::Today => self.fn_today(args, cell),
             Function::Now => self.fn_now(args, cell),
+            Function::Days => self.fn_days(args, cell),
+            Function::Days360 => self.fn_days360(args, cell),
+            Function::Weekday => self.fn_weekday(args, cell),
+            Function::Weeknum => self.fn_weeknum(args, cell),
+            Function::Workday => self.fn_workday(args, cell),
+            Function::WorkdayIntl => self.fn_workday_intl(args, cell),
+            Function::Yearfrac => self.fn_yearfrac(args, cell),
+            Function::Isoweeknum => self.fn_isoweeknum(args, cell),
             // Financial
             Function::Pmt => self.fn_pmt(args, cell),
             Function::Pv => self.fn_pv(args, cell),
