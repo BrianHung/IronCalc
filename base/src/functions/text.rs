@@ -382,6 +382,59 @@ impl Model {
         CalcResult::new_args_number_error(cell)
     }
 
+    pub(crate) fn fn_proper(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() == 1 {
+            let text = match self.evaluate_node_in_context(&args[0], cell) {
+                CalcResult::Number(v) => format!("{v}"),
+                CalcResult::String(v) => v,
+                CalcResult::Boolean(b) => {
+                    if b {
+                        "TRUE".to_string()
+                    } else {
+                        "FALSE".to_string()
+                    }
+                }
+                error @ CalcResult::Error { .. } => return error,
+                CalcResult::Range { .. } => {
+                    return CalcResult::Error {
+                        error: Error::NIMPL,
+                        origin: cell,
+                        message: "Implicit Intersection not implemented".to_string(),
+                    };
+                }
+                CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
+                CalcResult::Array(_) => {
+                    return CalcResult::Error {
+                        error: Error::NIMPL,
+                        origin: cell,
+                        message: "Arrays not supported yet".to_string(),
+                    }
+                }
+            };
+            let mut result = String::new();
+            let mut start_word = true;
+            for ch in text.chars() {
+                if ch.is_alphabetic() {
+                    if start_word {
+                        for c in ch.to_uppercase() {
+                            result.push(c);
+                        }
+                    } else {
+                        for c in ch.to_lowercase() {
+                            result.push(c);
+                        }
+                    }
+                    start_word = false;
+                } else {
+                    result.push(ch);
+                    start_word = true;
+                }
+            }
+            return CalcResult::String(result);
+        }
+        CalcResult::new_args_number_error(cell)
+    }
+
     pub(crate) fn fn_unicode(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             let s = match self.evaluate_node_in_context(&args[0], cell) {
@@ -749,6 +802,56 @@ impl Model {
                 count += 1;
             }
         }
+        CalcResult::String(result)
+    }
+
+    pub(crate) fn fn_replace(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let old_text = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let start_num = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let num_chars = match self.get_number(&args[2], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let new_text = match self.get_string(&args[3], cell) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        if start_num < 1.0 || num_chars < 0.0 {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid value".to_string(),
+            };
+        }
+        let start_index = start_num.floor() as usize - 1;
+        let num = num_chars.floor() as usize;
+        fn byte_index_from_char(s: &str, idx: usize) -> usize {
+            let mut count = 0usize;
+            for (b, _) in s.char_indices() {
+                if count == idx {
+                    return b;
+                }
+                count += 1;
+            }
+            s.len()
+        }
+        let start_byte = byte_index_from_char(&old_text, start_index);
+        let end_byte = byte_index_from_char(&old_text, start_index.saturating_add(num));
+        let result = format!(
+            "{}{}{}",
+            &old_text[..start_byte],
+            new_text,
+            &old_text[end_byte..]
+        );
         CalcResult::String(result)
     }
 
@@ -1269,5 +1372,45 @@ impl Model {
             },
         };
         CalcResult::String(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{expressions::parser::Node, Model};
+
+    fn default_cell() -> CellReferenceIndex {
+        CellReferenceIndex {
+            sheet: 0,
+            row: 1,
+            column: 1,
+        }
+    }
+
+    #[test]
+    fn test_proper_basic() {
+        let mut model = Model::new_empty("test", "en", "UTC").unwrap();
+        let result = model.fn_proper(&[Node::StringKind("one TWO".to_string())], default_cell());
+        match result {
+            CalcResult::String(s) => assert_eq!(s, "One Two"),
+            _ => panic!("unexpected result"),
+        }
+    }
+
+    #[test]
+    fn test_replace_basic() {
+        let mut model = Model::new_empty("test", "en", "UTC").unwrap();
+        let args = [
+            Node::StringKind("abcdef".to_string()),
+            Node::NumberKind(2.0),
+            Node::NumberKind(3.0),
+            Node::StringKind("XYZ".to_string()),
+        ];
+        let result = model.fn_replace(&args, default_cell());
+        match result {
+            CalcResult::String(s) => assert_eq!(s, "aXYZef"),
+            _ => panic!("unexpected result"),
+        }
     }
 }
