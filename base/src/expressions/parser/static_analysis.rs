@@ -778,6 +778,8 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Formulatext => args_signature_scalars(arg_count, 1, 0),
         Function::Unicode => args_signature_scalars(arg_count, 1, 0),
         Function::Geomean => vec![Signature::Vector; arg_count],
+        Function::Networkdays => args_signature_scalars(arg_count, 2, 1),
+        Function::NetworkdaysIntl => args_signature_scalars(arg_count, 2, 2),
     }
 }
 
@@ -980,5 +982,7 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Eomonth => scalar_arguments(args),
         Function::Formulatext => not_implemented(args),
         Function::Geomean => not_implemented(args),
+        Function::Networkdays => not_implemented(args),
+        Function::NetworkdaysIntl => not_implemented(args),
     }
 }
