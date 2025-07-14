@@ -29,8 +29,8 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | LEFTB       | <Badge type="info" text="Not implemented yet" /> | –             |
 | LEN         | <Badge type="tip" text="Available" />          | –             |
 | LENB        | <Badge type="info" text="Not implemented yet" /> | –             |
-| LOWER       | <Badge type="info" text="Not implemented yet" /> | –             |
-| MID         | <Badge type="info" text="Not implemented yet" /> | –             |
+| LOWER       | <Badge type="tip" text="Available" />          | –             |
+| MID         | <Badge type="tip" text="Available" />          | –             |
 | MIDB        | <Badge type="info" text="Not implemented yet" /> | –             |
 | NUMBERVALUE | <Badge type="info" text="Not implemented yet" /> | –             |
 | PHONETIC    | <Badge type="info" text="Not implemented yet" /> | –             |
