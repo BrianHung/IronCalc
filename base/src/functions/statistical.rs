@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::util::build_criteria;
+use std::cmp::Ordering;
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -841,7 +842,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         let k = match self.get_number(&args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
@@ -855,7 +856,11 @@ impl Model {
         let g = pos - m;
         let idx = (m as usize).saturating_sub(1);
         if idx >= values.len() - 1 {
-            return CalcResult::Number(*values.last().unwrap());
+            let last_value = match values.last() {
+                Some(&v) => v,
+                None => return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string()),
+            };
+            return CalcResult::Number(last_value);
         }
         let result = values[idx] + g * (values[idx + 1] - values[idx]);
         CalcResult::Number(result)
@@ -876,7 +881,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         let k = match self.get_number(&args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
@@ -893,7 +898,11 @@ impl Model {
         let g = pos - m;
         let idx = (m as usize).saturating_sub(1);
         if idx >= values.len() - 1 {
-            return CalcResult::Number(*values.last().unwrap());
+            let last_value = match values.last() {
+                Some(&v) => v,
+                None => return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string()),
+            };
+            return CalcResult::Number(last_value);
         }
         let result = values[idx] + g * (values[idx + 1] - values[idx]);
         CalcResult::Number(result)
@@ -914,7 +923,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         let x = match self.get_number(&args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
@@ -966,7 +975,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         let x = match self.get_number(&args[1], cell) {
             Ok(v) => v,
             Err(e) => return e,
