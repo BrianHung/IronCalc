@@ -145,6 +145,8 @@ pub enum Function {
 
     // Date and time
     Date,
+    Datedif,
+    Datevalue,
     Day,
     Edate,
     Eomonth,
@@ -250,7 +252,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 195> {
+    pub fn into_iter() -> IntoIter<Function, 197> {
         [
             Function::And,
             Function::False,
@@ -356,6 +358,8 @@ impl Function {
             Function::Month,
             Function::Eomonth,
             Function::Date,
+            Function::Datedif,
+            Function::Datevalue,
             Function::Edate,
             Function::Today,
             Function::Now,
@@ -621,6 +625,8 @@ impl Function {
             "EOMONTH" => Some(Function::Eomonth),
             "MONTH" => Some(Function::Month),
             "DATE" => Some(Function::Date),
+            "DATEDIF" => Some(Function::Datedif),
+            "DATEVALUE" => Some(Function::Datevalue),
             "EDATE" => Some(Function::Edate),
             "TODAY" => Some(Function::Today),
             "NOW" => Some(Function::Now),
@@ -828,6 +834,8 @@ impl fmt::Display for Function {
             Function::Month => write!(f, "MONTH"),
             Function::Eomonth => write!(f, "EOMONTH"),
             Function::Date => write!(f, "DATE"),
+            Function::Datedif => write!(f, "DATEDIF"),
+            Function::Datevalue => write!(f, "DATEVALUE"),
             Function::Edate => write!(f, "EDATE"),
             Function::Today => write!(f, "TODAY"),
             Function::Now => write!(f, "NOW"),
@@ -1066,6 +1074,8 @@ impl Model {
             Function::Eomonth => self.fn_eomonth(args, cell),
             Function::Month => self.fn_month(args, cell),
             Function::Date => self.fn_date(args, cell),
+            Function::Datedif => self.fn_datedif(args, cell),
+            Function::Datevalue => self.fn_datevalue(args, cell),
             Function::Edate => self.fn_edate(args, cell),
             Function::Today => self.fn_today(args, cell),
             Function::Now => self.fn_now(args, cell),
