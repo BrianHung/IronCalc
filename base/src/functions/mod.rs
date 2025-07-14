@@ -254,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 200> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
