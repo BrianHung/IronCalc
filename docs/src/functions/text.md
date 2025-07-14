@@ -34,8 +34,8 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | MIDB        | <Badge type="info" text="Not implemented yet" /> | –             |
 | NUMBERVALUE | <Badge type="info" text="Not implemented yet" /> | –             |
 | PHONETIC    | <Badge type="info" text="Not implemented yet" /> | –             |
-| PROPER      | <Badge type="info" text="Not implemented yet" /> | –             |
-| REPLACE     | <Badge type="info" text="Not implemented yet" /> | –             |
+| PROPER      | <Badge type="tip" text="Available" />          | –             |
+| REPLACE     | <Badge type="tip" text="Available" />          | –             |
 | REPLACEB    | <Badge type="info" text="Not implemented yet" /> | –             |
 | REPT        | <Badge type="tip" text="Available" />          | –             |
 | RIGHT       | <Badge type="tip" text="Available" />          | –             |
