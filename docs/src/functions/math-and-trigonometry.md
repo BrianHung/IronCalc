@@ -36,7 +36,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | CSC             | <Badge type="info" text="Not implemented yet" /> | –             |
 | CSCH            | <Badge type="info" text="Not implemented yet" /> | –             |
 | DECIMAL         | <Badge type="info" text="Not implemented yet" /> | –             |
-| DEGREES         | <Badge type="info" text="Not implemented yet" /> | –             |
+| DEGREES         | <Badge type="tip" text="Available" />          | –             |
 | EVEN            | <Badge type="info" text="Not implemented yet" /> | –             |
 | EXP             | <Badge type="info" text="Not implemented yet" /> | –             |
 | FACT            | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -60,11 +60,11 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | MULTINOMIAL     | <Badge type="info" text="Not implemented yet" /> | –             |
 | MUNIT           | <Badge type="info" text="Not implemented yet" /> | –             |
 | ODD             | <Badge type="info" text="Not implemented yet" /> | –             |
-| PI              | <Badge type="info" text="Not implemented yet" /> | –             |
+| PI              | <Badge type="tip" text="Available" />          | [PI](math_and_trigonometry/pi) |
 | POWER           | <Badge type="tip" text="Available" />          | –             |
 | PRODUCT         | <Badge type="tip" text="Available" />          | –             |
 | QUOTIENT        | <Badge type="info" text="Not implemented yet" /> | –             |
-| RADIANS         | <Badge type="info" text="Not implemented yet" /> | –             |
+| RADIANS         | <Badge type="tip" text="Available" />          | –             |
 | RAND            | <Badge type="tip" text="Available" />          | –             |
 | RANDARRAY       | <Badge type="info" text="Not implemented yet" /> | –             |
 | RANDBETWEEN     | <Badge type="tip" text="Available" />          | –             |
