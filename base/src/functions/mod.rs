@@ -57,6 +57,8 @@ pub enum Function {
     Log,
     Log10,
     Ln,
+    Gcd,
+    Lcm,
     Max,
     Min,
     Pi,
@@ -253,7 +255,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 200> {
         [
             Function::And,
             Function::False,
@@ -281,6 +283,8 @@ impl Function {
             Function::Abs,
             Function::Pi,
             Function::Ln,
+            Function::Gcd,
+            Function::Lcm,
             Function::Log,
             Function::Log10,
             Function::Sqrt,
@@ -541,6 +545,8 @@ impl Function {
             "ATAN2" => Some(Function::Atan2),
 
             "LN" => Some(Function::Ln),
+            "GCD" => Some(Function::Gcd),
+            "LCM" => Some(Function::Lcm),
             "LOG" => Some(Function::Log),
             "LOG10" => Some(Function::Log10),
 
@@ -747,6 +753,8 @@ impl fmt::Display for Function {
             Function::Log => write!(f, "LOG"),
             Function::Log10 => write!(f, "LOG10"),
             Function::Ln => write!(f, "LN"),
+            Function::Gcd => write!(f, "GCD"),
+            Function::Lcm => write!(f, "LCM"),
             Function::Sin => write!(f, "SIN"),
             Function::Cos => write!(f, "COS"),
             Function::Tan => write!(f, "TAN"),
@@ -977,6 +985,8 @@ impl Model {
             Function::Log => self.fn_log(args, cell),
             Function::Log10 => self.fn_log10(args, cell),
             Function::Ln => self.fn_ln(args, cell),
+            Function::Gcd => self.fn_gcd(args, cell),
+            Function::Lcm => self.fn_lcm(args, cell),
             Function::Sin => self.fn_sin(args, cell),
             Function::Cos => self.fn_cos(args, cell),
             Function::Tan => self.fn_tan(args, cell),
