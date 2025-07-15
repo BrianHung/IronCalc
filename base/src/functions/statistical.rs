@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::util::build_criteria;
+use std::cmp::Ordering;
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -797,7 +798,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
         let quart = match self.get_number(&args[1], cell) {
             Ok(f) => f,
@@ -807,7 +808,7 @@ impl Model {
             return CalcResult::new_error(Error::NUM, cell, "Invalid quart".to_string());
         }
         let q = quart as i32;
-        if q < 0 || q > 4 {
+        if !(0..=4).contains(&q) {
             return CalcResult::new_error(Error::NUM, cell, "Invalid quart".to_string());
         }
 
@@ -889,7 +890,7 @@ impl Model {
         if values.is_empty() {
             return CalcResult::new_error(Error::NUM, cell, "Empty array".to_string());
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
         let quart = match self.get_number(&args[1], cell) {
             Ok(f) => f,
@@ -899,7 +900,7 @@ impl Model {
             return CalcResult::new_error(Error::NUM, cell, "Invalid quart".to_string());
         }
         let q = quart as i32;
-        if q < 1 || q > 3 {
+        if !(1..=3).contains(&q) {
             return CalcResult::new_error(Error::NUM, cell, "Invalid quart".to_string());
         }
 
@@ -973,18 +974,13 @@ impl Model {
         }
 
         let mut greater = 0;
-        let mut equal = 0;
         for v in &values {
             if order {
                 if *v < number {
                     greater += 1;
-                } else if (*v - number).abs() < f64::EPSILON {
-                    equal += 1;
                 }
             } else if *v > number {
                 greater += 1;
-            } else if (*v - number).abs() < f64::EPSILON {
-                equal += 1;
             }
         }
 
