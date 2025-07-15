@@ -754,9 +754,15 @@ impl Model {
                     }
                     for row in left.row..=right.row {
                         for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex { sheet: left.sheet, row, column }) {
+                            match self.evaluate_cell(CellReferenceIndex {
+                                sheet: left.sheet,
+                                row,
+                                column,
+                            }) {
                                 CalcResult::Number(v) => values.push(v),
-                                CalcResult::Boolean(_) | CalcResult::EmptyCell | CalcResult::EmptyArg => {}
+                                CalcResult::Boolean(_)
+                                | CalcResult::EmptyCell
+                                | CalcResult::EmptyArg => {}
                                 CalcResult::Range { .. } => {
                                     return CalcResult::new_error(
                                         Error::ERROR,
@@ -833,9 +839,15 @@ impl Model {
                     }
                     for row in left.row..=right.row {
                         for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex { sheet: left.sheet, row, column }) {
+                            match self.evaluate_cell(CellReferenceIndex {
+                                sheet: left.sheet,
+                                row,
+                                column,
+                            }) {
                                 CalcResult::Number(v) => values.push(v),
-                                CalcResult::Boolean(_) | CalcResult::EmptyCell | CalcResult::EmptyArg => {}
+                                CalcResult::Boolean(_)
+                                | CalcResult::EmptyCell
+                                | CalcResult::EmptyArg => {}
                                 CalcResult::Range { .. } => {
                                     return CalcResult::new_error(
                                         Error::ERROR,
