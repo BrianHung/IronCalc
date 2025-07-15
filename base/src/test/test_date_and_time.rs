@@ -216,3 +216,32 @@ fn test_date_early_dates() {
         Ok(CellValue::Number(61.0))
     );
 }
+#[test]
+fn additional_date_functions() {
+    let mut model = new_empty_model();
+    // DAYS
+    model._set("A1", "=DAYS(44570,44561)");
+    // DAYS360
+    model._set("A2", "=DAYS360(44196,44560)");
+    // WEEKDAY
+    model._set("A3", "=WEEKDAY(44561)");
+    // WEEKNUM
+    model._set("A4", "=WEEKNUM(44561)");
+    // WORKDAY
+    model._set("A5", "=WORKDAY(44560,1)");
+    // WORKDAY.INTL
+    model._set("A6", "=WORKDAY.INTL(44560,1,1)");
+    // YEARFRAC
+    model._set("A7", "=YEARFRAC(44561,44926,1)");
+    // ISOWEEKNUM
+    model._set("A8", "=ISOWEEKNUM(44563)");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), *"9");
+    assert_eq!(model._get_text("A2"), *"360");
+    assert_eq!(model._get_text("A3"), *"6");
+    assert_eq!(model._get_text("A4"), *"53");
+    assert_eq!(model._get_text("A5"), *"44561");
+    assert_eq!(model._get_text("A6"), *"44561");
+    assert_eq!(model._get_text("A7"), *"1");
+    assert_eq!(model._get_text("A8"), *"52");
+}
