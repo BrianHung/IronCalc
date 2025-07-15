@@ -1433,7 +1433,7 @@ impl Model {
                 }
             };
             let freq = match self.get_number_no_bools(&args[4], cell) {
-                Ok(f) => f.trunc() as f64,
+                Ok(f) => f.trunc(),
                 Err(_) => {
                     return CalcResult::new_error(
                         Error::VALUE,
