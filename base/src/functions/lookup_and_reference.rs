@@ -739,7 +739,7 @@ impl Model {
             Ok(c) => c as i32,
             Err(e) => return e,
         };
-        if row < 1 || row > LAST_ROW || column < 1 || column > LAST_COLUMN {
+        if !(1..=LAST_ROW).contains(&row) || !(1..=LAST_COLUMN).contains(&column) {
             return CalcResult::Error {
                 error: Error::VALUE,
                 origin: cell,
@@ -754,7 +754,7 @@ impl Model {
         } else {
             1
         };
-        if abs_num < 1 || abs_num > 4 {
+        if !(1..=4).contains(&abs_num) {
             return CalcResult::Error {
                 error: Error::VALUE,
                 origin: cell,
@@ -779,30 +779,39 @@ impl Model {
         };
 
         let result = if a1 {
-            let col = crate::expressions::utils::number_to_column(column).unwrap();
+            let col = match crate::expressions::utils::number_to_column(column) {
+                Some(c) => c,
+                None => {
+                    return CalcResult::Error {
+                        error: Error::VALUE,
+                        origin: cell,
+                        message: "Invalid column number".to_string(),
+                    };
+                }
+            };
             let col_str = match abs_num {
-                1 | 3 => format!("${}", col),
+                1 | 3 => format!("${col}"),
                 _ => col,
             };
             let row_str = match abs_num {
-                1 | 2 => format!("${}", row),
-                _ => format!("{}", row),
+                1 | 2 => format!("${row}"),
+                _ => format!("{row}"),
             };
-            let addr = format!("{}{}", col_str, row_str);
+            let addr = format!("{col_str}{row_str}");
             match sheet {
                 Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
                 None => addr,
             }
         } else {
             let row_str = match abs_num {
-                1 | 2 => format!("R{}", row),
-                _ => format!("R[{}]", row),
+                1 | 2 => format!("R{row}"),
+                _ => format!("R[{row}]"),
             };
             let col_str = match abs_num {
-                1 | 3 => format!("C{}", column),
-                _ => format!("C[{}]", column),
+                1 | 3 => format!("C{column}"),
+                _ => format!("C[{column}]"),
             };
-            let addr = format!("{}{}", row_str, col_str);
+            let addr = format!("{row_str}{col_str}");
             match sheet {
                 Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
                 None => addr,
