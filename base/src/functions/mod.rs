@@ -107,6 +107,7 @@ pub enum Function {
     Rows,
     Vlookup,
     Xlookup,
+    Xmatch,
 
     // Text
     Concat,
@@ -253,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -311,6 +312,7 @@ impl Function {
             Function::Rows,
             Function::Vlookup,
             Function::Xlookup,
+            Function::Xmatch,
             Function::Concatenate,
             Function::Exact,
             Function::Value,
@@ -469,6 +471,7 @@ impl Function {
             Function::Minifs => "_xlfn.MINIFS".to_string(),
             Function::Switch => "_xlfn.SWITCH".to_string(),
             Function::Xlookup => "_xlfn.XLOOKUP".to_string(),
+            Function::Xmatch => "_xlfn.XMATCH".to_string(),
             Function::Xor => "_xlfn.XOR".to_string(),
             Function::Textbefore => "_xlfn.TEXTBEFORE".to_string(),
             Function::Textafter => "_xlfn.TEXTAFTER".to_string(),
@@ -570,6 +573,7 @@ impl Function {
             "ROWS" => Some(Function::Rows),
             "VLOOKUP" => Some(Function::Vlookup),
             "XLOOKUP" | "_XLFN.XLOOKUP" => Some(Function::Xlookup),
+            "XMATCH" | "_XLFN.XMATCH" => Some(Function::Xmatch),
 
             "CONCATENATE" => Some(Function::Concatenate),
             "EXACT" => Some(Function::Exact),
@@ -789,6 +793,7 @@ impl fmt::Display for Function {
             Function::Rows => write!(f, "ROWS"),
             Function::Vlookup => write!(f, "VLOOKUP"),
             Function::Xlookup => write!(f, "XLOOKUP"),
+            Function::Xmatch => write!(f, "XMATCH"),
             Function::Concatenate => write!(f, "CONCATENATE"),
             Function::Exact => write!(f, "EXACT"),
             Function::Value => write!(f, "VALUE"),
@@ -1027,6 +1032,7 @@ impl Model {
             Function::Rows => self.fn_rows(args, cell),
             Function::Vlookup => self.fn_vlookup(args, cell),
             Function::Xlookup => self.fn_xlookup(args, cell),
+            Function::Xmatch => self.fn_xmatch(args, cell),
             // Text
             Function::Concatenate => self.fn_concatenate(args, cell),
             Function::Exact => self.fn_exact(args, cell),
