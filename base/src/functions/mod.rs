@@ -97,6 +97,7 @@ pub enum Function {
     Type,
 
     // Lookup and reference
+    Address,
     Hlookup,
     Index,
     Indirect,
@@ -253,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -303,6 +304,7 @@ impl Function {
             Function::Columns,
             Function::Index,
             Function::Indirect,
+            Function::Address,
             Function::Hlookup,
             Function::Lookup,
             Function::Match,
@@ -562,6 +564,7 @@ impl Function {
             "COLUMNS" => Some(Function::Columns),
             "INDEX" => Some(Function::Index),
             "INDIRECT" => Some(Function::Indirect),
+            "ADDRESS" => Some(Function::Address),
             "HLOOKUP" => Some(Function::Hlookup),
             "LOOKUP" => Some(Function::Lookup),
             "MATCH" => Some(Function::Match),
@@ -781,6 +784,7 @@ impl fmt::Display for Function {
             Function::Columns => write!(f, "COLUMNS"),
             Function::Index => write!(f, "INDEX"),
             Function::Indirect => write!(f, "INDIRECT"),
+            Function::Address => write!(f, "ADDRESS"),
             Function::Hlookup => write!(f, "HLOOKUP"),
             Function::Lookup => write!(f, "LOOKUP"),
             Function::Match => write!(f, "MATCH"),
@@ -1019,6 +1023,7 @@ impl Model {
             Function::Columns => self.fn_columns(args, cell),
             Function::Index => self.fn_index(args, cell),
             Function::Indirect => self.fn_indirect(args, cell),
+            Function::Address => self.fn_address(args, cell),
             Function::Hlookup => self.fn_hlookup(args, cell),
             Function::Lookup => self.fn_lookup(args, cell),
             Function::Match => self.fn_match(args, cell),
