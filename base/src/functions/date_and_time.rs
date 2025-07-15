@@ -379,10 +379,10 @@ impl Model {
             }
         }
         let mut sd_day = start_date.day();
-        let mut sd_month = start_date.month();
+        let sd_month = start_date.month();
         let sd_year = start_date.year();
         let mut ed_day = end_date.day();
-        let mut ed_month = end_date.month();
+        let ed_month = end_date.month();
         let ed_year = end_date.year();
 
         if method {
@@ -396,9 +396,7 @@ impl Model {
             if (sd_month == 2 && sd_day == last_day_feb(sd_year)) || sd_day == 31 {
                 sd_day = 30;
             }
-            if (ed_month == 2 && ed_day == last_day_feb(ed_year))
-                && ((sd_month == 2 && sd_day == 30) || sd_day == 30)
-            {
+            if ed_month == 2 && ed_day == last_day_feb(ed_year) && sd_day == 30 {
                 ed_day = 30;
             }
             if ed_day == 31 && sd_day >= 30 {
@@ -493,7 +491,16 @@ impl Model {
             17 => chrono::Weekday::Sun,
             _ => return CalcResult::new_error(Error::NUM, cell, "Invalid return_type".to_string()),
         };
-        let mut first = chrono::NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap();
+        let mut first = match chrono::NaiveDate::from_ymd_opt(date.year(), 1, 1) {
+            Some(d) => d,
+            None => {
+                return CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "Out of range parameters for date".to_string(),
+                );
+            }
+        };
         while first.weekday() != start_offset {
             first -= chrono::Duration::days(1);
         }
