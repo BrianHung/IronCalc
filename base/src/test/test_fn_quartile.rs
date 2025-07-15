@@ -5,7 +5,7 @@ use crate::test::util::new_empty_model;
 fn test_fn_quartile() {
     let mut model = new_empty_model();
     for i in 1..=8 {
-        model._set(&format!("B{}", i), &i.to_string());
+        model._set(&format!("B{i}"), &i.to_string());
     }
     model._set("A1", "=QUARTILE(B1:B8,1)");
     model._set("A2", "=QUARTILE.INC(B1:B8,3)");
