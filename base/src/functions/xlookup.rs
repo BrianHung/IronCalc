@@ -508,14 +508,26 @@ impl Model {
                         }
                     };
                 }
-                let left = CellReferenceIndex { sheet: left.sheet, column: column1, row: row1 };
-                let right = CellReferenceIndex { sheet: left.sheet, column: column2, row: row2 };
+                let left = CellReferenceIndex {
+                    sheet: left.sheet,
+                    column: column1,
+                    row: row1,
+                };
+                let right = CellReferenceIndex {
+                    sheet: left.sheet,
+                    column: column2,
+                    row: row2,
+                };
                 match search_mode {
                     SearchMode::StartAtFirstItem | SearchMode::StartAtLastItem => {
                         let array = self.prepare_array(&left, &right, is_row_vector);
                         match linear_search(&lookup_value, &array, search_mode, match_mode) {
                             Some(index) => CalcResult::Number(index as f64 + 1.0),
-                            None => CalcResult::Error { error: Error::NA, origin: cell, message: "Not found".to_string() },
+                            None => CalcResult::Error {
+                                error: Error::NA,
+                                origin: cell,
+                                message: "Not found".to_string(),
+                            },
                         }
                     }
                     SearchMode::BinarySearchAscending | SearchMode::BinarySearchDescending => {
@@ -544,7 +556,11 @@ impl Model {
                             }
                         };
                         match index {
-                            None => CalcResult::Error { error: Error::NA, origin: cell, message: "Not found".to_string() },
+                            None => CalcResult::Error {
+                                error: Error::NA,
+                                origin: cell,
+                                message: "Not found".to_string(),
+                            },
                             Some(l) => {
                                 if match_mode == MatchMode::ExactMatch {
                                     let value = self.evaluate_cell(CellReferenceIndex {
@@ -553,7 +569,11 @@ impl Model {
                                         column: left.column + if is_row_vector { 0 } else { l },
                                     });
                                     if compare_values(&value, &lookup_value) != 0 {
-                                        return CalcResult::Error { error: Error::NA, origin: cell, message: "Not found".to_string() };
+                                        return CalcResult::Error {
+                                            error: Error::NA,
+                                            origin: cell,
+                                            message: "Not found".to_string(),
+                                        };
                                     }
                                 }
                                 CalcResult::Number(l as f64 + 1.0)
@@ -563,7 +583,11 @@ impl Model {
                 }
             }
             error @ CalcResult::Error { .. } => error,
-            _ => CalcResult::Error { error: Error::VALUE, origin: cell, message: "Range expected".to_string() },
+            _ => CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Range expected".to_string(),
+            },
         }
     }
 }
