@@ -54,6 +54,7 @@ pub enum Function {
     Columns,
     Cos,
     Cosh,
+    Degrees,
     Log,
     Log10,
     Ln,
@@ -62,6 +63,7 @@ pub enum Function {
     Pi,
     Power,
     Product,
+    Radians,
     Rand,
     Randbetween,
     Round,
@@ -253,7 +255,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 200> {
         [
             Function::And,
             Function::False,
@@ -274,6 +276,7 @@ impl Function {
             Function::Atan,
             Function::Sinh,
             Function::Cosh,
+            Function::Degrees,
             Function::Tanh,
             Function::Asinh,
             Function::Acosh,
@@ -290,6 +293,7 @@ impl Function {
             Function::Max,
             Function::Min,
             Function::Product,
+            Function::Radians,
             Function::Rand,
             Function::Randbetween,
             Function::Round,
@@ -527,6 +531,7 @@ impl Function {
 
             "SINH" => Some(Function::Sinh),
             "COSH" => Some(Function::Cosh),
+            "DEGREES" => Some(Function::Degrees),
             "TANH" => Some(Function::Tanh),
 
             "ASINH" => Some(Function::Asinh),
@@ -547,6 +552,7 @@ impl Function {
             "MAX" => Some(Function::Max),
             "MIN" => Some(Function::Min),
             "PRODUCT" => Some(Function::Product),
+            "RADIANS" => Some(Function::Radians),
             "RAND" => Some(Function::Rand),
             "RANDBETWEEN" => Some(Function::Randbetween),
             "ROUND" => Some(Function::Round),
@@ -755,6 +761,7 @@ impl fmt::Display for Function {
             Function::Atan => write!(f, "ATAN"),
             Function::Sinh => write!(f, "SINH"),
             Function::Cosh => write!(f, "COSH"),
+            Function::Degrees => write!(f, "DEGREES"),
             Function::Tanh => write!(f, "TANH"),
             Function::Asinh => write!(f, "ASINH"),
             Function::Acosh => write!(f, "ACOSH"),
@@ -768,6 +775,7 @@ impl fmt::Display for Function {
             Function::Max => write!(f, "MAX"),
             Function::Min => write!(f, "MIN"),
             Function::Product => write!(f, "PRODUCT"),
+            Function::Radians => write!(f, "RADIANS"),
             Function::Rand => write!(f, "RAND"),
             Function::Randbetween => write!(f, "RANDBETWEEN"),
             Function::Round => write!(f, "ROUND"),
@@ -987,6 +995,7 @@ impl Model {
 
             Function::Sinh => self.fn_sinh(args, cell),
             Function::Cosh => self.fn_cosh(args, cell),
+            Function::Degrees => self.fn_degrees(args, cell),
             Function::Tanh => self.fn_tanh(args, cell),
 
             Function::Asinh => self.fn_asinh(args, cell),
@@ -1004,6 +1013,7 @@ impl Model {
             Function::Max => self.fn_max(args, cell),
             Function::Min => self.fn_min(args, cell),
             Function::Product => self.fn_product(args, cell),
+            Function::Radians => self.fn_radians(args, cell),
             Function::Rand => self.fn_rand(args, cell),
             Function::Randbetween => self.fn_randbetween(args, cell),
             Function::Round => self.fn_round(args, cell),
