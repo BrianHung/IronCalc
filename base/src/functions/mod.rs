@@ -145,6 +145,10 @@ pub enum Function {
     Maxifs,
     Minifs,
     Geomean,
+    Stdeva,
+    Stdevpa,
+    Vara,
+    Varpa,
 
     // Date and time
     Date,
@@ -253,7 +257,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 202> {
         [
             Function::And,
             Function::False,
@@ -357,6 +361,10 @@ impl Function {
             Function::Maxifs,
             Function::Minifs,
             Function::Geomean,
+            Function::Stdeva,
+            Function::Stdevpa,
+            Function::Vara,
+            Function::Varpa,
             Function::Year,
             Function::Day,
             Function::Month,
@@ -625,6 +633,10 @@ impl Function {
             "MAXIFS" | "_XLFN.MAXIFS" => Some(Function::Maxifs),
             "MINIFS" | "_XLFN.MINIFS" => Some(Function::Minifs),
             "GEOMEAN" => Some(Function::Geomean),
+            "STDEVA" => Some(Function::Stdeva),
+            "STDEVPA" => Some(Function::Stdevpa),
+            "VARA" => Some(Function::Vara),
+            "VARPA" => Some(Function::Varpa),
             // Date and Time
             "YEAR" => Some(Function::Year),
             "DAY" => Some(Function::Day),
@@ -836,6 +848,10 @@ impl fmt::Display for Function {
             Function::Maxifs => write!(f, "MAXIFS"),
             Function::Minifs => write!(f, "MINIFS"),
             Function::Geomean => write!(f, "GEOMEAN"),
+            Function::Stdeva => write!(f, "STDEVA"),
+            Function::Stdevpa => write!(f, "STDEVPA"),
+            Function::Vara => write!(f, "VARA"),
+            Function::Varpa => write!(f, "VARPA"),
             Function::Year => write!(f, "YEAR"),
             Function::Day => write!(f, "DAY"),
             Function::Month => write!(f, "MONTH"),
@@ -1076,6 +1092,10 @@ impl Model {
             Function::Maxifs => self.fn_maxifs(args, cell),
             Function::Minifs => self.fn_minifs(args, cell),
             Function::Geomean => self.fn_geomean(args, cell),
+            Function::Stdeva => self.fn_stdeva(args, cell),
+            Function::Stdevpa => self.fn_stdevpa(args, cell),
+            Function::Vara => self.fn_vara(args, cell),
+            Function::Varpa => self.fn_varpa(args, cell),
             // Date and Time
             Function::Year => self.fn_year(args, cell),
             Function::Day => self.fn_day(args, cell),
