@@ -571,7 +571,11 @@ impl Model {
                     }
                     for row in left.row..=right.row {
                         for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex { sheet: left.sheet, row, column }) {
+                            match self.evaluate_cell(CellReferenceIndex {
+                                sheet: left.sheet,
+                                row,
+                                column,
+                            }) {
                                 CalcResult::Number(v) => {
                                     if let Err(e) = update(v) {
                                         return e;
@@ -638,7 +642,13 @@ impl Model {
             let v = value.trunc() as u128;
             result = Some(match result {
                 None => v,
-                Some(r) => if r == 0 || v == 0 { 0 } else { r / gcd(r, v) * v },
+                Some(r) => {
+                    if r == 0 || v == 0 {
+                        0
+                    } else {
+                        r / gcd(r, v) * v
+                    }
+                }
             });
             Ok(())
         };
@@ -660,7 +670,11 @@ impl Model {
                     }
                     for row in left.row..=right.row {
                         for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex { sheet: left.sheet, row, column }) {
+                            match self.evaluate_cell(CellReferenceIndex {
+                                sheet: left.sheet,
+                                row,
+                                column,
+                            }) {
                                 CalcResult::Number(v) => {
                                     if let Err(e) = update(v) {
                                         return e;
