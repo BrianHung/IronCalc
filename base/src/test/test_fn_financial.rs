@@ -468,3 +468,25 @@ fn fn_db_misc() {
 
     assert_eq!(model._get_text("B1"), "$0.00");
 }
+
+#[test]
+fn fn_duration_mduration() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2016,1,1)");
+    model._set("A2", "=DATE(2020,1,1)");
+    model._set("B1", "=DURATION(A1,A2,0.08,0.09,2)");
+    model._set("B2", "=MDURATION(A1,A2,0.08,0.09,2)");
+
+    model.evaluate();
+
+    if let Ok(CellValue::Number(v1)) = model.get_cell_value_by_ref("Sheet1!B1") {
+        assert!((v1 - 3.410746844012284).abs() < 1e-9);
+    } else {
+        panic!("Unexpected value");
+    }
+    if let Ok(CellValue::Number(v2)) = model.get_cell_value_by_ref("Sheet1!B2") {
+        assert!((v2 - 3.263872578002186).abs() < 1e-9);
+    } else {
+        panic!("Unexpected value");
+    }
+}
