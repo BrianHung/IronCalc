@@ -179,7 +179,7 @@ fn test_skew_large_dataset() {
 
     // Set up a larger dataset (normal distribution should have skew ≈ 0)
     for i in 1..=20 {
-        model._set(&format!("A{}", i), &i.to_string());
+        model._set(&format!("A{i}"), &i.to_string());
     }
 
     model._set("B1", "=SKEW(A1:A20)");
