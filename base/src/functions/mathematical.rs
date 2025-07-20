@@ -556,7 +556,7 @@ impl Model {
         if denominator == 0.0 {
             return CalcResult::new_error(Error::DIV, cell, "Divide by 0".to_string());
         }
-        CalcResult::Number((numerator / denominator).floor())
+        CalcResult::Number((numerator / denominator).trunc())
     }
 
     pub(crate) fn fn_rand(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
