@@ -794,13 +794,7 @@ impl Model {
                         ));
                     }
                 }
-                CalcResult::Error { .. } => {
-                    return Err(CalcResult::new_error(
-                        Error::ERROR,
-                        cell,
-                        "Error".to_string(),
-                    ))
-                }
+                error @ CalcResult::Error { .. } => return Err(error),
                 CalcResult::EmptyCell | CalcResult::EmptyArg => {}
                 CalcResult::Array(_) => {
                     return Err(CalcResult::Error {

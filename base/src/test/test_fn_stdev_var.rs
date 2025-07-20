@@ -227,3 +227,20 @@ fn test_fn_stdev_var_precision() {
     assert_eq!(model._get_text("A3"), *"0.5");
     assert_eq!(model._get_text("A4"), *"0.25");
 }
+
+#[test]
+fn test_fn_stdev_var_direct_argument_error_propagation() {
+    let mut model = new_empty_model();
+
+    // Test that specific errors in direct arguments are properly propagated
+    // This is different from the range error test - this tests direct error arguments
+    // Bug fix: Previously converted specific errors to generic #ERROR!
+    model._set("A1", "=STDEVA(1, 1/0, 3)"); // #DIV/0! in direct argument
+    model._set("A2", "=VARA(2, VALUE(\"text\"), 4)"); // #VALUE! in direct argument
+
+    model.evaluate();
+
+    // Should propagate specific errors, not generic #ERROR!
+    assert_eq!(model._get_text("A1"), *"#DIV/0!");
+    assert_eq!(model._get_text("A2"), *"#VALUE!");
+}
