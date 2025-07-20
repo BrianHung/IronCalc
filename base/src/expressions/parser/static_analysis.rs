@@ -575,6 +575,16 @@ fn args_signature_xnpv(arg_count: usize) -> Vec<Signature> {
     }
 }
 
+fn args_signature_rank(arg_count: usize) -> Vec<Signature> {
+    if arg_count == 2 {
+        vec![Signature::Scalar, Signature::Vector]
+    } else if arg_count == 3 {
+        vec![Signature::Scalar, Signature::Vector, Signature::Scalar]
+    } else {
+        vec![Signature::Error; arg_count]
+    }
+}
+
 // FIXME: This is terrible duplications of efforts. We use the signature in at least three different places:
 // 1. When computing the function
 // 2. Checking the arguments to see if we need to insert the implicit intersection operator
@@ -792,9 +802,7 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
                 vec![Signature::Error; arg_count]
             }
         }
-        Function::Rank | Function::RankAvg | Function::RankEq => {
-            args_signature_scalars(arg_count, 2, 1)
-        }
+        Function::Rank | Function::RankAvg | Function::RankEq => args_signature_rank(arg_count),
     }
 }
 

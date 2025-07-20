@@ -27,10 +27,10 @@ fn test_fn_rank_not_found() {
     model._set("B3", "2");
     model._set("B4", "1");
     // Test cases where the target number is not in the range
-    model._set("A1", "=RANK(5,B1:B4)");        // 5 is not in range
-    model._set("A2", "=RANK.AVG(0,B1:B4)");     // 0 is not in range
-    model._set("A3", "=RANK.EQ(4,B1:B4)");      // 4 is not in range
-    model._set("A4", "=RANK(2.5,B1:B4)");       // 2.5 is not in range
+    model._set("A1", "=RANK(5,B1:B4)"); // 5 is not in range
+    model._set("A2", "=RANK.AVG(0,B1:B4)"); // 0 is not in range
+    model._set("A3", "=RANK.EQ(4,B1:B4)"); // 4 is not in range
+    model._set("A4", "=RANK(2.5,B1:B4)"); // 2.5 is not in range
     model.evaluate();
     assert_eq!(model._get_text("A1"), "#N/A");
     assert_eq!(model._get_text("A2"), "#N/A");
