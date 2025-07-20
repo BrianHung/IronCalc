@@ -91,7 +91,6 @@ fn test_fn_stdev_var_data_types() {
     model._set("B4", "false"); // Boolean FALSE -> 0
     model._set("B5", "'Hello"); // Text -> 0
     model._set("B6", "'123"); // Text number -> 0
-                              // B7 is empty -> ignored
 
     model._set("A1", "=STDEVA(B1:B7)");
     model._set("A2", "=STDEVPA(B1:B7)");
@@ -101,8 +100,8 @@ fn test_fn_stdev_var_data_types() {
     model.evaluate();
     assert_eq!(model._get_text("A1"), *"8.256310718");
     assert_eq!(model._get_text("A2"), *"7.536946036");
-    assert_eq!(model._get_text("A3"), *"77.2");
-    assert_eq!(model._get_text("A4"), *"61.76");
+    assert_eq!(model._get_text("A3"), *"68.166666667");
+    assert_eq!(model._get_text("A4"), *"56.805555556");
 }
 
 #[test]
