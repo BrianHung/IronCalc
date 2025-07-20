@@ -83,7 +83,7 @@ fn test_fn_large_small_k_boundary_values() {
     model._set("B1", "10");
     model._set("B2", "20");
     model._set("B3", "30");
-    
+
     model._set("A1", "=LARGE(B1:B3,1)"); // k=1
     model._set("A2", "=SMALL(B1:B3,1)"); // k=1
     model._set("A3", "=LARGE(B1:B3,3)"); // k=array size
@@ -184,20 +184,20 @@ fn test_fn_large_small_duplicate_values() {
 #[test]
 fn test_fn_large_small_error_propagation() {
     let mut model = new_empty_model();
-    
+
     // Error in data range
     model._set("B1", "10");
     model._set("B2", "=1/0");
     model._set("B3", "30");
     model._set("A1", "=LARGE(B1:B3,1)");
     model._set("A2", "=SMALL(B1:B3,1)");
-    
+
     // Error in k parameter
     model._set("C1", "20");
     model._set("C2", "40");
     model._set("A3", "=LARGE(C1:C2,1/0)");
     model._set("A4", "=SMALL(C1:C2,1/0)");
-    
+
     model.evaluate();
 
     assert!(model._get_text("A1").contains("#"));
