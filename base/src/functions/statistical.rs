@@ -759,13 +759,7 @@ impl Model {
                                     values.push(if b { 1.0 } else { 0.0 });
                                 }
                                 CalcResult::String(_) => values.push(0.0),
-                                CalcResult::Error { .. } => {
-                                    return Err(CalcResult::Error {
-                                        error: Error::ERROR,
-                                        origin: cell,
-                                        message: "Unexpected Range".to_string(),
-                                    })
-                                }
+                                error @ CalcResult::Error { .. } => return Err(error),
                                 CalcResult::Range { .. } => {
                                     return Err(CalcResult::new_error(
                                         Error::ERROR,
