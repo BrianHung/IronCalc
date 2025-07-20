@@ -22,7 +22,7 @@ fn test_fn_xmatch_match_modes() {
     model._set("A2", "20");
     model._set("A3", "30");
     model._set("B1", "=XMATCH(25, A1:A3, -1)"); // Exact or next smaller
-    model._set("B2", "=XMATCH(15, A1:A3, 1)");  // Exact or next larger
+    model._set("B2", "=XMATCH(15, A1:A3, 1)"); // Exact or next larger
     model._set("C1", "apple");
     model._set("C2", "banana");
     model._set("C3", "apricot");
@@ -41,17 +41,17 @@ fn test_fn_xmatch_search_modes() {
     model._set("A1", "a");
     model._set("A2", "b");
     model._set("A3", "a"); // Duplicate
-    model._set("B1", "=XMATCH(\"a\", A1:A3, 0, 1)");  // Search from first
+    model._set("B1", "=XMATCH(\"a\", A1:A3, 0, 1)"); // Search from first
     model._set("B2", "=XMATCH(\"a\", A1:A3, 0, -1)"); // Search from last
-    // Binary search tests
+                                                      // Binary search tests
     model._set("C1", "10");
     model._set("C2", "20");
     model._set("C3", "30");
-    model._set("B3", "=XMATCH(20, C1:C3, 0, 2)");   // Binary ascending
+    model._set("B3", "=XMATCH(20, C1:C3, 0, 2)"); // Binary ascending
     model._set("D1", "30");
     model._set("D2", "20");
     model._set("D3", "10");
-    model._set("B4", "=XMATCH(20, D1:D3, 0, -2)");  // Binary descending
+    model._set("B4", "=XMATCH(20, D1:D3, 0, -2)"); // Binary descending
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"1"); // First occurrence
     assert_eq!(model._get_text("B2"), *"3"); // Last occurrence
@@ -92,14 +92,14 @@ fn test_fn_xmatch_error_conditions() {
     model._set("B1", "=XMATCH(\"test\")");
     model._set("B2", "=XMATCH(\"test\", A1:A1, 0, 1, 1)");
     // Invalid modes
-    model._set("B3", "=XMATCH(\"test\", A1:A1, 5)");    // Invalid match mode
+    model._set("B3", "=XMATCH(\"test\", A1:A1, 5)"); // Invalid match mode
     model._set("B4", "=XMATCH(\"test\", A1:A1, 0, 5)"); // Invalid search mode
-    // Non-vector range
+                                                        // Non-vector range
     model._set("A2", "test2");
     model._set("C1", "test3");
     model._set("C2", "test4");
     model._set("B5", "=XMATCH(\"test\", A1:C2)"); // 2x2 range
-    // Binary search with wildcard (should error)
+                                                  // Binary search with wildcard (should error)
     model._set("B6", "=XMATCH(\"ap*\", A1:A1, 2, 2)");
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"#ERROR!");
@@ -123,12 +123,32 @@ fn test_fn_xmatch_edge_cases() {
     model._set("C2", "30");
     model._set("C3", "40");
     model._set("B2", "=XMATCH(10, C1:C3, -1)"); // No smaller
-    model._set("B3", "=XMATCH(50, C1:C3, 1)");  // No larger
-    // Invalid regex pattern
+    model._set("B3", "=XMATCH(50, C1:C3, 1)"); // No larger
+                                               // Invalid regex pattern
     model._set("B4", "=XMATCH(\"[\", A1:A1, 3)");
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"1"); // Case-insensitive
     assert_eq!(model._get_text("B2"), *"#N/A"); // No smaller value
     assert_eq!(model._get_text("B3"), *"#N/A"); // No larger value
     assert_eq!(model._get_text("B4"), *"#N/A"); // Invalid regex
+}
+
+#[test]
+fn test_fn_xmatch_range_as_lookup_value() {
+    let mut model = new_empty_model();
+    model._set("A1", "10");
+    model._set("A2", "20");
+    model._set("B1", "10");
+    model._set("B2", "20");
+    model._set("B3", "30");
+
+    // Test passing a range as lookup_value (should error since implicit intersection not supported)
+    model._set("C1", "=XMATCH(A1:A2, B1:B3)"); // Range as first argument should error
+    model._set("C2", "=XMATCH(A1:A1, B1:B3)"); // Single-cell range as first argument should also error
+
+    model.evaluate();
+
+    // Since implicit intersection isn't supported, these return #N/A
+    assert_eq!(model._get_text("C1"), *"#N/A");
+    assert_eq!(model._get_text("C2"), *"#N/A");
 }

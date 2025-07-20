@@ -515,15 +515,8 @@ fn args_signature_xmatch(arg_count: usize) -> Vec<Signature> {
     if !(2..=4).contains(&arg_count) {
         return vec![Signature::Error; arg_count];
     }
-    let mut result = vec![Signature::Vector; arg_count];
-    result[0] = Signature::Vector;
-    result[1] = Signature::Vector;
-    if arg_count >= 3 {
-        result[2] = Signature::Scalar;
-    }
-    if arg_count == 4 {
-        result[3] = Signature::Scalar;
-    }
+    let mut result = vec![Signature::Scalar; arg_count];
+    result[1] = Signature::Vector; // lookup_array should be Vector
     result
 }
 
