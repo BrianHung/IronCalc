@@ -546,7 +546,22 @@ impl Model {
                     "numbers must be positive".to_string(),
                 ));
             }
-            let v = value.trunc() as u128;
+            if !value.is_finite() {
+                return Err(CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "value must be finite".to_string(),
+                ));
+            }
+            let truncated = value.trunc();
+            if truncated > u128::MAX as f64 {
+                return Err(CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "value too large".to_string(),
+                ));
+            }
+            let v = truncated as u128;
             result = Some(match result {
                 None => v,
                 Some(r) => gcd(r, v),
@@ -639,7 +654,22 @@ impl Model {
                     "numbers must be positive".to_string(),
                 ));
             }
-            let v = value.trunc() as u128;
+            if !value.is_finite() {
+                return Err(CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "value must be finite".to_string(),
+                ));
+            }
+            let truncated = value.trunc();
+            if truncated > u128::MAX as f64 {
+                return Err(CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "value too large".to_string(),
+                ));
+            }
+            let v = truncated as u128;
             result = Some(match result {
                 None => v,
                 Some(r) => {
