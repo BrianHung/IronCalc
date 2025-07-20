@@ -173,7 +173,7 @@ fn test_fn_stdev_var_large_dataset() {
 
     // Create a larger dataset with known statistical properties
     for i in 1..=10 {
-        model._set(&format!("B{}", i), &format!("{}", i));
+        model._set(&format!("B{i}"), &format!("{i}"));
     }
 
     model._set("A1", "=STDEVA(B1:B10)");
