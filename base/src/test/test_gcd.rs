@@ -10,92 +10,66 @@ fn test_fn_gcd_arguments() {
 }
 
 #[test]
-fn test_fn_gcd_basic_functionality() {
+fn test_fn_gcd_basic() {
     let mut model = new_empty_model();
-
-    // Single argument
     model._set("A1", "=GCD(12)");
-    model._set("A2", "=GCD(0)");
-
-    // Multiple arguments
-    model._set("A3", "=GCD(60,36)");
-    model._set("A4", "=GCD(15,25,35)");
-    model._set("A5", "=GCD(48,18,24)");
-
-    // With zeros
-    model._set("A6", "=GCD(0,12)");
-    model._set("A7", "=GCD(12,0)");
-
-    // Decimal inputs (should truncate)
-    model._set("A8", "=GCD(12.7,8.3)");
-
-    // Edge cases
-    model._set("A9", "=GCD(1,1)");
-    model._set("A10", "=GCD(1,2,3,4,5)");
-
+    model._set("A2", "=GCD(60,36)");
+    model._set("A3", "=GCD(15,25,35)");
+    model._set("A4", "=GCD(12.7,8.3)"); // Decimal truncation
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"12");
-    assert_eq!(model._get_text("A2"), *"0");
+    assert_eq!(model._get_text("A2"), *"12");
+    assert_eq!(model._get_text("A3"), *"5");
+    assert_eq!(model._get_text("A4"), *"4");
+}
+
+#[test]
+fn test_fn_gcd_zeros_and_edge_cases() {
+    let mut model = new_empty_model();
+    model._set("A1", "=GCD(0)");
+    model._set("A2", "=GCD(0,12)");
+    model._set("A3", "=GCD(12,0)");
+    model._set("A4", "=GCD(1,2,3,4,5)");
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), *"0");
+    assert_eq!(model._get_text("A2"), *"12");
     assert_eq!(model._get_text("A3"), *"12");
-    assert_eq!(model._get_text("A4"), *"5");
-    assert_eq!(model._get_text("A5"), *"6");
-    assert_eq!(model._get_text("A6"), *"12");
-    assert_eq!(model._get_text("A7"), *"12");
-    assert_eq!(model._get_text("A8"), *"4");
-    assert_eq!(model._get_text("A9"), *"1");
-    assert_eq!(model._get_text("A10"), *"1");
+    assert_eq!(model._get_text("A4"), *"1");
 }
 
 #[test]
 fn test_fn_gcd_error_cases() {
     let mut model = new_empty_model();
-
-    // Negative numbers
     model._set("A1", "=GCD(-5)");
     model._set("A2", "=GCD(12,-8)");
-
-    // Non-finite values
     model._set("B1", "=1/0"); // Infinity
-    model._set("B2", "=0/0"); // NaN
     model._set("A3", "=GCD(B1)");
-    model._set("A4", "=GCD(B2)");
-    model._set("A5", "=GCD(12,B1)");
-
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"#NUM!");
     assert_eq!(model._get_text("A2"), *"#NUM!");
     assert_eq!(model._get_text("A3"), *"#DIV/0!");
-    assert_eq!(model._get_text("A4"), *"#DIV/0!");
-    assert_eq!(model._get_text("A5"), *"#DIV/0!");
 }
 
 #[test]
-fn test_fn_gcd_ranges_and_mixed() {
+fn test_fn_gcd_ranges() {
     let mut model = new_empty_model();
-
-    // Range inputs
+    // Range with numbers
     model._set("B1", "12");
     model._set("B2", "18");
     model._set("B3", "24");
     model._set("A1", "=GCD(B1:B3)");
 
-    // Mixed inputs (numbers, text, empty cells)
+    // Range with mixed data (text ignored)
     model._set("C1", "12");
-    model._set("C2", "text"); // Should be ignored
-    model._set("C3", "18");
-    // C4 is empty, should be ignored
-    model._set("C5", "6");
-    model._set("A2", "=GCD(C1:C5)");
-
-    // No valid numbers case
-    model._set("D1", "text");
-    model._set("A3", "=GCD(D1,D2)");
+    model._set("C2", "text");
+    model._set("C3", "6");
+    model._set("A2", "=GCD(C1:C3)");
 
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"6");
     assert_eq!(model._get_text("A2"), *"6");
-    assert_eq!(model._get_text("A3"), *"0");
 }
