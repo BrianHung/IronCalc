@@ -19,16 +19,11 @@ const STD_FREQUENCY: i32 = 2; // Semi-annual payments (most common)
 fn assert_numerical_result(model: &crate::Model, cell_ref: &str, should_be_positive: bool) {
     if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref(cell_ref) {
         if should_be_positive {
-            assert!(
-                v > 0.0,
-                "Expected positive value at {}, got {}",
-                cell_ref,
-                v
-            );
+            assert!(v > 0.0, "Expected positive value at {cell_ref}, got {v}");
         }
         // Value is valid - test passes
     } else {
-        panic!("Expected numerical result at {}", cell_ref);
+        panic!("Expected numerical result at {cell_ref}");
     }
 }
 
@@ -68,31 +63,19 @@ fn fn_duration_mduration_settlement_maturity_errors() {
     // Both settlement > maturity and settlement = maturity should error
     model._set(
         "B1",
-        &format!(
-            "=DURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B2",
-        &format!(
-            "=DURATION(A1,A3,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=DURATION(A1,A3,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B3",
-        &format!(
-            "=MDURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B4",
-        &format!(
-            "=MDURATION(A1,A3,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=MDURATION(A1,A3,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
 
     model.evaluate();
@@ -113,21 +96,21 @@ fn fn_duration_mduration_negative_values_errors() {
     // Test negative coupon (coupons must be >= 0)
     model._set(
         "B1",
-        &format!("=DURATION(A1,A2,-0.01,{},{})", STD_YIELD, STD_FREQUENCY),
+        &format!("=DURATION(A1,A2,-0.01,{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B2",
-        &format!("=MDURATION(A1,A2,-0.01,{},{})", STD_YIELD, STD_FREQUENCY),
+        &format!("=MDURATION(A1,A2,-0.01,{STD_YIELD},{STD_FREQUENCY})"),
     );
 
     // Test negative yield (yields must be >= 0)
     model._set(
         "C1",
-        &format!("=DURATION(A1,A2,{},-0.01,{})", STD_COUPON, STD_FREQUENCY),
+        &format!("=DURATION(A1,A2,{STD_COUPON},-0.01,{STD_FREQUENCY})"),
     );
     model._set(
         "C2",
-        &format!("=MDURATION(A1,A2,{},-0.01,{})", STD_COUPON, STD_FREQUENCY),
+        &format!("=MDURATION(A1,A2,{STD_COUPON},-0.01,{STD_FREQUENCY})"),
     );
 
     model.evaluate();
@@ -151,20 +134,20 @@ fn fn_duration_mduration_invalid_frequency_errors() {
     for (i, &freq) in invalid_frequencies.iter().enumerate() {
         let row = i + 1;
         model._set(
-            &format!("B{}", row),
-            &format!("=DURATION(A1,A2,{},{},{})", STD_COUPON, STD_YIELD, freq),
+            &format!("B{row}"),
+            &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{freq})"),
         );
         model._set(
-            &format!("C{}", row),
-            &format!("=MDURATION(A1,A2,{},{},{})", STD_COUPON, STD_YIELD, freq),
+            &format!("C{row}"),
+            &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{freq})"),
         );
     }
 
     model.evaluate();
 
     for i in 1..=invalid_frequencies.len() {
-        assert_eq!(model._get_text(&format!("B{}", i)), *"#NUM!");
-        assert_eq!(model._get_text(&format!("C{}", i)), *"#NUM!");
+        assert_eq!(model._get_text(&format!("B{i}")), *"#NUM!");
+        assert_eq!(model._get_text(&format!("C{i}")), *"#NUM!");
     }
 }
 
@@ -180,12 +163,12 @@ fn fn_duration_mduration_frequency_variations() {
     for (i, &freq) in valid_frequencies.iter().enumerate() {
         let row = i + 1;
         model._set(
-            &format!("B{}", row),
-            &format!("=DURATION(A1,A2,{},{},{})", STD_COUPON, STD_YIELD, freq),
+            &format!("B{row}"),
+            &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{freq})"),
         );
         model._set(
-            &format!("C{}", row),
-            &format!("=MDURATION(A1,A2,{},{},{})", STD_COUPON, STD_YIELD, freq),
+            &format!("C{row}"),
+            &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{freq})"),
         );
     }
 
@@ -193,8 +176,8 @@ fn fn_duration_mduration_frequency_variations() {
 
     // All should return positive numerical values
     for i in 1..=valid_frequencies.len() {
-        assert_numerical_result(&model, &format!("Sheet1!B{}", i), true);
-        assert_numerical_result(&model, &format!("Sheet1!C{}", i), true);
+        assert_numerical_result(&model, &format!("Sheet1!B{i}"), true);
+        assert_numerical_result(&model, &format!("Sheet1!C{i}"), true);
     }
 }
 
@@ -209,43 +192,31 @@ fn fn_duration_mduration_basis_variations() {
     for basis in 0..=4 {
         let row = basis + 1;
         model._set(
-            &format!("B{}", row),
-            &format!(
-                "=DURATION(A1,A2,{},{},{},{})",
-                STD_COUPON, STD_YIELD, STD_FREQUENCY, basis
-            ),
+            &format!("B{row}"),
+            &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY},{basis})"),
         );
         model._set(
-            &format!("C{}", row),
-            &format!(
-                "=MDURATION(A1,A2,{},{},{},{})",
-                STD_COUPON, STD_YIELD, STD_FREQUENCY, basis
-            ),
+            &format!("C{row}"),
+            &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY},{basis})"),
         );
     }
 
     // Test default basis (should be 0)
     model._set(
         "D1",
-        &format!(
-            "=DURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "D2",
-        &format!(
-            "=MDURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
 
     model.evaluate();
 
     // All basis values should work
     for row in 1..=5 {
-        assert_numerical_result(&model, &format!("Sheet1!B{}", row), true);
-        assert_numerical_result(&model, &format!("Sheet1!C{}", row), true);
+        assert_numerical_result(&model, &format!("Sheet1!B{row}"), true);
+        assert_numerical_result(&model, &format!("Sheet1!C{row}"), true);
     }
 
     // Default basis should match basis 0
@@ -278,18 +249,12 @@ fn fn_duration_mduration_edge_cases() {
 
     for (col, settlement, maturity, coupon, yield_rate, _scenario) in test_cases {
         model._set(
-            &format!("{}1", col),
-            &format!(
-                "=DURATION({},{},{},{},{})",
-                settlement, maturity, coupon, yield_rate, STD_FREQUENCY
-            ),
+            &format!("{col}1"),
+            &format!("=DURATION({settlement},{maturity},{coupon},{yield_rate},{STD_FREQUENCY})"),
         );
         model._set(
-            &format!("{}2", col),
-            &format!(
-                "=MDURATION({},{},{},{},{})",
-                settlement, maturity, coupon, yield_rate, STD_FREQUENCY
-            ),
+            &format!("{col}2"),
+            &format!("=MDURATION({settlement},{maturity},{coupon},{yield_rate},{STD_FREQUENCY})"),
         );
     }
 
@@ -297,8 +262,8 @@ fn fn_duration_mduration_edge_cases() {
 
     // All edge cases should return positive values
     for col in ["B", "C", "D", "E"] {
-        assert_numerical_result(&model, &format!("Sheet1!{}1", col), true);
-        assert_numerical_result(&model, &format!("Sheet1!{}2", col), true);
+        assert_numerical_result(&model, &format!("Sheet1!{col}1"), true);
+        assert_numerical_result(&model, &format!("Sheet1!{col}2"), true);
     }
 }
 
@@ -311,23 +276,17 @@ fn fn_duration_mduration_relationship() {
     // Test mathematical relationship: MDURATION = DURATION / (1 + yield/frequency)
     model._set(
         "B1",
-        &format!(
-            "=DURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B2",
-        &format!(
-            "=MDURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
-    model._set("B3", &format!("=B1/(1+{}/{})", STD_YIELD, STD_FREQUENCY)); // Manual calculation
+    model._set("B3", &format!("=B1/(1+{STD_YIELD}/{STD_FREQUENCY})")); // Manual calculation
 
     // Test with quarterly frequency and different yield
-    model._set("C1", &format!("=DURATION(A1,A2,{},0.12,4)", STD_COUPON));
-    model._set("C2", &format!("=MDURATION(A1,A2,{},0.12,4)", STD_COUPON));
+    model._set("C1", &format!("=DURATION(A1,A2,{STD_COUPON},0.12,4)"));
+    model._set("C2", &format!("=MDURATION(A1,A2,{STD_COUPON},0.12,4)"));
     model._set("C3", "=C1/(1+0.12/4)"); // Manual calculation for quarterly
 
     model.evaluate();
@@ -362,17 +321,11 @@ fn fn_duration_mduration_regression() {
     model._set("A2", "=DATE(2020,1,1)");
     model._set(
         "B1",
-        &format!(
-            "=DURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=DURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
     model._set(
         "B2",
-        &format!(
-            "=MDURATION(A1,A2,{},{},{})",
-            STD_COUPON, STD_YIELD, STD_FREQUENCY
-        ),
+        &format!("=MDURATION(A1,A2,{STD_COUPON},{STD_YIELD},{STD_FREQUENCY})"),
     );
 
     model.evaluate();
