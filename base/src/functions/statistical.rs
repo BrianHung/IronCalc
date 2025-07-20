@@ -974,14 +974,23 @@ impl Model {
         }
 
         let mut greater = 0;
+        let mut found = false;
         for v in &values {
             if order {
                 if *v < number {
                     greater += 1;
+                } else if (*v - number).abs() < f64::EPSILON {
+                    found = true;
                 }
             } else if *v > number {
                 greater += 1;
+            } else if (*v - number).abs() < f64::EPSILON {
+                found = true;
             }
+        }
+
+        if !found {
+            return CalcResult::new_error(Error::NA, cell, "Number not found in range".to_string());
         }
 
         let rank = (greater + 1) as f64;
@@ -1057,11 +1066,11 @@ impl Model {
             }
         }
 
-        let rank = if equal == 0 {
-            (greater + 1) as f64
-        } else {
-            greater as f64 + ((equal as f64 + 1.0) / 2.0)
-        };
+        if equal == 0 {
+            return CalcResult::new_error(Error::NA, cell, "Number not found in range".to_string());
+        }
+
+        let rank = greater as f64 + ((equal as f64 + 1.0) / 2.0);
         CalcResult::Number(rank)
     }
 
