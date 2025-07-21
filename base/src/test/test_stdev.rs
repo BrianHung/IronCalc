@@ -97,7 +97,7 @@ fn test_fn_stdev_literals_vs_references() {
     let mut model = new_empty_model();
     model._set("B1", "TRUE"); // Boolean from reference - ignored
     model._set("B2", "'5"); // String from reference - ignored
-    // Boolean and string literals should be converted
+                            // Boolean and string literals should be converted
     model._set("A1", "=STDEV.S(1, 2, 3, TRUE, \"5\")");
     model._set("A2", "=STDEV.P(1, 2, 3, TRUE, \"5\")");
     model.evaluate();
@@ -183,12 +183,12 @@ fn test_fn_stdev_larger_dataset() {
     // Mean = 385/10 = 38.5
     // Sample std dev should be approximately 32.731...
     // Population std dev should be approximately 31.113...
-    
+
     // The exact values would need calculation, but we're testing the functions work with larger datasets
     // and don't crash or produce obviously wrong results
     let result_s = model._get_text("A1");
     let result_p = model._get_text("A2");
-    
+
     // Basic sanity checks - results should be positive numbers
     assert!(result_s.parse::<f64>().unwrap() > 0.0);
     assert!(result_p.parse::<f64>().unwrap() > 0.0);
@@ -211,7 +211,7 @@ fn test_fn_stdev_decimal_values() {
     // Should handle decimal calculations correctly
     let result_s = model._get_text("A1");
     let result_p = model._get_text("A2");
-    
+
     assert!(result_s.parse::<f64>().unwrap() > 0.0);
     assert!(result_p.parse::<f64>().unwrap() > 0.0);
     assert!(result_s.parse::<f64>().unwrap() > result_p.parse::<f64>().unwrap());
@@ -228,7 +228,7 @@ fn test_fn_stdev_with_false_boolean_literal() {
     // This tests that FALSE literals are properly converted to 0
     let result_s = model._get_text("A1");
     let result_p = model._get_text("A2");
-    
+
     assert!(result_s.parse::<f64>().unwrap() > 0.0);
     assert!(result_p.parse::<f64>().unwrap() > 0.0);
 }
@@ -289,7 +289,7 @@ fn test_fn_stdev_mathematical_correctness_known_values() {
     //                 = (9 + 1 + 1 + 1 + 0 + 0 + 4 + 16) / 7 = 32/7
     // STDEV.S = sqrt(32/7) ≈ 2.1380899353
     let result_s = model._get_text("A1");
-    let expected_s = (32.0/7.0_f64).sqrt();
+    let expected_s = (32.0 / 7.0_f64).sqrt();
     assert!((result_s.parse::<f64>().unwrap() - expected_s).abs() < 1e-9);
 
     // Population variance = 32/8 = 4

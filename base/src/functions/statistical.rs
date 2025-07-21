@@ -9,7 +9,6 @@ use crate::{
 
 use super::util::{build_criteria, collect_numeric_values};
 
-
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.is_empty() {
@@ -681,10 +680,10 @@ impl Model {
             Ok(v) => v,
             Err(err) => return err,
         };
-        
+
         // Filter out NaN values to ensure proper sorting
         let mut values: Vec<f64> = values.into_iter().filter(|v| !v.is_nan()).collect();
-        
+
         if values.is_empty() {
             return CalcResult::Error {
                 error: Error::DIV,
@@ -692,7 +691,7 @@ impl Model {
                 message: "Division by Zero".to_string(),
             };
         }
-        
+
         // Sort values - safe to unwrap since we've filtered out NaN values
         values.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let len = values.len();
