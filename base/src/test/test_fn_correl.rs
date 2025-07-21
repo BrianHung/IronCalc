@@ -1,11 +1,12 @@
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
 use crate::test::util::new_empty_model;
 
 // Helper function for approximate floating point comparison
 fn assert_approx_eq(actual: &str, expected: f64, tolerance: f64) {
     let actual_val: f64 = actual
         .parse()
-        .unwrap_or_else(|_| panic!("Failed to parse result as number: {}", actual));
+        .unwrap_or_else(|_| panic!("Failed to parse result as number: {actual}"));
     assert!(
         (actual_val - expected).abs() < tolerance,
         "Expected ~{expected}, got {actual}"
