@@ -937,6 +937,22 @@ impl Model {
             3
         };
         let n = values.len() as f64;
+
+        // Handle single element array case
+        if n == 1.0 {
+            if (x - values[0]).abs() <= f64::EPSILON {
+                let factor = 10f64.powi(decimals);
+                let result = (0.5 * factor).round() / factor;
+                return CalcResult::Number(result);
+            } else {
+                return CalcResult::new_error(
+                    Error::NA,
+                    cell,
+                    "Value not found in single element array".to_string(),
+                );
+            }
+        }
+
         if x < values[0] {
             return CalcResult::Number(0.0);
         }
@@ -947,13 +963,26 @@ impl Model {
         while idx < values.len() && values[idx] < x {
             idx += 1;
         }
-        let rank = if idx == values.len() || (x - values[idx]).abs() > f64::EPSILON {
+
+        // Handle case where idx reaches end of array (should not happen due to bounds check above)
+        if idx >= values.len() {
+            return CalcResult::Number(1.0);
+        }
+
+        let rank = if (x - values[idx]).abs() <= f64::EPSILON {
+            // Exact match found
+            idx as f64
+        } else {
+            // Interpolation needed - ensure we don't go out of bounds
+            if idx == 0 {
+                // x is between the minimum and the first element, should not happen due to bounds check
+                return CalcResult::Number(0.0);
+            }
             let lower = values[idx - 1];
             let upper = values[idx];
             (idx as f64 - 1.0) + (x - lower) / (upper - lower)
-        } else {
-            idx as f64
         };
+
         let mut result = rank / (n - 1.0);
         let factor = 10f64.powi(decimals);
         result = (result * factor).round() / factor;
