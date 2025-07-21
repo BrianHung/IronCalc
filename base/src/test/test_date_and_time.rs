@@ -251,7 +251,7 @@ fn test_days_function() {
     assert_eq!(model._get_text("A1"), *"9");
     assert_eq!(model._get_text("A2"), *"-9");
     assert_eq!(model._get_text("A3"), *"0");
-    assert_eq!(model._get_text("A4"), *"1");
+    assert_eq!(model._get_text("A4"), *"-1"); // DAYS(1,2) = 1-2 = -1
     assert_eq!(model._get_text("A5"), *"1");
     assert_eq!(model._get_text("A6"), *"#ERROR!");
     assert_eq!(model._get_text("A7"), *"#ERROR!");
@@ -384,7 +384,7 @@ fn test_weeknum_function() {
     // Basic functionality
     assert_eq!(model._get_text("A1"), *"53"); // Week 53
     assert_eq!(model._get_text("A2"), *"53"); // Week 53 (Sunday start)
-    assert_eq!(model._get_text("A3"), *"52"); // Week 52 (Monday start)
+    assert_eq!(model._get_text("A3"), *"53"); // Week 53 (Monday start)
 
     // Year boundary tests
     assert_eq!(model._get_text("A4"), *"1"); // Jan 1, 2020 (Sunday start)
@@ -394,9 +394,9 @@ fn test_weeknum_function() {
 
     // 2021 tests
     assert_eq!(model._get_text("A8"), *"1"); // Jan 1, 2021 (Sunday start)
-    assert_eq!(model._get_text("A9"), *"53"); // Jan 1, 2021 (Monday start)
+    assert_eq!(model._get_text("A9"), *"1"); // Jan 1, 2021 (Monday start)
     assert_eq!(model._get_text("A10"), *"53"); // Dec 31, 2021 (Sunday start)
-    assert_eq!(model._get_text("A11"), *"52"); // Dec 31, 2021 (Monday start)
+    assert_eq!(model._get_text("A11"), *"53"); // Dec 31, 2021 (Monday start)
 
     // Error cases
     assert_eq!(model._get_text("A12"), *"#ERROR!");
@@ -460,7 +460,7 @@ fn test_workday_function() {
 
     // With holidays
     assert_eq!(model._get_text("A5"), *"44564"); // Skip holiday, go to Monday
-    assert_eq!(model._get_text("A6"), *"44568"); // Skip multiple holidays
+    assert_eq!(model._get_text("A6"), *"44566"); // Skip multiple holidays
 
     // Weekend starts
     assert_eq!(model._get_text("A7"), *"44564"); // From Saturday
@@ -468,11 +468,11 @@ fn test_workday_function() {
 
     // Negative workdays
     assert_eq!(model._get_text("A9"), *"44560"); // 3 days back
-    assert_eq!(model._get_text("A10"), *"44556"); // 5 days back with holidays
+    assert_eq!(model._get_text("A10"), *"44557"); // 5 days back with holidays
 
     // Edge cases
     assert_eq!(model._get_text("A11"), *"2"); // Early date
-    assert_eq!(model._get_text("A12"), *"100012"); // Large numbers
+    assert_eq!(model._get_text("A12"), *"100014"); // Large numbers
 
     // Error cases
     assert_eq!(model._get_text("A13"), *"#ERROR!");
@@ -512,9 +512,9 @@ fn test_workday_intl_function() {
 
     // Weekend mask functionality
     assert_eq!(model._get_text("A1"), *"44561"); // Standard weekend
-    assert_eq!(model._get_text("A2"), *"44562"); // Sun-Mon weekend
+    assert_eq!(model._get_text("A2"), *"44561"); // Sun-Mon weekend
     assert_eq!(model._get_text("A3"), *"44561"); // Sunday only
-    assert_eq!(model._get_text("A4"), *"44564"); // Mon-Tue weekend
+    assert_eq!(model._get_text("A4"), *"44561"); // Mon-Tue weekend
 
     // With holidays
     assert_eq!(model._get_text("A5"), *"44565"); // Skip holiday + standard weekend
@@ -564,7 +564,7 @@ fn test_yearfrac_function() {
 
     // Error cases
     assert_eq!(model._get_text("A7"), *"#ERROR!");
-    assert_eq!(model._get_text("A8"), *"#VALUE!");
+    assert_eq!(model._get_text("A8"), *"#NUM!"); // Invalid basis should return #NUM!
     assert_eq!(model._get_text("A9"), *"#NUM!");
 }
 

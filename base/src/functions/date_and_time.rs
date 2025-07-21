@@ -444,10 +444,13 @@ impl Model {
         let num = match return_type {
             1 => weekday.num_days_from_sunday() + 1,
             2 => weekday.number_from_monday(),
-            3 => weekday.number_from_monday() % 7,
+            3 => (weekday.number_from_monday() - 1) % 7, // 0-based Monday start
             11..=17 => {
                 let start = (return_type - 11) as u32; // 0 for Monday
                 ((weekday.number_from_monday() + 7 - start) % 7) + 1
+            }
+            0 => {
+                return CalcResult::new_error(Error::VALUE, cell, "Invalid return_type".to_string())
             }
             _ => return CalcResult::new_error(Error::NUM, cell, "Invalid return_type".to_string()),
         } as u32;
@@ -493,6 +496,9 @@ impl Model {
             15 => chrono::Weekday::Fri,
             16 => chrono::Weekday::Sat,
             17 => chrono::Weekday::Sun,
+            x if x <= 0 || x == 3 => {
+                return CalcResult::new_error(Error::VALUE, cell, "Invalid return_type".to_string())
+            }
             _ => return CalcResult::new_error(Error::NUM, cell, "Invalid return_type".to_string()),
         };
         let mut first = match chrono::NaiveDate::from_ymd_opt(date.year(), 1, 1) {
