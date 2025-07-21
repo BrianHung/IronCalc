@@ -19,7 +19,7 @@ const TIME_2_30_AM: &str = "0.104166667"; // 2:30 AM = 2.5/24 ≈ 0.104166667
 const TIME_1_AM: &str = "0.041666667"; // 1:00 AM = 1/24 ≈ 0.041666667
 const TIME_9_PM: &str = "0.875"; // 9:00 PM = 21/24 = 0.875
 const TIME_2_AM: &str = "0.083333333"; // 2:00 AM = 2/24 ≈ 0.083333333
-// Additional helper: 1-second past midnight (00:00:01)
+                                       // Additional helper: 1-second past midnight (00:00:01)
 const TIME_00_00_01: &str = "0.000011574"; // 1 second = 1/86400 ≈ 0.000011574
 
 /// Helper function to set up and evaluate a model with time expressions
