@@ -237,7 +237,7 @@ fn test_fn_median_large_dataset() {
 
     // Test with larger dataset (20 values)
     for i in 1..=20 {
-        model._set(&format!("A{}", i), &(i * 2).to_string());
+        model._set(&format!("A{i}"), &(i * 2).to_string());
     }
     model._set("B1", "=MEDIAN(A1:A20)");
     model.evaluate();

@@ -172,7 +172,7 @@ fn test_fn_stdev_larger_dataset() {
     let mut model = new_empty_model();
     // Setting up a larger dataset: 1, 4, 9, 16, 25, 36, 49, 64, 81, 100
     for i in 1..=10 {
-        model._set(&format!("B{}", i), &format!("{}", i * i));
+        model._set(&format!("B{i}"), &format!("{}", i * i));
     }
     model._set("A1", "=STDEV.S(B1:B10)");
     model._set("A2", "=STDEV.P(B1:B10)");
