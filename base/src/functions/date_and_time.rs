@@ -254,7 +254,17 @@ impl Model {
     ) -> Result<Vec<i64>, CalcResult> {
         let mut values = Vec::new();
         match self.evaluate_node_in_context(arg, cell) {
-            CalcResult::Number(v) => values.push(v.floor() as i64),
+            CalcResult::Number(v) => {
+                let date_serial = v.floor() as i64;
+                if from_excel_date(date_serial).is_err() {
+                    return Err(CalcResult::Error {
+                        error: Error::NUM,
+                        origin: cell,
+                        message: "Out of range parameters for date".to_string(),
+                    });
+                }
+                values.push(date_serial);
+            }
             CalcResult::Range { left, right } => {
                 if left.sheet != right.sheet {
                     return Err(CalcResult::new_error(
@@ -270,22 +280,48 @@ impl Model {
                             row,
                             column,
                         }) {
-                            CalcResult::Number(v) => values.push(v.floor() as i64),
+                            CalcResult::Number(v) => {
+                                let date_serial = v.floor() as i64;
+                                if from_excel_date(date_serial).is_err() {
+                                    return Err(CalcResult::Error {
+                                        error: Error::NUM,
+                                        origin: cell,
+                                        message: "Out of range parameters for date".to_string(),
+                                    });
+                                }
+                                values.push(date_serial);
+                            }
+                            CalcResult::EmptyCell => {
+                                // Empty cells are ignored in holiday lists
+                            }
                             e @ CalcResult::Error { .. } => return Err(e),
-                            _ => {}
+                            _ => {
+                                // Non-numeric values in holiday lists should cause VALUE error
+                                return Err(CalcResult::Error {
+                                    error: Error::VALUE,
+                                    origin: cell,
+                                    message: "Invalid holiday date".to_string(),
+                                });
+                            }
                         }
                     }
                 }
             }
-            e @ CalcResult::Error { .. } => return Err(e),
-            _ => {}
-        }
-        for &v in &values {
-            if from_excel_date(v).is_err() {
+            CalcResult::String(_) => {
+                // String holidays should cause VALUE error
                 return Err(CalcResult::Error {
-                    error: Error::NUM,
+                    error: Error::VALUE,
                     origin: cell,
-                    message: "Out of range parameters for date".to_string(),
+                    message: "Invalid holiday date".to_string(),
+                });
+            }
+            e @ CalcResult::Error { .. } => return Err(e),
+            _ => {
+                // Other non-numeric types should cause VALUE error
+                return Err(CalcResult::Error {
+                    error: Error::VALUE,
+                    origin: cell,
+                    message: "Invalid holiday date".to_string(),
                 });
             }
         }
@@ -346,6 +382,7 @@ impl Model {
         node: Option<&Node>,
         cell: CellReferenceIndex,
     ) -> Result<[bool; 7], CalcResult> {
+        // Default: Saturday-Sunday weekend (pattern 1)
         let mut weekend = [false, false, false, false, false, true, true];
         if node.is_none() {
             return Ok(weekend);
@@ -360,29 +397,29 @@ impl Model {
                 let code = n.trunc() as i32;
                 if (n - n.trunc()).abs() > f64::EPSILON {
                     return Err(CalcResult::new_error(
-                        Error::VALUE,
+                        Error::NUM,
                         cell,
                         "Invalid weekend".to_string(),
                     ));
                 }
                 weekend = match code {
-                    1 | 0 => [false, false, false, false, false, true, true],
-                    2 => [true, false, false, false, false, false, true],
-                    3 => [true, true, false, false, false, false, false],
-                    4 => [false, true, true, false, false, false, false],
-                    5 => [false, false, true, true, false, false, false],
-                    6 => [false, false, false, true, true, false, false],
-                    7 => [false, false, false, false, true, true, false],
-                    11 => [false, false, false, false, false, false, true],
-                    12 => [true, false, false, false, false, false, false],
-                    13 => [false, true, false, false, false, false, false],
-                    14 => [false, false, true, false, false, false, false],
-                    15 => [false, false, false, true, false, false, false],
-                    16 => [false, false, false, false, true, false, false],
-                    17 => [false, false, false, false, false, true, false],
+                    1 | 0 => [false, false, false, false, false, true, true], // Saturday-Sunday
+                    2 => [true, false, false, false, false, false, true],     // Sunday-Monday
+                    3 => [true, true, false, false, false, false, false],     // Monday-Tuesday
+                    4 => [false, true, true, false, false, false, false],     // Tuesday-Wednesday
+                    5 => [false, false, true, true, false, false, false],     // Wednesday-Thursday
+                    6 => [false, false, false, true, true, false, false],     // Thursday-Friday
+                    7 => [false, false, false, false, true, true, false],     // Friday-Saturday
+                    11 => [false, false, false, false, false, false, true],   // Sunday only
+                    12 => [true, false, false, false, false, false, false],   // Monday only
+                    13 => [false, true, false, false, false, false, false],   // Tuesday only
+                    14 => [false, false, true, false, false, false, false],   // Wednesday only
+                    15 => [false, false, false, true, false, false, false],   // Thursday only
+                    16 => [false, false, false, false, true, false, false],   // Friday only
+                    17 => [false, false, false, false, false, true, false],   // Saturday only
                     _ => {
                         return Err(CalcResult::new_error(
-                            Error::VALUE,
+                            Error::NUM,
                             cell,
                             "Invalid weekend".to_string(),
                         ))
@@ -391,7 +428,14 @@ impl Model {
                 Ok(weekend)
             }
             CalcResult::String(s) => {
-                if s.len() != 7 || !s.chars().all(|c| c == '0' || c == '1') {
+                if s.len() != 7 {
+                    return Err(CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Invalid weekend".to_string(),
+                    ));
+                }
+                if !s.chars().all(|c| c == '0' || c == '1') {
                     return Err(CalcResult::new_error(
                         Error::VALUE,
                         cell,
@@ -411,15 +455,15 @@ impl Model {
             )),
             e @ CalcResult::Error { .. } => Err(e),
             CalcResult::Range { .. } => Err(CalcResult::Error {
-                error: Error::NIMPL,
+                error: Error::VALUE,
                 origin: cell,
-                message: "Arrays not supported yet".to_string(),
+                message: "Invalid weekend".to_string(),
             }),
             CalcResult::EmptyCell | CalcResult::EmptyArg => Ok(weekend),
             CalcResult::Array(_) => Err(CalcResult::Error {
-                error: Error::NIMPL,
+                error: Error::VALUE,
                 origin: cell,
-                message: "Arrays not supported yet".to_string(),
+                message: "Invalid weekend".to_string(),
             }),
         }
     }

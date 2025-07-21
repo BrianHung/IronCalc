@@ -117,8 +117,8 @@ fn networkdays_intl_supports_numeric_weekend_patterns() {
 
     assert_eq!(
         model._get_text("A1"),
-        "8",
-        "Sunday-Monday weekend should give 8 workdays"
+        "6",
+        "Sunday-Monday weekend should give 6 workdays"
     );
 }
 
@@ -144,10 +144,10 @@ fn networkdays_intl_supports_single_day_weekends() {
 fn networkdays_intl_supports_string_weekend_patterns() {
     let mut model = new_empty_model();
 
-    // "1111100" = Friday-Saturday weekend
+    // "0000110" = Friday-Saturday weekend
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'1111100')"),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},\"0000110\")"),
     );
     model.evaluate();
 
@@ -164,7 +164,7 @@ fn networkdays_intl_no_weekends_counts_all_days() {
 
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'0000000')"),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},\"0000000\")"),
     );
     model.evaluate();
 
@@ -181,7 +181,7 @@ fn networkdays_intl_combines_custom_weekends_with_holidays() {
 
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'1111100',{JAN_9_2023})"),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},\"0000110\",{JAN_9_2023})"),
     );
     model.evaluate();
 
@@ -215,7 +215,7 @@ fn networkdays_rejects_invalid_dates() {
 
     model._set("A1", "=NETWORKDAYS(-1,100)");
     model._set("A2", "=NETWORKDAYS(1,3000000)");
-    model._set("A3", "=NETWORKDAYS('text',100)");
+    model._set("A3", "=NETWORKDAYS(\"text\",100)");
 
     model.evaluate();
 
@@ -229,9 +229,9 @@ fn networkdays_intl_rejects_invalid_weekend_patterns() {
     let mut model = new_empty_model();
 
     model._set("A1", "=NETWORKDAYS.INTL(1,10,99)");
-    model._set("A2", "=NETWORKDAYS.INTL(1,10,'111110')");
-    model._set("A3", "=NETWORKDAYS.INTL(1,10,'11111000')");
-    model._set("A4", "=NETWORKDAYS.INTL(1,10,'1111102')");
+    model._set("A2", "=NETWORKDAYS.INTL(1,10,\"111110\")");
+    model._set("A3", "=NETWORKDAYS.INTL(1,10,\"11111000\")");
+    model._set("A4", "=NETWORKDAYS.INTL(1,10,\"1111102\")");
 
     model.evaluate();
 
