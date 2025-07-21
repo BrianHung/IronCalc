@@ -800,13 +800,7 @@ impl Model {
                                 column,
                             }) {
                                 CalcResult::Number(v) => values.push(v),
-                                CalcResult::Error { .. } => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Error in range".to_string(),
-                                    )
-                                }
+                                error @ CalcResult::Error { .. } => return error,
                                 _ => {}
                             }
                         }
@@ -995,13 +989,7 @@ impl Model {
                             column,
                         }) {
                             CalcResult::Number(f) => v.push(Some(f)),
-                            CalcResult::Error { .. } => {
-                                return Err(CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    "Error in range".to_string(),
-                                ))
-                            }
+                            error @ CalcResult::Error { .. } => return Err(error),
                             _ => v.push(None),
                         }
                     }

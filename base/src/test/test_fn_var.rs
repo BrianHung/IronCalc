@@ -207,15 +207,21 @@ fn test_fn_var_large_numbers() {
 #[test]
 fn test_fn_var_error_propagation() {
     let mut model = new_empty_model();
-    model._set("B1", "1");
-    model._set("B2", "=1/0"); // Division by zero error
-    model._set("B3", "3");
-    model._set("A1", "=VAR.S(B1:B3)");
-    model._set("A2", "=VAR.P(B1:B3)");
+
+    // Test that specific errors are propagated instead of generic "Error in range"
+    model._set("A1", "1");
+    model._set("A2", "=1/0"); // #DIV/0! error
+    model._set("A3", "=VALUE(\"invalid\")"); // #VALUE! error
+    model._set("A4", "3");
+
+    model._set("B1", "=VAR.S(A1:A2,A4)"); // Contains #DIV/0!
+    model._set("B2", "=VAR.P(A1,A3,A4)"); // Contains #VALUE!
+
     model.evaluate();
-    // Errors in input should propagate
-    assert_eq!(model._get_text("A1"), *"#ERROR!");
-    assert_eq!(model._get_text("A2"), *"#ERROR!");
+
+    // Should propagate specific errors, not generic "Error in range"
+    assert_eq!(model._get_text("B1"), "#DIV/0!");
+    assert_eq!(model._get_text("B2"), "#VALUE!");
 }
 
 #[test]

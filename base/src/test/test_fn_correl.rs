@@ -303,14 +303,22 @@ fn test_fn_correl_scientific_notation() {
 #[test]
 fn test_fn_correl_error_propagation() {
     let mut model = new_empty_model();
-    model._set("B1", "1");
-    model._set("B2", "=1/0"); // Division by zero error
-    model._set("B3", "3");
-    model._set("C1", "2");
-    model._set("C2", "4");
-    model._set("C3", "6");
-    model._set("A1", "=CORREL(B1:B3, C1:C3)");
+
+    // Test that specific errors are propagated instead of generic "Error in range"
+    model._set("A1", "1");
+    model._set("A2", "=1/0"); // #DIV/0! error
+    model._set("A3", "3");
+
+    model._set("B1", "4");
+    model._set("B2", "=VALUE(\"invalid\")"); // #VALUE! error
+    model._set("B3", "6");
+
+    model._set("C1", "=CORREL(A1:A3, B1:B3)"); // Contains #DIV/0! in first range
+    model._set("C2", "=CORREL(B1:B3, A1:A3)"); // Contains #VALUE! in first range
+
     model.evaluate();
-    // Error in range should propagate
-    assert_eq!(model._get_text("A1"), *"#ERROR!");
+
+    // Should propagate specific errors, not generic "Error in range"
+    assert_eq!(model._get_text("C1"), "#DIV/0!");
+    assert_eq!(model._get_text("C2"), "#VALUE!");
 }
