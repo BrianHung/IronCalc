@@ -244,7 +244,7 @@ fn test_days_function() {
 
     // Error cases - invalid dates
     model._set("A9", "=DAYS(-1,44561)");
-    model._set("A10", &format!("=DAYS(44561,{})", EXCEL_INVALID_DATE));
+    model._set("A10", &format!("=DAYS(44561,{EXCEL_INVALID_DATE})"));
 
     model.evaluate();
 
@@ -288,7 +288,7 @@ fn test_days360_function() {
 
     // Error cases - invalid dates
     model._set("A13", "=DAYS360(-1,44561)");
-    model._set("A14", &format!("=DAYS360(44561,{})", EXCEL_INVALID_DATE));
+    model._set("A14", &format!("=DAYS360(44561,{EXCEL_INVALID_DATE})"));
 
     model.evaluate();
 
@@ -377,7 +377,7 @@ fn test_weeknum_function() {
 
     // Error cases - invalid dates
     model._set("A17", "=WEEKNUM(-1)");
-    model._set("A18", &format!("=WEEKNUM({})", EXCEL_INVALID_DATE));
+    model._set("A18", &format!("=WEEKNUM({EXCEL_INVALID_DATE})"));
 
     model.evaluate();
 
@@ -444,7 +444,7 @@ fn test_workday_function() {
 
     // Error cases - invalid dates
     model._set("A16", "=WORKDAY(-1,1)");
-    model._set("A17", &format!("=WORKDAY({},1)", EXCEL_INVALID_DATE));
+    model._set("A17", &format!("=WORKDAY({EXCEL_INVALID_DATE},1)"));
 
     // Error cases - invalid holiday dates
     model._set("B4", "-1");
