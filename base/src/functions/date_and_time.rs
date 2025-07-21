@@ -18,17 +18,65 @@ use crate::{
 
 fn parse_time_string(text: &str) -> Option<f64> {
     let text = text.trim();
+
+    // First, try custom parsing for edge cases like "24:00:00", "23:60:00", "23:59:60"
+    // that need normalization to match Excel behavior
+    if let Some(time_fraction) = parse_time_with_normalization(text) {
+        return Some(time_fraction);
+    }
+
+    // First, try manual parsing for simple "N PM" / "N AM" format
+    if let Some((hour_str, is_pm)) = parse_simple_am_pm(text) {
+        if let Ok(hour) = hour_str.parse::<u32>() {
+            if hour >= 1 && hour <= 12 {
+                let hour_24 = if is_pm {
+                    if hour == 12 {
+                        12
+                    } else {
+                        hour + 12
+                    }
+                } else {
+                    if hour == 12 {
+                        0
+                    } else {
+                        hour
+                    }
+                };
+                let time = NaiveTime::from_hms_opt(hour_24, 0, 0)?;
+                return Some(time.num_seconds_from_midnight() as f64 / 86_400.0);
+            }
+        }
+    }
+
+    // Standard patterns
     let patterns_time = ["%H:%M:%S", "%H:%M", "%I:%M %p", "%I %p", "%I:%M:%S %p"];
     for p in patterns_time {
         if let Ok(t) = NaiveTime::parse_from_str(text, p) {
             return Some(t.num_seconds_from_midnight() as f64 / 86_400.0);
         }
     }
+
     let patterns_dt = [
+        // ISO formats
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M",
+        // Excel-style date formats with AM/PM
+        "%d-%b-%Y %I:%M:%S %p", // "22-Aug-2011 6:35:00 AM"
+        "%d-%b-%Y %I:%M %p",    // "22-Aug-2011 6:35 AM"
+        "%d-%b-%Y %H:%M:%S",    // "22-Aug-2011 06:35:00"
+        "%d-%b-%Y %H:%M",       // "22-Aug-2011 06:35"
+        // US date formats with AM/PM
+        "%m/%d/%Y %I:%M:%S %p", // "8/22/2011 6:35:00 AM"
+        "%m/%d/%Y %I:%M %p",    // "8/22/2011 6:35 AM"
+        "%m/%d/%Y %H:%M:%S",    // "8/22/2011 06:35:00"
+        "%m/%d/%Y %H:%M",       // "8/22/2011 06:35"
+        // European date formats with AM/PM
+        "%d/%m/%Y %I:%M:%S %p", // "22/8/2011 6:35:00 AM"
+        "%d/%m/%Y %I:%M %p",    // "22/8/2011 6:35 AM"
+        "%d/%m/%Y %H:%M:%S",    // "22/8/2011 06:35:00"
+        "%d/%m/%Y %H:%M",       // "22/8/2011 06:35"
     ];
     for p in patterns_dt {
         if let Ok(dt) = NaiveDateTime::parse_from_str(text, p) {
@@ -37,6 +85,94 @@ fn parse_time_string(text: &str) -> Option<f64> {
     }
     if let Ok(dt) = DateTime::parse_from_rfc3339(text) {
         return Some(dt.time().num_seconds_from_midnight() as f64 / 86_400.0);
+    }
+    None
+}
+
+// Custom parser that handles time normalization like Excel does
+fn parse_time_with_normalization(text: &str) -> Option<f64> {
+    // Try to parse H:M:S format with potential overflow values
+    let parts: Vec<&str> = text.split(':').collect();
+
+    if parts.len() == 3 {
+        // H:M:S format
+        if let (Ok(h), Ok(m), Ok(s)) = (
+            parts[0].parse::<i32>(),
+            parts[1].parse::<i32>(),
+            parts[2].parse::<i32>(),
+        ) {
+            // Only normalize specific edge cases that Excel handles
+            // Don't normalize arbitrary large values like 25:00:00
+            if should_normalize_time_components(h, m, s) {
+                return Some(normalize_time_components(h, m, s));
+            }
+        }
+    } else if parts.len() == 2 {
+        // H:M format (assume seconds = 0)
+        if let (Ok(h), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+            // Only normalize specific edge cases
+            if should_normalize_time_components(h, m, 0) {
+                return Some(normalize_time_components(h, m, 0));
+            }
+        }
+    }
+
+    None
+}
+
+// Normalize time components with overflow handling (like Excel)
+fn normalize_time_components(hour: i32, minute: i32, second: i32) -> f64 {
+    // Convert everything to total seconds
+    let mut total_seconds = hour * 3600 + minute * 60 + second;
+
+    // Handle negative values by wrapping around
+    if total_seconds < 0 {
+        total_seconds = total_seconds.rem_euclid(86400);
+    }
+
+    // Normalize to within a day (0-86399 seconds)
+    total_seconds = total_seconds % 86400;
+
+    // Convert to fraction of a day
+    total_seconds as f64 / 86400.0
+}
+
+// Check if time components should be normalized (only specific Excel edge cases)
+fn should_normalize_time_components(hour: i32, minute: i32, second: i32) -> bool {
+    // Only normalize these specific cases that Excel handles:
+    // 1. Hour 24 with valid minutes/seconds
+    // 2. Hour 23 with minute 60 (becomes 24:00)
+    // 3. Any time with second 60 that normalizes to exactly 24:00
+
+    if hour == 24 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 {
+        return true; // 24:MM:SS -> normalize to next day
+    }
+
+    if hour == 23 && minute == 60 && second >= 0 && second <= 59 {
+        return true; // 23:60:SS -> normalize to 24:00:SS
+    }
+
+    if hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second == 60 {
+        // Check if this normalizes to exactly 24:00:00
+        let total_seconds = hour * 3600 + minute * 60 + second;
+        return total_seconds == 86400; // Exactly 24:00:00
+    }
+
+    false
+}
+
+// Helper function to parse simple "N PM" / "N AM" formats
+fn parse_simple_am_pm(text: &str) -> Option<(&str, bool)> {
+    if text.ends_with(" PM") {
+        let hour_part = &text[..text.len() - 3];
+        if hour_part.chars().all(|c| c.is_ascii_digit()) {
+            return Some((hour_part, true));
+        }
+    } else if text.ends_with(" AM") {
+        let hour_part = &text[..text.len() - 3];
+        if hour_part.chars().all(|c| c.is_ascii_digit()) {
+            return Some((hour_part, false));
+        }
     }
     None
 }
