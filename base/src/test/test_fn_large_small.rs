@@ -42,21 +42,29 @@ fn test_fn_large_small_k_equals_zero() {
     model._set("A2", "=SMALL(B1:B2,0)");
     model.evaluate();
 
-    assert_eq!(model._get_text("A1"), *"#NUM!");
-    assert_eq!(model._get_text("A2"), *"#NUM!");
+    assert_eq!(model._get_text("A1"), "#NUM!");
+    assert_eq!(model._get_text("A2"), "#NUM!");
 }
 
 #[test]
-fn test_fn_large_small_negative_k() {
+fn test_fn_large_small_k_less_than_one() {
     let mut model = new_empty_model();
     model._set("B1", "10");
     model._set("B2", "20");
-    model._set("A1", "=LARGE(B1:B2,-1)");
-    model._set("A2", "=SMALL(B1:B2,-2)");
+    model._set("B3", "30");
+
+    // Test k < 1 values (should all return #NUM! error)
+    model._set("A1", "=LARGE(B1:B3,-1)");
+    model._set("A2", "=SMALL(B1:B3,-0.5)");
+    model._set("A3", "=LARGE(B1:B3,0.9)");
+    model._set("A4", "=SMALL(B1:B3,0)");
+
     model.evaluate();
 
-    assert!(model._get_text("A1").contains("#"));
-    assert!(model._get_text("A2").contains("#"));
+    assert_eq!(model._get_text("A1"), "#NUM!");
+    assert_eq!(model._get_text("A2"), "#NUM!");
+    assert_eq!(model._get_text("A3"), "#NUM!");
+    assert_eq!(model._get_text("A4"), "#NUM!");
 }
 
 #[test]

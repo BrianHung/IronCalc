@@ -766,12 +766,25 @@ impl Model {
         }
 
         let k = match self.get_number(&args[1], cell) {
-            Ok(v) => v as usize,
+            Ok(v) => {
+                if v < 1.0 {
+                    return CalcResult::new_error(
+                        Error::NUM,
+                        cell,
+                        "k must be a positive number".to_string(),
+                    );
+                }
+                v as usize
+            }
             Err(e) => return e,
         };
 
-        if k == 0 || k > values.len() {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
+        if k > values.len() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "k is larger than the number of values".to_string(),
+            );
         }
         values.sort_by(|a, b| b.total_cmp(a));
         CalcResult::Number(values[k - 1])
@@ -812,12 +825,25 @@ impl Model {
         }
 
         let k = match self.get_number(&args[1], cell) {
-            Ok(v) => v as usize,
+            Ok(v) => {
+                if v < 1.0 {
+                    return CalcResult::new_error(
+                        Error::NUM,
+                        cell,
+                        "k must be a positive number".to_string(),
+                    );
+                }
+                v as usize
+            }
             Err(e) => return e,
         };
 
-        if k == 0 || k > values.len() {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid k".to_string());
+        if k > values.len() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "k is larger than the number of values".to_string(),
+            );
         }
         values.sort_by(|a, b| a.total_cmp(b));
         CalcResult::Number(values[k - 1])
