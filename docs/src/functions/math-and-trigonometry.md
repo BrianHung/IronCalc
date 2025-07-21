@@ -83,8 +83,8 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | SQRTPI          | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUBTOTAL        | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUM             | <Badge type="tip" text="Available" />          | –             |
-| SUMIF           | <Badge type="tip" text="Available" />          | –             |
-| SUMIFS          | <Badge type="tip" text="Available" />          | –             |
+| SUMIF           | <Badge type="tip" text="Available" />          | [SUMIF](math_and_trigonometry/sumif) |
+| SUMIFS          | <Badge type="tip" text="Available" />          | [SUMIFS](math_and_trigonometry/sumifs) |
 | SUMPRODUCT      | <Badge type="tip" text="Available" />          | –             |
 | SUMSQ           | <Badge type="info" text="Not implemented yet" /> | –             |
 | SUMX2MY2        | <Badge type="info" text="Not implemented yet" /> | –             |
