@@ -828,6 +828,16 @@ impl<'a> Model<'a> {
                 Ok(NumberOrArray::Array(a)) => {
                     let r = a.len();
                     let c = a.first().map(|row| row.len()).unwrap_or(0);
+
+                    // Check for empty arrays
+                    if r == 0 || c == 0 {
+                        return CalcResult::new_error(
+                            Error::VALUE,
+                            cell,
+                            "Empty arrays are not supported in SUMPRODUCT".to_string(),
+                        );
+                    }
+
                     let mut arr = Vec::with_capacity(r);
                     for row in a {
                         let mut row_vec = Vec::with_capacity(row.len());
@@ -854,7 +864,7 @@ impl<'a> Model<'a> {
                     if !have_matrix {
                         rows = r;
                         cols = c;
-                        have_matrix = r > 1 || c > 1;
+                        have_matrix = true; // Any array establishes matrix mode
                     } else if r != rows || c != cols {
                         return CalcResult::new_error(
                             Error::VALUE,
@@ -873,7 +883,15 @@ impl<'a> Model<'a> {
             for p in processed {
                 match p {
                     Arg::Scalar(n) => prod *= n,
-                    Arg::Array(a) => prod *= a[0][0],
+                    Arg::Array(_) => {
+                        // This should never happen since have_matrix would be true
+                        // if we have any arrays, but add safety check
+                        return CalcResult::new_error(
+                            Error::VALUE,
+                            cell,
+                            "Internal error: unexpected array in scalar mode".to_string(),
+                        );
+                    }
                 }
             }
             return CalcResult::Number(prod);
@@ -886,7 +904,17 @@ impl<'a> Model<'a> {
                 for p in processed.iter() {
                     match p {
                         Arg::Scalar(n) => prod *= *n,
-                        Arg::Array(a) => prod *= a[i][j],
+                        Arg::Array(a) => {
+                            // Additional bounds check for safety
+                            if i >= a.len() || j >= a[i].len() {
+                                return CalcResult::new_error(
+                                    Error::VALUE,
+                                    cell,
+                                    "Array index out of bounds".to_string(),
+                                );
+                            }
+                            prod *= a[i][j];
+                        }
                     }
                 }
                 total += prod;
