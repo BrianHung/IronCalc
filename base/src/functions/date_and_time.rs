@@ -10,8 +10,12 @@ use crate::formatter::dates::date_to_serial_number;
 use crate::formatter::dates::permissive_date_to_serial_number;
 use crate::model::get_milliseconds_since_epoch;
 use crate::{
-    calc_result::CalcResult, constants::EXCEL_DATE_BASE, expressions::parser::Node,
-    expressions::token::Error, formatter::dates::from_excel_date, model::Model,
+    calc_result::CalcResult,
+    constants::EXCEL_DATE_BASE,
+    expressions::parser::{ArrayNode, Node},
+    expressions::token::Error,
+    formatter::dates::from_excel_date,
+    model::Model,
 };
 
 impl Model {
@@ -563,9 +567,11 @@ impl Model {
             Ok(f) => f as i32,
             Err(s) => return s,
         };
-        let holiday_set: std::collections::HashSet<chrono::NaiveDate> =
-            std::collections::HashSet::new();
         let weekend = [false, false, false, false, false, true, true];
+        let holiday_set = match self.get_holiday_set(args.get(2), cell) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
         while days != 0 {
             if days > 0 {
                 date += chrono::Duration::days(1);
@@ -581,6 +587,112 @@ impl Model {
         }
         let serial = date.num_days_from_ce() - EXCEL_DATE_BASE;
         CalcResult::Number(serial as f64)
+    }
+
+    fn get_holiday_set(
+        &mut self,
+        arg_option: Option<&Node>,
+        cell: CellReferenceIndex,
+    ) -> Result<std::collections::HashSet<chrono::NaiveDate>, CalcResult> {
+        let mut holiday_set = std::collections::HashSet::new();
+
+        if let Some(arg) = arg_option {
+            match self.evaluate_node_in_context(arg, cell) {
+                CalcResult::Number(value) => {
+                    let serial = value.floor() as i64;
+                    match from_excel_date(serial) {
+                        Ok(date) => {
+                            holiday_set.insert(date);
+                        }
+                        Err(_) => {
+                            return Err(CalcResult::Error {
+                                error: Error::NUM,
+                                origin: cell,
+                                message: "Invalid holiday date".to_string(),
+                            });
+                        }
+                    }
+                }
+                CalcResult::Range { left, right } => {
+                    let sheet = left.sheet;
+                    for row in left.row..=right.row {
+                        for column in left.column..=right.column {
+                            let cell_ref = CellReferenceIndex { sheet, row, column };
+                            match self.evaluate_cell(cell_ref) {
+                                CalcResult::Number(value) => {
+                                    let serial = value.floor() as i64;
+                                    match from_excel_date(serial) {
+                                        Ok(date) => {
+                                            holiday_set.insert(date);
+                                        }
+                                        Err(_) => {
+                                            return Err(CalcResult::Error {
+                                                error: Error::NUM,
+                                                origin: cell,
+                                                message: "Invalid holiday date".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                CalcResult::EmptyCell => {
+                                    // Ignore empty cells
+                                }
+                                CalcResult::Error { .. } => {
+                                    // Propagate errors
+                                    return Err(CalcResult::Error {
+                                        error: Error::VALUE,
+                                        origin: cell,
+                                        message: "Error in holiday date".to_string(),
+                                    });
+                                }
+                                _ => {
+                                    // Ignore non-numeric values
+                                }
+                            }
+                        }
+                    }
+                }
+                CalcResult::Array(array) => {
+                    for row in array {
+                        for value in row {
+                            match value {
+                                ArrayNode::Number(num) => {
+                                    let serial = num.floor() as i64;
+                                    match from_excel_date(serial) {
+                                        Ok(date) => {
+                                            holiday_set.insert(date);
+                                        }
+                                        Err(_) => {
+                                            return Err(CalcResult::Error {
+                                                error: Error::NUM,
+                                                origin: cell,
+                                                message: "Invalid holiday date".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                ArrayNode::Error(error) => {
+                                    return Err(CalcResult::Error {
+                                        error,
+                                        origin: cell,
+                                        message: "Error in holiday array".to_string(),
+                                    });
+                                }
+                                _ => {
+                                    // Ignore non-numeric values
+                                }
+                            }
+                        }
+                    }
+                }
+                error @ CalcResult::Error { .. } => return Err(error),
+                _ => {
+                    // Ignore other types
+                }
+            }
+        }
+
+        Ok(holiday_set)
     }
 
     fn weekend_from_arg(
@@ -675,8 +787,10 @@ impl Model {
             Ok(m) => m,
             Err(e) => return e,
         };
-        let holiday_set: std::collections::HashSet<chrono::NaiveDate> =
-            std::collections::HashSet::new();
+        let holiday_set = match self.get_holiday_set(args.get(3), cell) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
         while days != 0 {
             if days > 0 {
                 date += chrono::Duration::days(1);
