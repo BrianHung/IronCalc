@@ -693,7 +693,10 @@ impl Model {
         }
 
         // Sort values - safe to expect since we've filtered out NaN values
-        values.sort_by(|a, b| a.partial_cmp(b).expect("NaN values should have been filtered out"));
+        values.sort_by(|a, b| {
+            a.partial_cmp(b)
+                .expect("NaN values should have been filtered out")
+        });
         let len = values.len();
         if len % 2 == 1 {
             CalcResult::Number(values[len / 2])
