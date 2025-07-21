@@ -101,7 +101,7 @@ fn test_fn_percentrank_inc_exact_vs_interpolated() {
     let mut model = new_empty_model();
     // Array [10, 20, 30, 40, 50]
     for i in 1..=5 {
-        model._set(&format!("B{}", i), &(i * 10).to_string());
+        model._set(&format!("B{i}"), &(i * 10).to_string());
     }
 
     model._set("A1", "=PERCENTRANK.INC(B1:B5,30)"); // Exact match
@@ -208,7 +208,7 @@ fn test_fn_percentrank_exc_exact_vs_interpolated() {
     let mut model = new_empty_model();
     // Array [10, 20, 30, 40, 50]
     for i in 1..=5 {
-        model._set(&format!("B{}", i), &(i * 10).to_string());
+        model._set(&format!("B{i}"), &(i * 10).to_string());
     }
 
     model._set("A1", "=PERCENTRANK.EXC(B1:B5,30)"); // Exact match
@@ -313,7 +313,7 @@ fn test_fn_percentrank_large_dataset_correctness() {
 
     // Create a larger dataset (100 values)
     for i in 1..=100 {
-        model._set(&format!("B{}", i), &i.to_string());
+        model._set(&format!("B{i}"), &i.to_string());
     }
 
     model._set("A1", "=PERCENTRANK.INC(B1:B100,95)");
