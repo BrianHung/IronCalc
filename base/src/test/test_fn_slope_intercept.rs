@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
 
 use crate::test::util::new_empty_model;
 
@@ -325,8 +326,8 @@ fn test_slope_intercept_large_dataset() {
     // Test with 20 points: y = 0.1x + 100
     for i in 1..=20 {
         let y = 0.1 * i as f64 + 100.0;
-        model._set(&format!("B{}", i), &y.to_string());
-        model._set(&format!("C{}", i), &i.to_string());
+        model._set(&format!("B{i}"), &y.to_string());
+        model._set(&format!("C{i}"), &i.to_string());
     }
 
     model._set("A1", "=SLOPE(B1:B20, C1:C20)");
