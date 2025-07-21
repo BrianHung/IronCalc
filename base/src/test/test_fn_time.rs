@@ -36,9 +36,9 @@ fn test_time_expressions(expressions: &[(&str, &str)]) -> crate::model::Model {
 /// Returns (hour, minute, second) as strings
 fn test_component_extraction(time_value: &str) -> (String, String, String) {
     let model = test_time_expressions(&[
-        ("A1", &format!("=HOUR({})", time_value)),
-        ("B1", &format!("=MINUTE({})", time_value)),
-        ("C1", &format!("=SECOND({})", time_value)),
+        ("A1", &format!("=HOUR({time_value})")),
+        ("B1", &format!("=MINUTE({time_value})")),
+        ("C1", &format!("=SECOND({time_value})")),
     ]);
     (
         model._get_text("A1").to_string(),
@@ -264,9 +264,9 @@ fn test_time_component_extraction_comprehensive() {
 
     for (time_value, expected) in test_cases {
         let (hour, minute, second) = test_component_extraction(time_value);
-        assert_eq!(hour, expected.0, "Hour mismatch for {}", time_value);
-        assert_eq!(minute, expected.1, "Minute mismatch for {}", time_value);
-        assert_eq!(second, expected.2, "Second mismatch for {}", time_value);
+        assert_eq!(hour, expected.0, "Hour mismatch for {time_value}");
+        assert_eq!(minute, expected.1, "Minute mismatch for {time_value}");
+        assert_eq!(second, expected.2, "Second mismatch for {time_value}");
     }
 
     // Test multiple days (extract from fractional part)
@@ -400,13 +400,13 @@ fn test_time_function_extreme_values() {
     // Large fractional inputs should be floored and normalized
     let result_a1 = model._get_text("A1").parse::<f64>().unwrap();
     assert!(
-        result_a1 >= 0.0 && result_a1 < 1.0,
+        (0.0..1.0).contains(&result_a1),
         "Result should be valid time fraction"
     );
 
     // Component extraction should work with very large values
     let hour_b1 = model._get_text("B1").parse::<i32>().unwrap();
-    assert!(hour_b1 >= 0 && hour_b1 <= 23, "Hour should be 0-23");
+    assert!((0..=23).contains(&hour_b1), "Hour should be 0-23");
 
     // Exactly 1.0 should be midnight (start of next day)
     assert_eq!(model._get_text("C1"), *"0");
@@ -415,7 +415,7 @@ fn test_time_function_extreme_values() {
 
     // Very high precision should still extract valid components
     let hour_d1 = model._get_text("D1").parse::<i32>().unwrap();
-    assert!(hour_d1 >= 0 && hour_d1 <= 23, "Hour should be 0-23");
+    assert!((0..=23).contains(&hour_d1), "Hour should be 0-23");
 }
 
 #[test]
@@ -498,9 +498,7 @@ fn test_performance_stress_with_extreme_values() {
         let result = model._get_text(cell);
         assert!(
             result != *"#ERROR!" && result != *"#NUM!" && result != *"#VALUE!",
-            "Cell {} should not error with extreme values: {}",
-            cell,
-            result
+            "Cell {cell} should not error with extreme values: {result}",
         );
     }
 
@@ -509,14 +507,14 @@ fn test_performance_stress_with_extreme_values() {
     let minute_b2 = model._get_text("B2").parse::<i32>().unwrap();
     let second_b3 = model._get_text("B3").parse::<i32>().unwrap();
 
-    assert!(hour_b1 >= 0 && hour_b1 <= 23);
-    assert!(minute_b2 >= 0 && minute_b2 <= 59);
-    assert!(second_b3 >= 0 && second_b3 <= 59);
+    assert!((0..=23).contains(&hour_b1));
+    assert!((0..=59).contains(&minute_b2));
+    assert!((0..=59).contains(&second_b3));
 
     // TIME function results should be valid time fractions
     let time_d1 = model._get_text("D1").parse::<f64>().unwrap();
     assert!(
-        time_d1 >= 0.0 && time_d1 < 1.0,
+        (0.0..1.0).contains(&time_d1),
         "TIME result should be valid fraction"
     );
 }

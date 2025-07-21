@@ -28,19 +28,17 @@ fn parse_time_string(text: &str) -> Option<f64> {
     // First, try manual parsing for simple "N PM" / "N AM" format
     if let Some((hour_str, is_pm)) = parse_simple_am_pm(text) {
         if let Ok(hour) = hour_str.parse::<u32>() {
-            if hour >= 1 && hour <= 12 {
+            if (1..=12).contains(&hour) {
                 let hour_24 = if is_pm {
                     if hour == 12 {
                         12
                     } else {
                         hour + 12
                     }
+                } else if hour == 12 {
+                    0
                 } else {
-                    if hour == 12 {
-                        0
-                    } else {
-                        hour
-                    }
+                    hour
                 };
                 let time = NaiveTime::from_hms_opt(hour_24, 0, 0)?;
                 return Some(time.num_seconds_from_midnight() as f64 / 86_400.0);
@@ -131,7 +129,7 @@ fn normalize_time_components(hour: i32, minute: i32, second: i32) -> f64 {
     }
 
     // Normalize to within a day (0-86399 seconds)
-    total_seconds = total_seconds % 86400;
+    total_seconds %= 86400;
 
     // Convert to fraction of a day
     total_seconds as f64 / 86400.0
@@ -144,15 +142,15 @@ fn should_normalize_time_components(hour: i32, minute: i32, second: i32) -> bool
     // 2. Hour 23 with minute 60 (becomes 24:00)
     // 3. Any time with second 60 that normalizes to exactly 24:00
 
-    if hour == 24 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 {
+    if hour == 24 && (0..=59).contains(&minute) && (0..=59).contains(&second) {
         return true; // 24:MM:SS -> normalize to next day
     }
 
-    if hour == 23 && minute == 60 && second >= 0 && second <= 59 {
+    if hour == 23 && minute == 60 && (0..=59).contains(&second) {
         return true; // 23:60:SS -> normalize to 24:00:SS
     }
 
-    if hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second == 60 {
+    if (0..=23).contains(&hour) && (0..=59).contains(&minute) && second == 60 {
         // Check if this normalizes to exactly 24:00:00
         let total_seconds = hour * 3600 + minute * 60 + second;
         return total_seconds == 86400; // Exactly 24:00:00
@@ -163,13 +161,11 @@ fn should_normalize_time_components(hour: i32, minute: i32, second: i32) -> bool
 
 // Helper function to parse simple "N PM" / "N AM" formats
 fn parse_simple_am_pm(text: &str) -> Option<(&str, bool)> {
-    if text.ends_with(" PM") {
-        let hour_part = &text[..text.len() - 3];
+    if let Some(hour_part) = text.strip_suffix(" PM") {
         if hour_part.chars().all(|c| c.is_ascii_digit()) {
             return Some((hour_part, true));
         }
-    } else if text.ends_with(" AM") {
-        let hour_part = &text[..text.len() - 3];
+    } else if let Some(hour_part) = text.strip_suffix(" AM") {
         if hour_part.chars().all(|c| c.is_ascii_digit()) {
             return Some((hour_part, false));
         }
