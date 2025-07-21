@@ -3,12 +3,12 @@ use crate::test::util::new_empty_model;
 
 // Helper function for approximate floating point comparison
 fn assert_approx_eq(actual: &str, expected: f64, tolerance: f64) {
-    let actual_val: f64 = actual.parse().expect("Failed to parse result as number");
+    let actual_val: f64 = actual
+        .parse()
+        .unwrap_or_else(|_| panic!("Failed to parse result as number: {}", actual));
     assert!(
         (actual_val - expected).abs() < tolerance,
-        "Expected ~{}, got {}",
-        expected,
-        actual
+        "Expected ~{expected}, got {actual}"
     );
 }
 
@@ -41,7 +41,7 @@ fn test_fn_correl_perfect_positive_correlation() {
     model._set("C5", "10");
     model._set("A1", "=CORREL(B1:B5, C1:C5)");
     model.evaluate();
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn test_fn_correl_perfect_negative_correlation() {
     model._set("C5", "2");
     model._set("A1", "=CORREL(B1:B5, C1:C5)");
     model.evaluate();
-    assert_approx_eq(&*model._get_text("A1"), -1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), -1.0, 1e-10);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_fn_correl_partial_correlation() {
     model._set("A1", "=CORREL(B1:B4, C1:C4)");
     model.evaluate();
     // Partial correlation (not perfect but positive)
-    assert_approx_eq(&*model._get_text("A1"), 0.4, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 0.4, 1e-10);
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn test_fn_correl_no_correlation() {
     model._set("A1", "=CORREL(B1:B4, C1:C4)");
     model.evaluate();
     // No correlation (approximately zero)
-    assert_approx_eq(&*model._get_text("A1"), 0.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 0.0, 1e-10);
 }
 
 // =============================================================================
@@ -143,7 +143,7 @@ fn test_fn_correl_with_filtered_data() {
     model._set("A1", "=CORREL(B1:B6, C1:C6)");
     model.evaluate();
     // Only valid pairs: (1,2), (3,6), (5,10) - perfect correlation
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn test_fn_correl_mixed_data_types_direct_args() {
     model.evaluate();
     // TRUE=1, FALSE=0, so pairs: (1,2), (1,0), (3,6)
     // This should calculate a valid correlation
-    assert_approx_eq(&*model._get_text("A1"), 0.8165, 1e-3);
+    assert_approx_eq(&model._get_text("A1"), 0.8165, 1e-3);
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn test_fn_correl_string_numbers_direct_args() {
     model._set("A1", "=CORREL(\"1\";\"2\";\"3\", \"2\";\"4\";\"6\")");
     model.evaluate();
     // String numbers as direct arguments should be parsed
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn test_fn_correl_negative_values() {
     model._set("A1", "=CORREL(B1:B5, C1:C5)");
     model.evaluate();
     // Perfect positive correlation with negative values
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn test_fn_correl_large_numbers() {
     model._set("A1", "=CORREL(B1:B3, C1:C3)");
     model.evaluate();
     // Test numerical stability with large numbers
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn test_fn_correl_very_small_numbers() {
     model._set("A1", "=CORREL(B1:B3, C1:C3)");
     model.evaluate();
     // Perfect correlation with very small numbers
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn test_fn_correl_scientific_notation() {
     model._set("A1", "=CORREL(B1:B3, C1:C3)");
     model.evaluate();
     // Perfect correlation with scientific notation
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
 }
 
 // =============================================================================

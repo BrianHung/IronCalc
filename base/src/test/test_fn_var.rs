@@ -3,12 +3,12 @@ use crate::test::util::new_empty_model;
 
 // Helper function for approximate floating point comparison
 fn assert_approx_eq(actual: &str, expected: f64, tolerance: f64) {
-    let actual_val: f64 = actual.parse().expect("Failed to parse result as number");
+    let actual_val: f64 = actual
+        .parse()
+        .unwrap_or_else(|_| panic!("Failed to parse result as number: {}", actual));
     assert!(
         (actual_val - expected).abs() < tolerance,
-        "Expected ~{}, got {}",
-        expected,
-        actual
+        "Expected ~{expected}, got {actual}"
     );
 }
 
@@ -38,8 +38,8 @@ fn test_fn_var_basic_calculation() {
     model._set("A2", "=VAR.P(B1:B5)");
     model.evaluate();
     // Data: [1,2,3,4,5], mean=3, sample_var=2.5, pop_var=2.0
-    assert_approx_eq(&*model._get_text("A1"), 2.5, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 2.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 2.5, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 2.0, 1e-10);
 }
 
 // =============================================================================
@@ -55,7 +55,7 @@ fn test_fn_var_single_value() {
     model.evaluate();
     // VAR.S needs ≥2 values (n-1 denominator), VAR.P works with 1 value
     assert_eq!(model._get_text("A1"), *"#ERROR!");
-    assert_approx_eq(&*model._get_text("A2"), 0.0, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 0.0, 1e-10);
 }
 
 #[test]
@@ -79,8 +79,8 @@ fn test_fn_var_zero_variance() {
     model._set("A2", "=VAR.P(B1:B3)");
     model.evaluate();
     // All identical values should give zero variance
-    assert_approx_eq(&*model._get_text("A1"), 0.0, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 0.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 0.0, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 0.0, 1e-10);
 }
 
 // =============================================================================
@@ -95,8 +95,8 @@ fn test_fn_var_mixed_data_types_direct_args() {
     model._set("A2", "=VAR.P(1, TRUE, 3, FALSE, 5)");
     model.evaluate();
     // Values: [1, 1, 3, 0, 5], mean=2, sample_var=3.5, pop_var=2.8
-    assert_approx_eq(&*model._get_text("A1"), 3.5, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 2.8, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 3.5, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 2.8, 1e-10);
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn test_fn_var_string_numbers_direct_args() {
     model._set("A2", "=VAR.P(\"1\", \"2\", \"3\", \"4\")");
     model.evaluate();
     // String numbers as direct args should be parsed: [1,2,3,4], mean=2.5
-    assert_approx_eq(&*model._get_text("A1"), 1.667, 1e-3); // (5/3)
-    assert_approx_eq(&*model._get_text("A2"), 1.25, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.667, 1e-3); // (5/3)
+    assert_approx_eq(&model._get_text("A2"), 1.25, 1e-10);
 }
 
 #[test]
@@ -133,8 +133,8 @@ fn test_fn_var_range_data_filtering() {
     model._set("A2", "=VAR.P(B1:B6)");
     model.evaluate();
     // Only numbers used: [1,3,5], mean=3, sample_var=4, pop_var=8/3
-    assert_approx_eq(&*model._get_text("A1"), 4.0, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 2.667, 1e-3);
+    assert_approx_eq(&model._get_text("A1"), 4.0, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 2.667, 1e-3);
 }
 
 // =============================================================================
@@ -153,8 +153,8 @@ fn test_fn_var_negative_numbers() {
     model._set("A2", "=VAR.P(B1:B5)");
     model.evaluate();
     // Values: [-10,-5,0,5,10], mean=0, sample_var=62.5, pop_var=50
-    assert_approx_eq(&*model._get_text("A1"), 62.5, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 50.0, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 62.5, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 50.0, 1e-10);
 }
 
 #[test]
@@ -167,8 +167,8 @@ fn test_fn_var_scientific_notation() {
     model._set("A2", "=VAR.P(B1:B3)");
     model.evaluate();
     // Should handle scientific notation properly
-    assert_approx_eq(&*model._get_text("A1"), 1e6, 1e3); // Large variance due to data values
-    assert_approx_eq(&*model._get_text("A2"), 666666.67, 1e3);
+    assert_approx_eq(&model._get_text("A1"), 1e6, 1e3); // Large variance due to data values
+    assert_approx_eq(&model._get_text("A2"), 666666.67, 1e3);
 }
 
 #[test]
@@ -181,8 +181,8 @@ fn test_fn_var_very_small_numbers() {
     model._set("A2", "=VAR.P(B1:B3)");
     model.evaluate();
     // Test numerical precision with very small numbers
-    assert_approx_eq(&*model._get_text("A1"), 1e-14, 1e-15);
-    assert_approx_eq(&*model._get_text("A2"), 6.667e-15, 1e-16);
+    assert_approx_eq(&model._get_text("A1"), 1e-14, 1e-15);
+    assert_approx_eq(&model._get_text("A2"), 6.667e-15, 1e-16);
 }
 
 #[test]
@@ -195,8 +195,8 @@ fn test_fn_var_large_numbers() {
     model._set("A2", "=VAR.P(B1:B3)");
     model.evaluate();
     // Test numerical stability with large numbers
-    assert_approx_eq(&*model._get_text("A1"), 1.0, 1e-10);
-    assert_approx_eq(&*model._get_text("A2"), 0.667, 1e-3);
+    assert_approx_eq(&model._get_text("A1"), 1.0, 1e-10);
+    assert_approx_eq(&model._get_text("A2"), 0.667, 1e-3);
 }
 
 // =============================================================================
@@ -228,6 +228,6 @@ fn test_fn_var_multiple_ranges() {
     model._set("A2", "=VAR.P(B1:B2, C1:C2)");
     model.evaluate();
     // Multiple ranges: [1,2,3,4], mean=2.5, sample_var=5/3, pop_var=1.25
-    assert_approx_eq(&*model._get_text("A1"), 1.667, 1e-3);
-    assert_approx_eq(&*model._get_text("A2"), 1.25, 1e-10);
+    assert_approx_eq(&model._get_text("A1"), 1.667, 1e-3);
+    assert_approx_eq(&model._get_text("A2"), 1.25, 1e-10);
 }
