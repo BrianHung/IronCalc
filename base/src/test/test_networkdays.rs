@@ -13,10 +13,7 @@ const JAN_10_2023: i32 = 44936; // Tuesday
 fn networkdays_calculates_weekdays_excluding_weekends() {
     let mut model = new_empty_model();
 
-    model._set(
-        "A1",
-        &format!("=NETWORKDAYS({},{})", JAN_1_2023, JAN_10_2023),
-    );
+    model._set("A1", &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023})"));
     model.evaluate();
 
     assert_eq!(
@@ -30,10 +27,7 @@ fn networkdays_calculates_weekdays_excluding_weekends() {
 fn networkdays_handles_reverse_date_order() {
     let mut model = new_empty_model();
 
-    model._set(
-        "A1",
-        &format!("=NETWORKDAYS({},{})", JAN_10_2023, JAN_1_2023),
-    );
+    model._set("A1", &format!("=NETWORKDAYS({JAN_10_2023},{JAN_1_2023})"));
     model.evaluate();
 
     assert_eq!(
@@ -49,10 +43,7 @@ fn networkdays_excludes_holidays_from_weekdays() {
 
     model._set(
         "A1",
-        &format!(
-            "=NETWORKDAYS({},{},{})",
-            JAN_1_2023, JAN_10_2023, JAN_9_2023
-        ),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},{JAN_9_2023})"),
     );
     model.evaluate();
 
@@ -67,10 +58,7 @@ fn networkdays_excludes_holidays_from_weekdays() {
 fn networkdays_handles_same_start_end_date() {
     let mut model = new_empty_model();
 
-    model._set(
-        "A1",
-        &format!("=NETWORKDAYS({},{})", JAN_9_2023, JAN_9_2023),
-    );
+    model._set("A1", &format!("=NETWORKDAYS({JAN_9_2023},{JAN_9_2023})"));
     model.evaluate();
 
     assert_eq!(
@@ -88,7 +76,7 @@ fn networkdays_accepts_holiday_ranges() {
     model._set("B2", &JAN_6_2023.to_string());
     model._set(
         "A1",
-        &format!("=NETWORKDAYS({},{},B1:B2)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},B1:B2)"),
     );
     model.evaluate();
 
@@ -105,7 +93,7 @@ fn networkdays_intl_uses_standard_weekend_by_default() {
 
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({},{})", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023})"),
     );
     model.evaluate();
 
@@ -123,7 +111,7 @@ fn networkdays_intl_supports_numeric_weekend_patterns() {
     // Pattern 2 = Sunday-Monday weekend
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({},{},2)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},2)"),
     );
     model.evaluate();
 
@@ -141,7 +129,7 @@ fn networkdays_intl_supports_single_day_weekends() {
     // Pattern 11 = Sunday only weekend
     model._set(
         "A1",
-        &format!("=NETWORKDAYS.INTL({},{},11)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},11)"),
     );
     model.evaluate();
 
@@ -159,10 +147,7 @@ fn networkdays_intl_supports_string_weekend_patterns() {
     // "1111100" = Friday-Saturday weekend
     model._set(
         "A1",
-        &format!(
-            "=NETWORKDAYS.INTL({},{},'1111100')",
-            JAN_1_2023, JAN_10_2023
-        ),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'1111100')"),
     );
     model.evaluate();
 
@@ -179,10 +164,7 @@ fn networkdays_intl_no_weekends_counts_all_days() {
 
     model._set(
         "A1",
-        &format!(
-            "=NETWORKDAYS.INTL({},{},'0000000')",
-            JAN_1_2023, JAN_10_2023
-        ),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'0000000')"),
     );
     model.evaluate();
 
@@ -199,10 +181,7 @@ fn networkdays_intl_combines_custom_weekends_with_holidays() {
 
     model._set(
         "A1",
-        &format!(
-            "=NETWORKDAYS.INTL({},{},'1111100',{})",
-            JAN_1_2023, JAN_10_2023, JAN_9_2023
-        ),
+        &format!("=NETWORKDAYS.INTL({JAN_1_2023},{JAN_10_2023},'1111100',{JAN_9_2023})"),
     );
     model.evaluate();
 
@@ -269,11 +248,11 @@ fn networkdays_rejects_invalid_holidays() {
     model._set("B1", "invalid");
     model._set(
         "A1",
-        &format!("=NETWORKDAYS({},{},B1)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},B1)"),
     );
     model._set(
         "A2",
-        &format!("=NETWORKDAYS({},{},-1)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},-1)"),
     );
 
     model.evaluate();
@@ -295,7 +274,7 @@ fn networkdays_handles_weekend_only_periods() {
     let mut model = new_empty_model();
 
     let saturday = JAN_1_2023 - 1;
-    model._set("A1", &format!("=NETWORKDAYS({},{})", saturday, JAN_1_2023));
+    model._set("A1", &format!("=NETWORKDAYS({saturday},{JAN_1_2023})"));
     model.evaluate();
 
     assert_eq!(
@@ -312,10 +291,7 @@ fn networkdays_ignores_holidays_outside_date_range() {
     let future_holiday = JAN_10_2023 + 100;
     model._set(
         "A1",
-        &format!(
-            "=NETWORKDAYS({},{},{})",
-            JAN_1_2023, JAN_10_2023, future_holiday
-        ),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},{future_holiday})"),
     );
     model.evaluate();
 
@@ -332,7 +308,7 @@ fn networkdays_handles_empty_holiday_ranges() {
 
     model._set(
         "A1",
-        &format!("=NETWORKDAYS({},{},B1:B3)", JAN_1_2023, JAN_10_2023),
+        &format!("=NETWORKDAYS({JAN_1_2023},{JAN_10_2023},B1:B3)"),
     );
     model.evaluate();
 
