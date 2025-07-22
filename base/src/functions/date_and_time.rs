@@ -31,12 +31,17 @@ fn parse_month_simple(month_str: &str) -> Result<u32, String> {
         return Err("Not a valid month".to_string());
     }
     if bytes_len <= 2 {
-        return month_str
-            .parse::<u32>()
-            .map_err(|_| "Not a valid month".to_string());
+        // Numeric month representation. Ensure it is within the valid range 1-12.
+        return match month_str.parse::<u32>() {
+            Ok(m) if (1..=12).contains(&m) => Ok(m),
+            _ => Err("Not a valid month".to_string()),
+        };
     }
+
+    // Textual month representations.
+    // Use standard 3-letter abbreviations (e.g. "Sep") but also accept the legacy "Sept".
     let month_names_short = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let month_names_long = [
         "January",
@@ -58,6 +63,11 @@ fn parse_month_simple(month_str: &str) -> Result<u32, String> {
     {
         return Ok(m as u32 + 1);
     }
+    // Special-case the non-standard abbreviation "Sept" so older inputs still work.
+    if month_str.eq_ignore_ascii_case("Sept") {
+        return Ok(9);
+    }
+
     if let Some(m) = month_names_long
         .iter()
         .position(|&r| r.eq_ignore_ascii_case(month_str))
@@ -93,23 +103,51 @@ fn parse_datevalue_text(value: &str) -> Result<i32, String> {
         return Err("Not a valid date".to_string());
     };
 
-    let parts: Vec<&str> = value.split(separator).collect();
-    let (day_str, month_str, year_str) = if parts.len() == 3 {
-        if parts[0].len() == 4 {
-            if !parts[1].chars().all(char::is_numeric) || !parts[2].chars().all(char::is_numeric) {
-                return Err("Not a valid date".to_string());
-            }
-            (parts[2], parts[1], parts[0])
-        } else {
-            (parts[0], parts[1], parts[2])
-        }
-    } else {
+    let mut parts: Vec<&str> = value.split(separator).map(|s| s.trim()).collect();
+    if parts.len() != 3 {
         return Err("Not a valid date".to_string());
+    }
+
+    // Identify the year: prefer the one that is four-digit numeric, otherwise assume the third part.
+    let mut year_idx: usize = 2;
+    for (idx, p) in parts.iter().enumerate() {
+        if p.len() == 4 && p.chars().all(char::is_numeric) {
+            year_idx = idx;
+            break;
+        }
+    }
+
+    let year_str = parts[year_idx];
+    // Remove the year from the remaining vector to process day / month.
+    parts.remove(year_idx);
+    let part1 = parts[0];
+    let part2 = parts[1];
+
+    // Helper closures
+    let is_numeric = |s: &str| s.chars().all(char::is_numeric);
+
+    // Determine month and day.
+    let (month_str, day_str) = if !is_numeric(part1) {
+        // textual month in first
+        (part1, part2)
+    } else if !is_numeric(part2) {
+        // textual month in second
+        (part2, part1)
+    } else {
+        // Both numeric – apply disambiguation rules
+        let v1: u32 = part1.parse().unwrap_or(0);
+        let v2: u32 = part2.parse().unwrap_or(0);
+        match (v1 > 12, v2 > 12) {
+            (true, false) => (part2, part1), // first cannot be month
+            (false, true) => (part1, part2), // second cannot be month
+            _ => (part1, part2),             // ambiguous -> assume MM/DD
+        }
     };
 
     let day = parse_day_simple(day_str)?;
     let month = parse_month_simple(month_str)?;
     let year = parse_year_simple(year_str)?;
+
     match date_to_serial_number(day, month, year) {
         Ok(n) => Ok(n),
         Err(_) => Err("Not a valid date".to_string()),
@@ -553,9 +591,6 @@ impl Model {
                 (months % 12).abs() as f64
             }
             "YD" => {
-                // Build a comparable date in the end year. If the day does not exist (e.g. 30-Feb),
-                // fall back to the last valid day of that month.
-
                 // Helper to create a date or early-return with #NUM! if impossible
                 let make_date = |y: i32, m: u32, d: u32| -> Result<chrono::NaiveDate, CalcResult> {
                     match chrono::NaiveDate::from_ymd_opt(y, m, d) {
@@ -568,37 +603,35 @@ impl Model {
                     }
                 };
 
+                // Compute the last valid day of a given month/year.
+                let make_last_day_of_month =
+                    |y: i32, m: u32| -> Result<chrono::NaiveDate, CalcResult> {
+                        let (next_y, next_m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+                        let first_next = make_date(next_y, next_m, 1)?;
+                        let last_day = first_next - chrono::Duration::days(1);
+                        make_date(y, m, last_day.day())
+                    };
+
+                // Attempt to build the anniversary date in the end year.
                 let mut start_adj =
                     match chrono::NaiveDate::from_ymd_opt(end.year(), start.month(), start.day()) {
                         Some(d) => d,
-                        None => {
-                            // Compute last day of the target month
-                            let (next_year, next_month) = if start.month() == 12 {
-                                (end.year() + 1, 1)
-                            } else {
-                                (end.year(), start.month() + 1)
-                            };
-                            let first_of_next_month = match make_date(next_year, next_month, 1) {
-                                Ok(d) => d,
-                                Err(e) => return e,
-                            };
-                            let last_day_of_month = first_of_next_month - chrono::Duration::days(1);
-                            match make_date(end.year(), start.month(), last_day_of_month.day()) {
-                                Ok(d) => d,
-                                Err(e) => return e,
-                            }
-                        }
+                        None => match make_last_day_of_month(end.year(), start.month()) {
+                            Ok(d) => d,
+                            Err(e) => return e,
+                        },
                     };
 
                 // If the adjusted date is after the end date, shift one year back.
                 if start_adj > end {
+                    let shift_year = end.year() - 1;
                     start_adj = match chrono::NaiveDate::from_ymd_opt(
-                        end.year() - 1,
+                        shift_year,
                         start.month(),
                         start.day(),
                     ) {
                         Some(d) => d,
-                        None => match make_date(end.year() - 1, start.month(), 1) {
+                        None => match make_last_day_of_month(shift_year, start.month()) {
                             Ok(d) => d,
                             Err(e) => return e,
                         },
