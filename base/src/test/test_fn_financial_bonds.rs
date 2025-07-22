@@ -184,3 +184,60 @@ fn fn_yield_with_basis() {
     assert!(model._get_text("B1").parse::<f64>().is_ok());
     assert!(model._get_text("B2").parse::<f64>().is_ok());
 }
+
+#[test]
+fn fn_price_yield_inverse_functions() {
+    // Verifies PRICE and YIELD are mathematical inverses
+    // Regression test for periods calculation type mismatch
+    let mut model = new_empty_model();
+
+    model._set("A1", "=DATE(2023,1,15)");
+    model._set("A2", "=DATE(2024,7,15)"); // ~1.5 years, fractional periods
+    model._set("A3", "4.75%"); // coupon
+    model._set("A4", "5.125%"); // yield
+
+    model._set("B1", "=PRICE(A1,A2,A3,A4,100,2)");
+    model._set("B2", "=YIELD(A1,A2,A3,B1,100,2)");
+
+    model.evaluate();
+
+    let calculated_yield: f64 = model._get_text("B2").parse().unwrap();
+    let expected_yield = 0.05125;
+
+    assert!(
+        (calculated_yield - expected_yield).abs() < 1e-12,
+        "YIELD should recover original yield: expected {}, got {}",
+        expected_yield,
+        calculated_yield
+    );
+}
+
+#[test]
+fn fn_price_yield_round_trip_stability() {
+    // Tests numerical stability through multiple PRICE->YIELD->PRICE cycles
+    let mut model = new_empty_model();
+
+    model._set("A1", "=DATE(2023,3,10)");
+    model._set("A2", "=DATE(2024,11,22)"); // Irregular period length
+    model._set("RATE", "3.25%");
+    model._set("YIELD1", "4.875%");
+
+    // First round-trip
+    model._set("PRICE1", "=PRICE(A1,A2,RATE,YIELD1,100,4)");
+    model._set("YIELD2", "=YIELD(A1,A2,RATE,PRICE1,100,4)");
+
+    // Second round-trip
+    model._set("PRICE2", "=PRICE(A1,A2,RATE,YIELD2,100,4)");
+
+    model.evaluate();
+
+    let price1: f64 = model._get_text("PRICE1").parse().unwrap();
+    let price2: f64 = model._get_text("PRICE2").parse().unwrap();
+
+    assert!(
+        (price1 - price2).abs() < 1e-10,
+        "Round-trip should be stable: {} vs {}",
+        price1,
+        price2
+    );
+}

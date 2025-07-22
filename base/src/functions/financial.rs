@@ -1566,17 +1566,17 @@ impl Model {
             // basis is currently ignored
         }
         let days = maturity - settlement;
-        let periods = ((days * frequency as f64) / 365.0).round() as i32;
-        if periods <= 0 {
+        let periods = ((days * frequency as f64) / 365.0).round();
+        if periods <= 0.0 {
             return CalcResult::new_error(Error::NUM, cell, "invalid dates".to_string());
         }
         let coupon = redemption * rate / frequency as f64;
         let r = yld / frequency as f64;
         let mut price = 0.0;
-        for i in 1..=periods {
-            price += coupon / (1.0 + r).powi(i);
+        for i in 1..=(periods as i32) {
+            price += coupon / (1.0 + r).powf(i as f64);
         }
-        price += redemption / (1.0 + r).powi(periods);
+        price += redemption / (1.0 + r).powf(periods);
         if price.is_nan() || price.is_infinite() {
             return CalcResult::new_error(Error::NUM, cell, "Invalid data".to_string());
         }
