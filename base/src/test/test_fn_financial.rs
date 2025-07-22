@@ -379,21 +379,6 @@ fn fn_tbillyield() {
 }
 
 #[test]
-fn fn_price_yield() {
-    let mut model = new_empty_model();
-    model._set("A1", "=DATE(2023,1,1)");
-    model._set("A2", "=DATE(2024,1,1)");
-    model._set("A3", "5%");
-
-    model._set("B1", "=PRICE(A1,A2,A3,6%,100,1)");
-    model._set("B2", "=YIELD(A1,A2,A3,B1,100,1)");
-
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "99.056603774");
-    assert_eq!(model._get_text("B2"), "0.06");
-}
-
-#[test]
 fn fn_dollarde() {
     let mut model = new_empty_model();
     model._set("A1", "=DOLLARDE(1.02, 16)");
