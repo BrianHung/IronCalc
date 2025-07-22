@@ -103,9 +103,9 @@ fn fn_price_invalid_frequency() {
 
     model.evaluate();
 
-    assert_eq!(model._get_text("B1"), *"#ERROR!");
-    assert_eq!(model._get_text("B2"), *"#ERROR!");
-    assert_eq!(model._get_text("B3"), *"#ERROR!");
+    assert_eq!(model._get_text("B1"), *"#NUM!");
+    assert_eq!(model._get_text("B2"), *"#NUM!");
+    assert_eq!(model._get_text("B3"), *"#NUM!");
 }
 
 #[test]
@@ -120,9 +120,9 @@ fn fn_yield_invalid_frequency() {
 
     model.evaluate();
 
-    assert_eq!(model._get_text("B1"), *"#ERROR!");
-    assert_eq!(model._get_text("B2"), *"#ERROR!");
-    assert_eq!(model._get_text("B3"), *"#ERROR!");
+    assert_eq!(model._get_text("B1"), *"#NUM!");
+    assert_eq!(model._get_text("B2"), *"#NUM!");
+    assert_eq!(model._get_text("B3"), *"#NUM!");
 }
 
 #[test]
@@ -136,8 +136,8 @@ fn fn_price_invalid_dates() {
 
     model.evaluate();
 
-    assert_eq!(model._get_text("B1"), *"#ERROR!");
-    assert_eq!(model._get_text("B2"), *"#ERROR!");
+    assert_eq!(model._get_text("B1"), *"#NUM!");
+    assert_eq!(model._get_text("B2"), *"#NUM!");
 }
 
 #[test]
@@ -151,8 +151,8 @@ fn fn_yield_invalid_dates() {
 
     model.evaluate();
 
-    assert_eq!(model._get_text("B1"), *"#ERROR!");
-    assert_eq!(model._get_text("B2"), *"#ERROR!");
+    assert_eq!(model._get_text("B1"), *"#NUM!");
+    assert_eq!(model._get_text("B2"), *"#NUM!");
 }
 
 #[test]
