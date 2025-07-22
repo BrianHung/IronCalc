@@ -459,18 +459,15 @@ pub(crate) fn collect_series(
             let mut values = Vec::new();
             for row in left.row..=right.row {
                 for column in left.column..=right.column {
-                    match model.evaluate_cell(CellReferenceIndex {
+                    let cell_result = model.evaluate_cell(CellReferenceIndex {
                         sheet: left.sheet,
                         row,
                         column,
-                    }) {
+                    });
+                    match cell_result {
                         CalcResult::Number(n) => values.push(Some(n)),
-                        CalcResult::Error { .. } => {
-                            return Err(model.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }));
+                        error @ CalcResult::Error { .. } => {
+                            return Err(error);
                         }
                         _ => values.push(None),
                     }
