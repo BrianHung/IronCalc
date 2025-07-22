@@ -175,7 +175,11 @@ pub(crate) fn stringify_reference(
                         } else if (*delta > 0 && row > *move_row && row <= *move_row + *delta)
                             || (*delta < 0 && row < *move_row && row >= *move_row + *delta)
                         {
-                            row -= *delta;
+                            if *delta > 0 {
+                                row -= 1;
+                            } else {
+                                row += 1;
+                            }
                         }
                     }
                 }
@@ -194,7 +198,11 @@ pub(crate) fn stringify_reference(
                                 && column < *move_column
                                 && column >= *move_column + *delta)
                         {
-                            column -= *delta;
+                            if *delta > 0 {
+                                column -= 1;
+                            } else {
+                                column += 1;
+                            }
                         }
                     }
                 }
