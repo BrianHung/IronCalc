@@ -206,9 +206,7 @@ fn fn_price_yield_inverse_functions() {
 
     assert!(
         (calculated_yield - expected_yield).abs() < 1e-12,
-        "YIELD should recover original yield: expected {}, got {}",
-        expected_yield,
-        calculated_yield
+        "YIELD should recover original yield: expected {expected_yield}, got {calculated_yield}"
     );
 }
 
@@ -219,25 +217,23 @@ fn fn_price_yield_round_trip_stability() {
 
     model._set("A1", "=DATE(2023,3,10)");
     model._set("A2", "=DATE(2024,11,22)"); // Irregular period length
-    model._set("RATE", "3.25%");
-    model._set("YIELD1", "4.875%");
+    model._set("A3", "3.25%"); // coupon rate
+    model._set("A4", "4.875%"); // initial yield
 
     // First round-trip
-    model._set("PRICE1", "=PRICE(A1,A2,RATE,YIELD1,100,4)");
-    model._set("YIELD2", "=YIELD(A1,A2,RATE,PRICE1,100,4)");
+    model._set("B1", "=PRICE(A1,A2,A3,A4,100,4)");
+    model._set("B2", "=YIELD(A1,A2,A3,B1,100,4)");
 
     // Second round-trip
-    model._set("PRICE2", "=PRICE(A1,A2,RATE,YIELD2,100,4)");
+    model._set("B3", "=PRICE(A1,A2,A3,B2,100,4)");
 
     model.evaluate();
 
-    let price1: f64 = model._get_text("PRICE1").parse().unwrap();
-    let price2: f64 = model._get_text("PRICE2").parse().unwrap();
+    let price1: f64 = model._get_text("B1").parse().unwrap();
+    let price2: f64 = model._get_text("B3").parse().unwrap();
 
     assert!(
         (price1 - price2).abs() < 1e-10,
-        "Round-trip should be stable: {} vs {}",
-        price1,
-        price2
+        "Round-trip should be stable: {price1} vs {price2}"
     );
 }
