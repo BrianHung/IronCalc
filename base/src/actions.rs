@@ -212,6 +212,12 @@ impl Model {
         if column_count <= 0 {
             return Err("Please use insert columns instead".to_string());
         }
+        if !(1..=LAST_COLUMN).contains(&column) {
+            return Err(format!("Column number '{column}' is not valid."));
+        }
+        if column + column_count - 1 > LAST_COLUMN {
+            return Err("Cannot delete columns beyond the last column of the sheet".to_string());
+        }
 
         // first column being deleted
         let column_start = column;
@@ -384,6 +390,13 @@ impl Model {
         if row_count <= 0 {
             return Err("Please use insert rows instead".to_string());
         }
+        if !(1..=LAST_ROW).contains(&row) {
+            return Err(format!("Row number '{row}' is not valid."));
+        }
+        if row + row_count - 1 > LAST_ROW {
+            return Err("Cannot delete rows beyond the last row of the sheet".to_string());
+        }
+
         // Move cells
         let worksheet = &self.workbook.worksheet(sheet)?;
         let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
