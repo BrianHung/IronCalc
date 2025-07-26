@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert'
-import { Model } from "../pkg/wasm.js";
+import { Model } from "../pkg/ironcalc.js";
+import { fromXLSXBytes, toXLSXBytes } from "../pkg/xlsx.js";
 
 const DEFAULT_ROW_HEIGHT = 28;
 
@@ -130,5 +131,134 @@ test("autofill", () => {
     assert.strictEqual(result, "23");
 });
 
+test('toXLSXBytes returns data', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    const bytes = toXLSXBytes(model.toBytes());
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(bytes.length > 0);
+});
 
+test('toBytes returns data', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    const bytes = model.toBytes();
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(bytes.length > 0);
+});
 
+test('fromBytes loads model', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '42');
+    const bytes = model.toBytes();
+    const m2 = Model.fromBytes(bytes);
+    assert.strictEqual(m2.getCellContent(0, 1, 1), '42');
+});
+
+test('fromXLSXBytes loads model', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '5');
+    const xlsxBytes = toXLSXBytes(model.toBytes());
+    const modelBytes = fromXLSXBytes(xlsxBytes, 'Workbook1', 'en', 'UTC');
+    const m2 = Model.fromBytes(modelBytes);
+    assert.strictEqual(m2.getCellContent(0, 1, 1), '5');
+});
+
+test('roundtrip via xlsx bytes', () => {
+    const m1 = new Model('Workbook1', 'en', 'UTC');
+    m1.setUserInput(0, 1, 1, '7');
+    m1.setUserInput(0, 1, 2, '=A1*3');
+    const xlsxBytes = toXLSXBytes(m1.toBytes());
+    const m2Bytes = fromXLSXBytes(xlsxBytes, 'Workbook1', 'en', 'UTC');
+    const m2 = Model.fromBytes(m2Bytes);
+    m2.evaluate();
+    assert.strictEqual(m2.getFormattedCellValue(0, 1, 2), '21');
+});
+
+test('roundtrip via bytes', () => {
+    const m1 = new Model('Workbook1', 'en', 'UTC');
+    m1.setUserInput(0, 1, 1, '9');
+    m1.setUserInput(0, 1, 2, '=A1*4');
+    const bytes = m1.toBytes();
+    const m2 = Model.fromBytes(bytes);
+    m2.evaluate();
+    assert.strictEqual(m2.getFormattedCellValue(0, 1, 2), '36');
+});
+
+test('insertRows shifts cells', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '42');
+    model.insertRows(0, 1, 1);
+
+    assert.strictEqual(model.getCellContent(0, 1, 1), '');
+    assert.strictEqual(model.getCellContent(0, 2, 1), '42');
+});
+
+test('insertColumns shifts cells', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, 'A');
+    model.setUserInput(0, 1, 2, 'B');
+
+    model.insertColumns(0, 2, 1);
+
+    assert.strictEqual(model.getCellContent(0, 1, 2), '');
+    assert.strictEqual(model.getCellContent(0, 1, 3), 'B');
+});
+
+test('deleteRows removes cells', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, '1');
+    model.setUserInput(0, 2, 1, '2');
+
+    model.deleteRows(0, 1, 1);
+
+    assert.strictEqual(model.getCellContent(0, 1, 1), '2');
+    assert.strictEqual(model.getCellContent(0, 2, 1), '');
+});
+
+test('deleteColumns removes cells', () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 1, 1, 'A');
+    model.setUserInput(0, 1, 2, 'B');
+
+    model.deleteColumns(0, 1, 1);
+
+    assert.strictEqual(model.getCellContent(0, 1, 1), 'B');
+    assert.strictEqual(model.getCellContent(0, 1, 2), '');
+});
+
+test("move row", () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 3, 5, "=G3");
+    model.setUserInput(0, 4, 5, "=G4");
+    model.setUserInput(0, 5, 5, "=SUM(G3:J3)");
+    model.setUserInput(0, 6, 5, "=SUM(G3:G3)");
+    model.setUserInput(0, 7, 5, "=SUM(G4:G4)");
+    model.evaluate();
+
+    model.moveRow(0, 3, 1);
+    model.evaluate();
+
+    assert.strictEqual(model.getCellContent(0, 3, 5), "=G3");
+    assert.strictEqual(model.getCellContent(0, 4, 5), "=G4");
+    assert.strictEqual(model.getCellContent(0, 5, 5), "=SUM(G4:J4)");
+    assert.strictEqual(model.getCellContent(0, 6, 5), "=SUM(G4:G4)");
+    assert.strictEqual(model.getCellContent(0, 7, 5), "=SUM(G3:G3)");
+});
+
+test("move column", () => {
+    const model = new Model('Workbook1', 'en', 'UTC');
+    model.setUserInput(0, 3, 5, "=G3");
+    model.setUserInput(0, 4, 5, "=H3");
+    model.setUserInput(0, 5, 5, "=SUM(G3:J7)");
+    model.setUserInput(0, 6, 5, "=SUM(G3:G7)");
+    model.setUserInput(0, 7, 5, "=SUM(H3:H7)");
+    model.evaluate();
+
+    model.moveColumn(0, 7, 1);
+    model.evaluate();
+
+    assert.strictEqual(model.getCellContent(0, 3, 5), "=H3");
+    assert.strictEqual(model.getCellContent(0, 4, 5), "=G3");
+    assert.strictEqual(model.getCellContent(0, 5, 5), "=SUM(H3:J7)");
+    assert.strictEqual(model.getCellContent(0, 6, 5), "=SUM(H3:H7)");
+    assert.strictEqual(model.getCellContent(0, 7, 5), "=SUM(G3:G7)");
+});
