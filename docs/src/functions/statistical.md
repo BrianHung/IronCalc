@@ -62,7 +62,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | GROWTH                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | HARMEAN                  | <Badge type="info" text="Not implemented yet" /> | –             |
 | HYPGEOM.DIST             | <Badge type="info" text="Not implemented yet" /> | –             |
-| INTERCEPT                | <Badge type="info" text="Not implemented yet" /> | –             |
+| INTERCEPT                | <Badge type="info" text="Available" />            | –             |
 | KURT                     | <Badge type="info" text="Not implemented yet" /> | –             |
 | LARGE                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | LINEST                   | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -97,7 +97,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | RSQ                      | <Badge type="info" text="Not implemented yet" /> | –             |
 | SKEW                     | <Badge type="info" text="Not implemented yet" /> | –             |
 | SKEW.P                   | <Badge type="info" text="Not implemented yet" /> | –             |
-| SLOPE                    | <Badge type="info" text="Not implemented yet" /> | –             |
+| SLOPE                    | <Badge type="info" text="Available" />            | –             |
 | SMALL                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | STANDARDIZE              | <Badge type="info" text="Not implemented yet" /> | –             |
 | STDEV.P                  | <Badge type="info" text="Not implemented yet" /> | –             |
