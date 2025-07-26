@@ -74,6 +74,7 @@ pub enum Function {
     Sum,
     Sumif,
     Sumifs,
+    Sumproduct,
     Tan,
     Tanh,
 
@@ -253,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -298,6 +299,7 @@ impl Function {
             Function::Sum,
             Function::Sumif,
             Function::Sumifs,
+            Function::Sumproduct,
             Function::Choose,
             Function::Column,
             Function::Columns,
@@ -555,6 +557,7 @@ impl Function {
             "SUM" => Some(Function::Sum),
             "SUMIF" => Some(Function::Sumif),
             "SUMIFS" => Some(Function::Sumifs),
+            "SUMPRODUCT" => Some(Function::Sumproduct),
 
             // Lookup and Reference
             "CHOOSE" => Some(Function::Choose),
@@ -776,6 +779,7 @@ impl fmt::Display for Function {
             Function::Sum => write!(f, "SUM"),
             Function::Sumif => write!(f, "SUMIF"),
             Function::Sumifs => write!(f, "SUMIFS"),
+            Function::Sumproduct => write!(f, "SUMPRODUCT"),
             Function::Choose => write!(f, "CHOOSE"),
             Function::Column => write!(f, "COLUMN"),
             Function::Columns => write!(f, "COLUMNS"),
@@ -1012,6 +1016,7 @@ impl Model {
             Function::Sum => self.fn_sum(args, cell),
             Function::Sumif => self.fn_sumif(args, cell),
             Function::Sumifs => self.fn_sumifs(args, cell),
+            Function::Sumproduct => self.fn_sumproduct(args, cell),
 
             // Lookup and Reference
             Function::Choose => self.fn_choose(args, cell),
