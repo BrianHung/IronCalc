@@ -145,6 +145,12 @@ pub enum Function {
     Maxifs,
     Minifs,
     Geomean,
+    Quartile,
+    QuartileExc,
+    QuartileInc,
+    Rank,
+    RankAvg,
+    RankEq,
 
     // Date and time
     Date,
@@ -260,7 +266,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 205> {
+    pub fn into_iter() -> IntoIter<Function, 213> {
         [
             Function::And,
             Function::False,
@@ -364,6 +370,12 @@ impl Function {
             Function::Maxifs,
             Function::Minifs,
             Function::Geomean,
+            Function::Quartile,
+            Function::QuartileExc,
+            Function::QuartileInc,
+            Function::Rank,
+            Function::RankAvg,
+            Function::RankEq,
             Function::Year,
             Function::Day,
             Function::Month,
@@ -639,6 +651,12 @@ impl Function {
             "MAXIFS" | "_XLFN.MAXIFS" => Some(Function::Maxifs),
             "MINIFS" | "_XLFN.MINIFS" => Some(Function::Minifs),
             "GEOMEAN" => Some(Function::Geomean),
+            "QUARTILE" => Some(Function::Quartile),
+            "QUARTILE.EXC" => Some(Function::QuartileExc),
+            "QUARTILE.INC" => Some(Function::QuartileInc),
+            "RANK" => Some(Function::Rank),
+            "RANK.AVG" => Some(Function::RankAvg),
+            "RANK.EQ" => Some(Function::RankEq),
             // Date and Time
             "YEAR" => Some(Function::Year),
             "DAY" => Some(Function::Day),
@@ -857,6 +875,12 @@ impl fmt::Display for Function {
             Function::Maxifs => write!(f, "MAXIFS"),
             Function::Minifs => write!(f, "MINIFS"),
             Function::Geomean => write!(f, "GEOMEAN"),
+            Function::Quartile => write!(f, "QUARTILE"),
+            Function::QuartileExc => write!(f, "QUARTILE.EXC"),
+            Function::QuartileInc => write!(f, "QUARTILE.INC"),
+            Function::Rank => write!(f, "RANK"),
+            Function::RankAvg => write!(f, "RANK.AVG"),
+            Function::RankEq => write!(f, "RANK.EQ"),
             Function::Year => write!(f, "YEAR"),
             Function::Day => write!(f, "DAY"),
             Function::Month => write!(f, "MONTH"),
@@ -1104,6 +1128,12 @@ impl Model {
             Function::Maxifs => self.fn_maxifs(args, cell),
             Function::Minifs => self.fn_minifs(args, cell),
             Function::Geomean => self.fn_geomean(args, cell),
+            Function::Quartile => self.fn_quartile(args, cell),
+            Function::QuartileExc => self.fn_quartile_exc(args, cell),
+            Function::QuartileInc => self.fn_quartile_inc(args, cell),
+            Function::Rank => self.fn_rank(args, cell),
+            Function::RankAvg => self.fn_rank_avg(args, cell),
+            Function::RankEq => self.fn_rank_eq(args, cell),
             // Date and Time
             Function::Year => self.fn_year(args, cell),
             Function::Day => self.fn_day(args, cell),

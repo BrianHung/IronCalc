@@ -56,6 +56,8 @@ mod test_arrays;
 mod test_escape_quotes;
 mod test_extend;
 mod test_fn_fv;
+mod test_fn_quartile;
+mod test_fn_rank;
 mod test_fn_type;
 mod test_frozen_rows_and_columns;
 mod test_geomean;
