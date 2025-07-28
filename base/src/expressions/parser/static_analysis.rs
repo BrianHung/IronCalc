@@ -802,7 +802,6 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Formulatext => args_signature_scalars(arg_count, 1, 0),
         Function::Unicode => args_signature_scalars(arg_count, 1, 0),
         Function::Geomean => vec![Signature::Vector; arg_count],
-<<<<<<< HEAD
         Function::Quartile | Function::QuartileExc | Function::QuartileInc => {
             if arg_count == 2 {
                 vec![Signature::Vector, Signature::Scalar]
@@ -1033,7 +1032,6 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Eomonth => scalar_arguments(args),
         Function::Formulatext => not_implemented(args),
         Function::Geomean => not_implemented(args),
-<<<<<<< HEAD
         Function::Quartile | Function::QuartileExc | Function::QuartileInc => not_implemented(args),
         Function::Rank | Function::RankAvg | Function::RankEq => scalar_arguments(args),
         Function::Days => scalar_arguments(args),
