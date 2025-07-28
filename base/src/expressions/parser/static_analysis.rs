@@ -810,6 +810,16 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
             }
         }
         Function::Rank | Function::RankAvg | Function::RankEq => args_signature_rank(arg_count),
+        Function::Days => args_signature_scalars(arg_count, 2, 0),
+        Function::Days360 => args_signature_scalars(arg_count, 2, 1),
+        Function::Weekday => args_signature_scalars(arg_count, 1, 1),
+        Function::Weeknum => args_signature_scalars(arg_count, 1, 1),
+        Function::Isoweeknum => args_signature_scalars(arg_count, 1, 0),
+        Function::Workday => args_signature_scalars(arg_count, 2, 1),
+        Function::WorkdayIntl => args_signature_scalars(arg_count, 2, 2),
+        Function::Yearfrac => args_signature_scalars(arg_count, 2, 1),
+        Function::Networkdays => args_signature_scalars(arg_count, 2, 1),
+        Function::NetworkdaysIntl => args_signature_scalars(arg_count, 2, 2),
     }
 }
 
@@ -1024,5 +1034,15 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Geomean => not_implemented(args),
         Function::Quartile | Function::QuartileExc | Function::QuartileInc => not_implemented(args),
         Function::Rank | Function::RankAvg | Function::RankEq => scalar_arguments(args),
+        Function::Days => scalar_arguments(args),
+        Function::Days360 => scalar_arguments(args),
+        Function::Weekday => scalar_arguments(args),
+        Function::Weeknum => scalar_arguments(args),
+        Function::Isoweeknum => scalar_arguments(args),
+        Function::Workday => scalar_arguments(args),
+        Function::WorkdayIntl => scalar_arguments(args),
+        Function::Yearfrac => scalar_arguments(args),
+        Function::Networkdays => scalar_arguments(args),
+        Function::NetworkdaysIntl => scalar_arguments(args),
     }
 }
