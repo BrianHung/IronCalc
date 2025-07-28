@@ -1111,8 +1111,6 @@ impl Model {
         CalcResult::Number(serial as f64)
     }
 
-
-
     // Consolidated holiday/date array processing function
     fn process_date_array(
         &mut self,
@@ -1226,7 +1224,10 @@ impl Model {
     }
 
     // Helper to convert Vec<i64> to HashSet<NaiveDate> for backward compatibility
-    fn dates_to_holiday_set(&self, dates: Vec<i64>) -> std::collections::HashSet<chrono::NaiveDate> {
+    fn dates_to_holiday_set(
+        &self,
+        dates: Vec<i64>,
+    ) -> std::collections::HashSet<chrono::NaiveDate> {
         dates
             .into_iter()
             .filter_map(|serial| from_excel_date(serial).ok())
@@ -1271,7 +1272,7 @@ impl Model {
     ) -> Result<[bool; 7], CalcResult> {
         // Default: Saturday-Sunday weekend (pattern 1)
         let mut weekend = [false, false, false, false, false, true, true];
-        
+
         if let Some(node_ref) = node {
             match self.evaluate_node_in_context(node_ref, cell) {
                 CalcResult::Number(n) => {
@@ -1287,17 +1288,17 @@ impl Model {
                         1 | 0 => [false, false, false, false, false, true, true], // Saturday-Sunday
                         2 => [true, false, false, false, false, false, true],     // Sunday-Monday
                         3 => [true, true, false, false, false, false, false],     // Monday-Tuesday
-                        4 => [false, true, true, false, false, false, false],     // Tuesday-Wednesday
-                        5 => [false, false, true, true, false, false, false],     // Wednesday-Thursday
-                        6 => [false, false, false, true, true, false, false],     // Thursday-Friday
-                        7 => [false, false, false, false, true, true, false],     // Friday-Saturday
-                        11 => [false, false, false, false, false, false, true],   // Sunday only
-                        12 => [true, false, false, false, false, false, false],   // Monday only
-                        13 => [false, true, false, false, false, false, false],   // Tuesday only
-                        14 => [false, false, true, false, false, false, false],   // Wednesday only
-                        15 => [false, false, false, true, false, false, false],   // Thursday only
-                        16 => [false, false, false, false, true, false, false],   // Friday only
-                        17 => [false, false, false, false, false, true, false],   // Saturday only
+                        4 => [false, true, true, false, false, false, false], // Tuesday-Wednesday
+                        5 => [false, false, true, true, false, false, false], // Wednesday-Thursday
+                        6 => [false, false, false, true, true, false, false], // Thursday-Friday
+                        7 => [false, false, false, false, true, true, false], // Friday-Saturday
+                        11 => [false, false, false, false, false, false, true], // Sunday only
+                        12 => [true, false, false, false, false, false, false], // Monday only
+                        13 => [false, true, false, false, false, false, false], // Tuesday only
+                        14 => [false, false, true, false, false, false, false], // Wednesday only
+                        15 => [false, false, false, true, false, false, false], // Thursday only
+                        16 => [false, false, false, false, true, false, false], // Friday only
+                        17 => [false, false, false, false, false, true, false], // Saturday only
                         _ => {
                             return Err(CalcResult::new_error(
                                 Error::NUM,
