@@ -964,19 +964,9 @@ impl Model {
         if !(1..=2).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
-        let serial = match self.get_number(&args[0], cell) {
-            Ok(c) => c.floor() as i64,
-            Err(s) => return s,
-        };
-        let date = match from_excel_date(serial) {
-            Ok(d) => d,
-            Err(_) => {
-                return CalcResult::Error {
-                    error: Error::NUM,
-                    origin: cell,
-                    message: "Out of range parameters for date".to_string(),
-                };
-            }
+        let (_serial, date) = match self.get_and_validate_date_serial(&args[0], cell) {
+            Ok((s, d)) => (s, d),
+            Err(e) => return e,
         };
         let return_type = if args.len() == 2 {
             match self.get_number(&args[1], cell) {
@@ -1007,19 +997,9 @@ impl Model {
         if !(1..=2).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
-        let serial = match self.get_number(&args[0], cell) {
-            Ok(c) => c.floor() as i64,
-            Err(s) => return s,
-        };
-        let date = match from_excel_date(serial) {
-            Ok(d) => d,
-            Err(_) => {
-                return CalcResult::Error {
-                    error: Error::NUM,
-                    origin: cell,
-                    message: "Out of range parameters for date".to_string(),
-                };
-            }
+        let (_serial, date) = match self.get_and_validate_date_serial(&args[0], cell) {
+            Ok((s, d)) => (s, d),
+            Err(e) => return e,
         };
         let return_type = if args.len() == 2 {
             match self.get_number(&args[1], cell) {
@@ -1101,19 +1081,9 @@ impl Model {
         if !(2..=3).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
-        let start_serial = match self.get_number(&args[0], cell) {
-            Ok(c) => c.floor() as i64,
-            Err(s) => return s,
-        };
-        let mut date = match from_excel_date(start_serial) {
-            Ok(d) => d,
-            Err(_) => {
-                return CalcResult::Error {
-                    error: Error::NUM,
-                    origin: cell,
-                    message: "Out of range parameters for date".to_string(),
-                };
-            }
+        let (_start_serial, mut date) = match self.get_and_validate_date_serial(&args[0], cell) {
+            Ok((s, d)) => (s, d),
+            Err(e) => return e,
         };
         let mut days = match self.get_number(&args[1], cell) {
             Ok(f) => f as i32,
@@ -1261,6 +1231,36 @@ impl Model {
             .into_iter()
             .filter_map(|serial| from_excel_date(serial).ok())
             .collect()
+    }
+
+    // Consolidated date validation helper - eliminates 29+ duplicate patterns
+    fn validate_and_convert_date_serial(
+        &self,
+        serial: i64,
+        cell: CellReferenceIndex,
+    ) -> Result<chrono::NaiveDate, CalcResult> {
+        match from_excel_date(serial) {
+            Ok(date) => Ok(date),
+            Err(_) => Err(CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Out of range parameters for date".to_string(),
+            }),
+        }
+    }
+
+    // Helper for common pattern: get number, floor to i64, validate as date
+    fn get_and_validate_date_serial(
+        &mut self,
+        arg: &Node,
+        cell: CellReferenceIndex,
+    ) -> Result<(i64, chrono::NaiveDate), CalcResult> {
+        let serial = match self.get_number(arg, cell) {
+            Ok(n) => n.floor() as i64,
+            Err(e) => return Err(e),
+        };
+        let date = self.validate_and_convert_date_serial(serial, cell)?;
+        Ok((serial, date))
     }
 
     // Consolidated weekend pattern processing function
