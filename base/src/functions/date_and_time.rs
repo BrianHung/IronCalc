@@ -549,7 +549,7 @@ impl Model {
         };
         let last_day_of_month = result_date.with_day(1).map_or_else(
             || result_date - chrono::Duration::days(result_date.day() as i64 - 1),
-            |first_of_month| first_of_month - chrono::Duration::days(1)
+            |first_of_month| first_of_month - chrono::Duration::days(1),
         );
         let serial_number = last_day_of_month.num_days_from_ce() - EXCEL_DATE_BASE;
         CalcResult::Number(serial_number as f64)
