@@ -362,7 +362,7 @@ impl Model {
             Err(e) => return e,
         };
         let days = value.floor() as i32;
-        if days < MINIMUM_DATE_SERIAL_NUMBER || days > MAXIMUM_DATE_SERIAL_NUMBER {
+        if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&days) {
             return CalcResult::Error {
                 error: Error::NUM,
                 origin: cell,
@@ -392,7 +392,7 @@ impl Model {
             Err(e) => return e,
         };
         let days = value.floor() as i32;
-        if days < MINIMUM_DATE_SERIAL_NUMBER || days > MAXIMUM_DATE_SERIAL_NUMBER {
+        if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&days) {
             return CalcResult::Error {
                 error: Error::NUM,
                 origin: cell,
@@ -422,7 +422,7 @@ impl Model {
             Err(e) => return e,
         };
         let days = value.floor() as i32;
-        if days < MINIMUM_DATE_SERIAL_NUMBER || days > MAXIMUM_DATE_SERIAL_NUMBER {
+        if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&days) {
             return CalcResult::Error {
                 error: Error::NUM,
                 origin: cell,
@@ -483,7 +483,7 @@ impl Model {
             Err(e) => return e,
         };
         let start_days = start_date.floor() as i32;
-        if start_days < MINIMUM_DATE_SERIAL_NUMBER || start_days > MAXIMUM_DATE_SERIAL_NUMBER {
+        if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&start_days) {
             return CalcResult::Error {
                 error: Error::NUM,
                 origin: cell,
@@ -524,7 +524,7 @@ impl Model {
             Err(e) => return e,
         };
         let start_days = start_date.floor() as i32;
-        if start_days < MINIMUM_DATE_SERIAL_NUMBER || start_days > MAXIMUM_DATE_SERIAL_NUMBER {
+        if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&start_days) {
             return CalcResult::Error {
                 error: Error::NUM,
                 origin: cell,
@@ -547,7 +547,10 @@ impl Model {
         } else {
             start_date - Months::new((-months) as u32 - 1)
         };
-        let last_day_of_month = result_date.with_day(1).unwrap() - chrono::Duration::days(1);
+        let last_day_of_month = result_date.with_day(1).map_or_else(
+            || result_date - chrono::Duration::days(result_date.day() as i64 - 1),
+            |first_of_month| first_of_month - chrono::Duration::days(1)
+        );
         let serial_number = last_day_of_month.num_days_from_ce() - EXCEL_DATE_BASE;
         CalcResult::Number(serial_number as f64)
     }
@@ -962,7 +965,7 @@ impl Model {
                 return CalcResult::new_error(Error::VALUE, cell, "Invalid return_type".to_string())
             }
             _ => return CalcResult::new_error(Error::NUM, cell, "Invalid return_type".to_string()),
-        } as u32;
+        };
         CalcResult::Number(num as f64)
     }
 
@@ -1013,7 +1016,7 @@ impl Model {
         while first.weekday() != start_offset {
             first -= chrono::Duration::days(1);
         }
-        let week = ((date - first).num_days() / 7 + 1) as i64;
+        let week = (date - first).num_days() / 7 + 1;
         CalcResult::Number(week as f64)
     }
 

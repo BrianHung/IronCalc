@@ -113,6 +113,7 @@ pub struct Model {
     /// The language used
     pub(crate) language: Language,
     /// The timezone used to evaluate the model
+    #[allow(dead_code)]
     pub(crate) tz: Tz,
     /// The view id. A view consists of a selected sheet and ranges.
     pub(crate) view_id: u32,
