@@ -65,6 +65,7 @@ pub(crate) mod util;
 mod engineering;
 mod statistical;
 mod test_fn_offset;
+mod test_fn_row_column;
 mod test_number_format;
 
 mod test_arrays;
