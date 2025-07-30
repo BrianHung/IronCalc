@@ -512,6 +512,15 @@ fn args_signature_xlookup(arg_count: usize) -> Vec<Signature> {
     result
 }
 
+fn args_signature_xmatch(arg_count: usize) -> Vec<Signature> {
+    if !(2..=4).contains(&arg_count) {
+        return vec![Signature::Error; arg_count];
+    }
+    let mut result = vec![Signature::Scalar; arg_count];
+    result[1] = Signature::Vector; // lookup_array should be Vector
+    result
+}
+
 fn args_signature_textafter(arg_count: usize) -> Vec<Signature> {
     if !(2..=6).contains(&arg_count) {
         vec![Signature::Scalar; arg_count]
@@ -689,6 +698,7 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Rows => args_signature_one_vector(arg_count),
         Function::Vlookup => args_signature_hlookup(arg_count),
         Function::Xlookup => args_signature_xlookup(arg_count),
+        Function::Xmatch => args_signature_xmatch(arg_count),
         Function::Concat => vec![Signature::Vector; arg_count],
         Function::Concatenate => vec![Signature::Scalar; arg_count],
         Function::Exact => args_signature_scalars(arg_count, 2, 0),
@@ -1083,6 +1093,7 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Rows => not_implemented(args),
         Function::Vlookup => not_implemented(args),
         Function::Xlookup => not_implemented(args),
+        Function::Xmatch => not_implemented(args),
         Function::Concat => not_implemented(args),
         Function::Concatenate => not_implemented(args),
         Function::Exact => not_implemented(args),

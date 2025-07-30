@@ -155,6 +155,7 @@ pub enum Function {
     Rows,
     Vlookup,
     Xlookup,
+    Xmatch,
 
     // Text
     Concat,
@@ -1261,6 +1262,7 @@ impl Function {
             Function::Rows,
             Function::Vlookup,
             Function::Xlookup,
+            Function::Xmatch,
             Function::Concatenate,
             Function::Exact,
             Function::Value,
@@ -1531,6 +1533,7 @@ impl Function {
             Function::Minifs => "_xlfn.MINIFS".to_string(),
             Function::Switch => "_xlfn.SWITCH".to_string(),
             Function::Xlookup => "_xlfn.XLOOKUP".to_string(),
+            Function::Xmatch => "_xlfn.XMATCH".to_string(),
             Function::Xor => "_xlfn.XOR".to_string(),
             Function::Textbefore => "_xlfn.TEXTBEFORE".to_string(),
             Function::Textafter => "_xlfn.TEXTAFTER".to_string(),

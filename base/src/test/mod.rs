@@ -34,6 +34,7 @@ mod test_fn_textbefore;
 mod test_fn_textjoin;
 mod test_fn_time;
 mod test_fn_unicode;
+mod test_fn_xmatch;
 mod test_frozen_rows_columns;
 mod test_general;
 mod test_inverted_ranges;
