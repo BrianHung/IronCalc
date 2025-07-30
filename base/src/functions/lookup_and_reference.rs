@@ -725,6 +725,102 @@ impl<'a> Model<'a> {
         }
     }
 
+    // ADDRESS(row_num, col_num, [abs_num], [a1], [sheet])
+    // Returns a reference as text to a single cell
+    pub(crate) fn fn_address(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 2 || args.len() > 5 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let row = match self.get_number(&args[0], cell) {
+            Ok(r) => r as i32,
+            Err(e) => return e,
+        };
+        let column = match self.get_number(&args[1], cell) {
+            Ok(c) => c as i32,
+            Err(e) => return e,
+        };
+        if !(1..=LAST_ROW).contains(&row) || !(1..=LAST_COLUMN).contains(&column) {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid row or column".to_string(),
+            };
+        }
+        let abs_num = if args.len() >= 3 {
+            match self.get_number(&args[2], cell) {
+                Ok(v) => v as i32,
+                Err(e) => return e,
+            }
+        } else {
+            1
+        };
+        if !(1..=4).contains(&abs_num) {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid abs_num".to_string(),
+            };
+        }
+        let a1 = if args.len() >= 4 {
+            match self.get_boolean(&args[3], cell) {
+                Ok(v) => v,
+                Err(e) => return e,
+            }
+        } else {
+            true
+        };
+        let sheet = if args.len() == 5 {
+            match self.get_string(&args[4], cell) {
+                Ok(s) => Some(s),
+                Err(e) => return e,
+            }
+        } else {
+            None
+        };
+
+        let result = if a1 {
+            let col = match crate::expressions::utils::number_to_column(column) {
+                Some(c) => c,
+                None => {
+                    return CalcResult::Error {
+                        error: Error::VALUE,
+                        origin: cell,
+                        message: "Invalid column number".to_string(),
+                    };
+                }
+            };
+            let col_str = match abs_num {
+                1 | 3 => format!("${col}"),
+                _ => col,
+            };
+            let row_str = match abs_num {
+                1 | 2 => format!("${row}"),
+                _ => format!("{row}"),
+            };
+            let addr = format!("{col_str}{row_str}");
+            match sheet {
+                Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
+                None => addr,
+            }
+        } else {
+            let row_str = match abs_num {
+                1 | 2 => format!("R{row}"),
+                _ => format!("R[{row}]"),
+            };
+            let col_str = match abs_num {
+                1 | 3 => format!("C{column}"),
+                _ => format!("C[{column}]"),
+            };
+            let addr = format!("{row_str}{col_str}");
+            match sheet {
+                Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
+                None => addr,
+            }
+        };
+
+        CalcResult::String(result)
+    }
+
     // OFFSET(reference, rows, cols, [height], [width])
     // Returns a reference to a range that is a specified number of rows and columns from a cell or range of cells.
     // The reference that is returned can be a single cell or a range of cells.

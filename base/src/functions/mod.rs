@@ -145,6 +145,7 @@ pub enum Function {
     Info,
 
     // Lookup and reference
+    Address,
     Hlookup,
     Index,
     Indirect,
@@ -1254,6 +1255,7 @@ impl Function {
             Function::Columns,
             Function::Index,
             Function::Indirect,
+            Function::Address,
             Function::Hlookup,
             Function::Lookup,
             Function::Match,
@@ -1712,6 +1714,7 @@ impl<'a> Model<'a> {
             Function::Columns => self.fn_columns(args, cell),
             Function::Index => self.fn_index(args, cell),
             Function::Indirect => self.fn_indirect(args, cell),
+            Function::Address => self.fn_address(args, cell),
             Function::Hlookup => self.fn_hlookup(args, cell),
             Function::Lookup => self.fn_lookup(args, cell),
             Function::Match => self.fn_match(args, cell),
