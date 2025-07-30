@@ -24,6 +24,7 @@ mod test_fn_financial;
 mod test_fn_formulatext;
 mod test_fn_if;
 mod test_fn_isna;
+mod test_fn_left_right_mid_lower;
 mod test_fn_maxifs;
 mod test_fn_minifs;
 mod test_fn_or_xor;
