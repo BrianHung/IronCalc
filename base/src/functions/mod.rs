@@ -119,6 +119,8 @@ pub enum Function {
     Len,
     Lower,
     Mid,
+    Proper,
+    Replace,
     Rept,
     Right,
     Search,
@@ -255,7 +257,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 200> {
+    pub fn into_iter() -> IntoIter<Function, 202> {
         [
             Function::And,
             Function::False,
@@ -326,6 +328,8 @@ impl Function {
             Function::Len,
             Function::Lower,
             Function::Mid,
+            Function::Proper,
+            Function::Replace,
             Function::Right,
             Function::Search,
             Function::Text,
@@ -589,6 +593,8 @@ impl Function {
             "LEN" => Some(Function::Len),
             "LOWER" => Some(Function::Lower),
             "MID" => Some(Function::Mid),
+            "PROPER" => Some(Function::Proper),
+            "REPLACE" => Some(Function::Replace),
             "RIGHT" => Some(Function::Right),
             "SEARCH" => Some(Function::Search),
             "TEXT" => Some(Function::Text),
@@ -809,6 +815,8 @@ impl fmt::Display for Function {
             Function::Len => write!(f, "LEN"),
             Function::Lower => write!(f, "LOWER"),
             Function::Mid => write!(f, "MID"),
+            Function::Proper => write!(f, "PROPER"),
+            Function::Replace => write!(f, "REPLACE"),
             Function::Right => write!(f, "RIGHT"),
             Function::Search => write!(f, "SEARCH"),
             Function::Text => write!(f, "TEXT"),
@@ -1050,6 +1058,8 @@ impl Model {
             Function::Len => self.fn_len(args, cell),
             Function::Lower => self.fn_lower(args, cell),
             Function::Mid => self.fn_mid(args, cell),
+            Function::Proper => self.fn_proper(args, cell),
+            Function::Replace => self.fn_replace(args, cell),
             Function::Right => self.fn_right(args, cell),
             Function::Search => self.fn_search(args, cell),
             Function::Text => self.fn_text(args, cell),
