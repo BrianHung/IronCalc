@@ -88,6 +88,8 @@ fn days360_eu(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
 fn days_between(start: chrono::NaiveDate, end: chrono::NaiveDate, basis: i32) -> i32 {
     match basis {
         0 => days360_us(start, end),
+        1 | 2 => (end - start).num_days() as i32,
+        3 => (end - start).num_days() as i32,
         4 => days360_eu(start, end),
         _ => (end - start).num_days() as i32,
     }
@@ -101,13 +103,14 @@ fn coupon_dates(
     let months = 12 / freq;
     let step = chrono::Months::new(months as u32);
     let mut ncd = maturity;
-    loop {
-        let prev = ncd.checked_sub_months(step).unwrap();
+    while let Some(prev) = ncd.checked_sub_months(step) {
         if settlement >= prev {
             return (prev, ncd);
         }
         ncd = prev;
     }
+    // Fallback if we somehow exit the loop (shouldn't happen in practice)
+    (settlement, maturity)
 }
 
 fn compute_payment(
@@ -1610,11 +1613,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1660,11 +1660,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1714,11 +1711,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1764,11 +1758,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1785,7 +1776,13 @@ impl Model {
 
         let (_, ncd) = coupon_dates(settlement_date, maturity_date, frequency);
         match crate::formatter::dates::date_to_serial_number(ncd.day(), ncd.month(), ncd.year()) {
-            Ok(n) => CalcResult::Number(n as f64),
+            Ok(n) => {
+                if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&n) {
+                    CalcResult::new_error(Error::NUM, cell, "date out of range".to_string())
+                } else {
+                    CalcResult::Number(n as f64)
+                }
+            }
             Err(msg) => CalcResult::new_error(Error::NUM, cell, msg),
         }
     }
@@ -1816,11 +1813,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1841,7 +1835,10 @@ impl Model {
         let mut count = 0;
         while settlement_date < date {
             count += 1;
-            date = date.checked_sub_months(step).unwrap();
+            date = match date.checked_sub_months(step) {
+                Some(new_date) => new_date,
+                None => break, // Safety check to avoid infinite loop
+            };
         }
         CalcResult::Number(count as f64)
     }
@@ -1872,11 +1869,8 @@ impl Model {
             0
         };
 
-        if !(frequency == 1 || frequency == 2 || frequency == 4) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
-        }
-        if basis < 0 || basis > 4 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
         }
         if settlement >= maturity {
             return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
@@ -1893,7 +1887,13 @@ impl Model {
 
         let (pcd, _) = coupon_dates(settlement_date, maturity_date, frequency);
         match crate::formatter::dates::date_to_serial_number(pcd.day(), pcd.month(), pcd.year()) {
-            Ok(n) => CalcResult::Number(n as f64),
+            Ok(n) => {
+                if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&n) {
+                    CalcResult::new_error(Error::NUM, cell, "date out of range".to_string())
+                } else {
+                    CalcResult::Number(n as f64)
+                }
+            }
             Err(msg) => CalcResult::new_error(Error::NUM, cell, msg),
         }
     }
