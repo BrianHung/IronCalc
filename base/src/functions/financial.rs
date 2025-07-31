@@ -41,63 +41,52 @@ fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String>
     Ok(end_day <= start_day)
 }
 
-fn days_between(start_date: i64, end_date: i64, basis: i32) -> Result<f64, String> {
-    if end_date < start_date {
-        return Err("end date should be >= start date".to_string());
+fn days_30us_360(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+    if d1 == 31 {
+        d1 = 30;
     }
-    let start = from_excel_date(start_date)?;
-    let end = from_excel_date(end_date)?;
-    match basis {
-        0 => {
-            let mut d1 = start.day() as i32;
-            let mut d2 = end.day() as i32;
-            let m1 = start.month() as i32;
-            let m2 = end.month() as i32;
-            let y1 = start.year();
-            let y2 = end.year();
-            if d1 == 31 {
-                d1 = 30;
-            }
-            if d2 == 31 && (d1 == 30 || d1 == 31) {
-                d2 = 30;
-            }
-            Ok((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) as f64)
-        }
-        4 => {
-            let mut d1 = start.day() as i32;
-            let mut d2 = end.day() as i32;
-            let m1 = start.month() as i32;
-            let m2 = end.month() as i32;
-            let y1 = start.year();
-            let y2 = end.year();
-            if d1 == 31 {
-                d1 = 30;
-            }
-            if d2 == 31 {
-                d2 = 30;
-            }
-            Ok((360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)) as f64)
-        }
-        1 | 2 | 3 => Ok((end - start).num_days() as f64),
-        _ => Err("invalid basis".to_string()),
+    if d2 == 31 && (d1 == 30 || d1 == 31) {
+        d2 = 30;
     }
+    (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
 }
 
-fn year_basis(date: i64, basis: i32) -> Result<f64, String> {
-    let dt = from_excel_date(date)?;
-    let year = dt.year();
-    Ok(match basis {
-        0 | 2 | 4 => 360.0,
-        3 => 365.0,
-        1 => {
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
-                366.0
-            } else {
-                365.0
-            }
-        }
-        _ => return Err("invalid basis".to_string()),
-    })
+fn days_30e_360(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+    if d1 == 31 {
+        d1 = 30;
+    }
+    if d2 == 31 {
+        d2 = 30;
+    }
+    (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
+}
+
+fn year_fraction(
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    basis: i32,
+) -> Result<f64, String> {
+    let days = match basis {
+        0 => days_30us_360(start, end) as f64 / 360.0,
+        1 => (end - start).num_days() as f64 / 365.0,
+        2 => (end - start).num_days() as f64 / 360.0,
+        3 => (end - start).num_days() as f64 / 365.0,
+        4 => days_30e_360(start, end) as f64 / 360.0,
+        _ => return Err("Invalid basis".to_string()),
+    };
+    Ok(days)
 }
 
 fn compute_payment(
@@ -515,19 +504,20 @@ impl Model {
 
     // ACCRINT(issue, first_interest, settlement, rate, par, freq, [basis], [calc])
     pub(crate) fn fn_accrint(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        if !(6..=8).contains(&args.len()) {
+        let arg_count = args.len();
+        if !(6..=8).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
         let issue = match self.get_number_no_bools(&args[0], cell) {
-            Ok(f) => f as i64,
+            Ok(f) => f,
             Err(s) => return s,
         };
-        let first_interest = match self.get_number_no_bools(&args[1], cell) {
-            Ok(f) => f as i64,
+        let first = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
             Err(s) => return s,
         };
         let settlement = match self.get_number_no_bools(&args[2], cell) {
-            Ok(f) => f as i64,
+            Ok(f) => f,
             Err(s) => return s,
         };
         let rate = match self.get_number_no_bools(&args[3], cell) {
@@ -542,7 +532,7 @@ impl Model {
             Ok(f) => f as i32,
             Err(s) => return s,
         };
-        let basis = if args.len() >= 7 {
+        let basis = if arg_count > 6 {
             match self.get_number_no_bools(&args[6], cell) {
                 Ok(f) => f as i32,
                 Err(s) => return s,
@@ -550,45 +540,93 @@ impl Model {
         } else {
             0
         };
-        let calc = if args.len() == 8 {
-            match self.get_boolean(&args[7], cell) {
-                Ok(b) => b,
+        let calc = if arg_count > 7 {
+            match self.get_number_no_bools(&args[7], cell) {
+                Ok(f) => f != 0.0,
                 Err(s) => return s,
             }
         } else {
             true
         };
+
         if !(freq == 1 || freq == 2 || freq == 4) {
             return CalcResult::new_error(Error::NUM, cell, "invalid frequency".to_string());
         }
         if !(0..=4).contains(&basis) {
             return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
         }
-        let start = if calc { issue } else { first_interest };
-        let days = match days_between(start, settlement, basis) {
-            Ok(f) => f,
+
+        let issue_d = match from_excel_date(issue as i64) {
+            Ok(d) => d,
             Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
         };
-        let year_days = match year_basis(start, basis) {
+        let first_d = match from_excel_date(first as i64) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let settle_d = match from_excel_date(settlement as i64) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        if settle_d < issue_d {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < issue".to_string());
+        }
+
+        let months = 12 / freq;
+        let mut prev = first_d;
+        if settle_d <= first_d {
+            prev = issue_d;
+        } else {
+            while prev <= settle_d {
+                let next = prev + chrono::Months::new(months as u32);
+                if next > settle_d {
+                    break;
+                }
+                prev = next;
+            }
+        }
+        let next_coupon = prev + chrono::Months::new(months as u32);
+
+        let mut result = 0.0;
+        if calc {
+            let mut next = first_d;
+            while next < prev {
+                result += rate * par / freq as f64;
+                next = next + chrono::Months::new(months as u32);
+            }
+        }
+
+        let days_in_period = match year_fraction(prev, next_coupon, basis) {
             Ok(f) => f,
             Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
         };
-        let period_days = year_days / freq as f64;
-        let result = par * rate / freq as f64 * days / period_days;
+        let days_elapsed = match year_fraction(prev, settle_d, basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
+        };
+
+        result += rate * par / freq as f64
+            * if days_in_period == 0.0 {
+                0.0
+            } else {
+                days_elapsed / days_in_period
+            };
         CalcResult::Number(result)
     }
 
     // ACCRINTM(issue, settlement, rate, par, [basis])
     pub(crate) fn fn_accrintm(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        if !(4..=5).contains(&args.len()) {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
         let issue = match self.get_number_no_bools(&args[0], cell) {
-            Ok(f) => f as i64,
+            Ok(f) => f,
             Err(s) => return s,
         };
         let settlement = match self.get_number_no_bools(&args[1], cell) {
-            Ok(f) => f as i64,
+            Ok(f) => f,
             Err(s) => return s,
         };
         let rate = match self.get_number_no_bools(&args[2], cell) {
@@ -599,7 +637,7 @@ impl Model {
             Ok(f) => f,
             Err(s) => return s,
         };
-        let basis = if args.len() == 5 {
+        let basis = if arg_count > 4 {
             match self.get_number_no_bools(&args[4], cell) {
                 Ok(f) => f as i32,
                 Err(s) => return s,
@@ -607,19 +645,30 @@ impl Model {
         } else {
             0
         };
+
         if !(0..=4).contains(&basis) {
             return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
         }
-        let days = match days_between(issue, settlement, basis) {
-            Ok(f) => f,
+
+        let issue_d = match from_excel_date(issue as i64) {
+            Ok(d) => d,
             Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
         };
-        let year_days = match year_basis(issue, basis) {
+        let settle_d = match from_excel_date(settlement as i64) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        if settle_d < issue_d {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < issue".to_string());
+        }
+
+        let frac = match year_fraction(issue_d, settle_d, basis) {
             Ok(f) => f,
             Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
         };
-        let result = par * rate * days / year_days;
-        CalcResult::Number(result)
+
+        CalcResult::Number(par * rate * frac)
     }
 
     // RATE(nper, pmt, pv, [fv], [type], [guess])

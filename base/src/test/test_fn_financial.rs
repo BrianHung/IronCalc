@@ -470,6 +470,54 @@ fn fn_db_misc() {
 }
 
 #[test]
+fn fn_accrint() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2020,1,1)");
+    model._set("A2", "=DATE(2020,1,1)");
+    model._set("A3", "=DATE(2020,1,31)");
+    model._set("A4", "10%");
+    model._set("A5", "$1,000");
+    model._set("A6", "2");
+
+    model._set("B1", "=ACCRINT(A1,A2,A3,A4,A5,A6)");
+    model._set("C1", "=ACCRINT(A1)"); // Too few arguments
+    model._set("C2", "=ACCRINT(A1,A2,A3,A4,A5,3)"); // Invalid frequency
+
+    model.evaluate();
+
+    match model.get_cell_value_by_ref("Sheet1!B1") {
+        Ok(CellValue::Number(v)) => {
+            assert!((v - 8.333333333333334).abs() < 1e-9);
+        }
+        other => unreachable!("Expected number for B1, got {:?}", other),
+    }
+    assert_eq!(model._get_text("C1"), *"#ERROR!");
+    assert_eq!(model._get_text("C2"), *"#NUM!");
+}
+
+#[test]
+fn fn_accrintm() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2020,1,1)");
+    model._set("A2", "=DATE(2020,7,1)");
+    model._set("A3", "10%");
+    model._set("A4", "$1,000");
+
+    model._set("B1", "=ACCRINTM(A1,A2,A3,A4)");
+    model._set("C1", "=ACCRINTM(A1)"); // Too few arguments
+
+    model.evaluate();
+
+    match model.get_cell_value_by_ref("Sheet1!B1") {
+        Ok(CellValue::Number(v)) => {
+            assert!((v - 50.0).abs() < 1e-9);
+        }
+        other => unreachable!("Expected number for B1, got {:?}", other),
+    }
+    assert_eq!(model._get_text("C1"), *"#ERROR!");
+}
+
+#[test]
 fn fn_accrint_accrintm() {
     let mut model = new_empty_model();
     model._set("A1", "=DATE(2018,10,15)"); // issue and first interest
@@ -485,6 +533,18 @@ fn fn_accrint_accrintm() {
 
     model.evaluate();
 
-    assert_eq!(model._get_text("B1"), "14.722222222");
-    assert_eq!(model._get_text("B2"), "141.111111111");
+    // Use epsilon comparison for better floating point testing
+    match model.get_cell_value_by_ref("Sheet1!B1") {
+        Ok(CellValue::Number(v)) => {
+            assert!((v - 14.722222222222221).abs() < 1e-9);
+        }
+        other => unreachable!("Expected number for B1, got {:?}", other),
+    }
+
+    match model.get_cell_value_by_ref("Sheet1!B2") {
+        Ok(CellValue::Number(v)) => {
+            assert!((v - 141.11111111111111).abs() < 1e-9);
+        }
+        other => unreachable!("Expected number for B2, got {:?}", other),
+    }
 }
