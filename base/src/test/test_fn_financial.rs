@@ -468,3 +468,68 @@ fn fn_db_misc() {
 
     assert_eq!(model._get_text("B1"), "$0.00");
 }
+
+#[test]
+fn fn_pricedisc_related() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2017,7,1)");
+    model._set("A2", "=DATE(2020,1,1)");
+    model._set("A3", "7%");
+    model._set("B1", "=PRICEDISC(A1,A2,A3,100)");
+    model._set("B2", "=DISC(A1,A2,B1,100)");
+    model._set("B3", "=YIELDDISC(A1,A2,B1,100)");
+    model.evaluate();
+    assert_eq!(
+        model.get_cell_value_by_ref("Sheet1!B1"),
+        Ok(CellValue::Number(82.5))
+    );
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B2"),
+        Ok(CellValue::Number(v)) if (v - 0.07).abs() < 1e-8
+    ));
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B3"),
+        Ok(CellValue::Number(v)) if (v - 0.08484848484848484).abs() < 1e-8
+    ));
+}
+
+#[test]
+fn fn_pricemat_related() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2020,7,1)"); // settlement
+    model._set("A2", "=DATE(2021,7,1)"); // maturity
+    model._set("A3", "=DATE(2020,1,1)"); // issue
+    model._set("A4", "10%"); // rate
+    model._set("A5", "18%"); // yield
+    model._set("B1", "=PRICEMAT(A1,A2,A3,A4,A5)");
+    model._set("B2", "=YIELDMAT(A1,A2,A3,A4,B1)");
+    model.evaluate();
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B1"),
+        Ok(CellValue::Number(v)) if (v - 97.45762711864407).abs() < 1e-8
+    ));
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B2"),
+        Ok(CellValue::Number(v)) if (v - 0.18).abs() < 1e-8
+    ));
+}
+
+#[test]
+fn fn_received_intrate() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2017,7,6)");
+    model._set("A2", "=DATE(2020,1,15)");
+    model._set("A3", "1000");
+    model._set("A4", "4.25%");
+    model._set("B1", "=RECEIVED(A1,A2,A3,A4)");
+    model._set("B2", "=INTRATE(A1,A2,A3,B1)");
+    model.evaluate();
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B1"),
+        Ok(CellValue::Number(v)) if (v - 1120.2128404396835).abs() < 1e-8
+    ));
+    assert!(matches!(
+        model.get_cell_value_by_ref("Sheet1!B2"),
+        Ok(CellValue::Number(v)) if (v - 0.04760904571868655).abs() < 1e-8
+    ));
+}
