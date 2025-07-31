@@ -76,6 +76,11 @@ pub enum Function {
     Sumifs,
     Tan,
     Tanh,
+    Fact,
+    Combin,
+    Combina,
+    Permut,
+    Permutationa,
 
     // Information
     ErrorType,
@@ -253,7 +258,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 203> {
         [
             Function::And,
             Function::False,
@@ -295,6 +300,11 @@ impl Function {
             Function::Round,
             Function::Rounddown,
             Function::Roundup,
+            Function::Fact,
+            Function::Combin,
+            Function::Combina,
+            Function::Permut,
+            Function::Permutationa,
             Function::Sum,
             Function::Sumif,
             Function::Sumifs,
@@ -552,6 +562,11 @@ impl Function {
             "ROUND" => Some(Function::Round),
             "ROUNDDOWN" => Some(Function::Rounddown),
             "ROUNDUP" => Some(Function::Roundup),
+            "FACT" => Some(Function::Fact),
+            "COMBIN" => Some(Function::Combin),
+            "COMBINA" => Some(Function::Combina),
+            "PERMUT" => Some(Function::Permut),
+            "PERMUTATIONA" => Some(Function::Permutationa),
             "SUM" => Some(Function::Sum),
             "SUMIF" => Some(Function::Sumif),
             "SUMIFS" => Some(Function::Sumifs),
@@ -773,6 +788,11 @@ impl fmt::Display for Function {
             Function::Round => write!(f, "ROUND"),
             Function::Rounddown => write!(f, "ROUNDDOWN"),
             Function::Roundup => write!(f, "ROUNDUP"),
+            Function::Fact => write!(f, "FACT"),
+            Function::Combin => write!(f, "COMBIN"),
+            Function::Combina => write!(f, "COMBINA"),
+            Function::Permut => write!(f, "PERMUT"),
+            Function::Permutationa => write!(f, "PERMUTATIONA"),
             Function::Sum => write!(f, "SUM"),
             Function::Sumif => write!(f, "SUMIF"),
             Function::Sumifs => write!(f, "SUMIFS"),
@@ -1009,6 +1029,11 @@ impl Model {
             Function::Round => self.fn_round(args, cell),
             Function::Rounddown => self.fn_rounddown(args, cell),
             Function::Roundup => self.fn_roundup(args, cell),
+            Function::Fact => self.fn_fact(args, cell),
+            Function::Combin => self.fn_combin(args, cell),
+            Function::Combina => self.fn_combina(args, cell),
+            Function::Permut => self.fn_permut(args, cell),
+            Function::Permutationa => self.fn_permutationa(args, cell),
             Function::Sum => self.fn_sum(args, cell),
             Function::Sumif => self.fn_sumif(args, cell),
             Function::Sumifs => self.fn_sumifs(args, cell),
