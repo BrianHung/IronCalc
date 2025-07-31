@@ -579,7 +579,7 @@ impl Model {
         if k == 0 || n == k {
             return 1.0;
         }
-        let mut k = if k > n - k { n - k } else { k };
+        let k = if k > n - k { n - k } else { k };
         let mut result = 1.0_f64;
         let mut i = 1_u64;
         while i <= k {
@@ -603,7 +603,11 @@ impl Model {
             Err(e) => return e,
         };
         if number < 0.0 || chosen < 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "arguments must be positive".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
         }
         let n = number.trunc() as u64;
         let k = chosen.trunc() as u64;
@@ -630,10 +634,23 @@ impl Model {
             Err(e) => return e,
         };
         if number < 0.0 || chosen < 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "arguments must be positive".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
         }
         let n = number.trunc() as u64;
         let k = chosen.trunc() as u64;
+
+        // Handle edge cases
+        if n == 0 && k == 0 {
+            return CalcResult::Number(1.0);
+        }
+        if n == 0 && k > 0 {
+            return CalcResult::Number(0.0);
+        }
+
         let result = Self::comb(n + k - 1, k);
         if result.is_infinite() {
             return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
@@ -654,7 +671,11 @@ impl Model {
             Err(e) => return e,
         };
         if number < 0.0 || chosen < 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "arguments must be positive".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
         }
         let n = number.trunc() as u64;
         let k = chosen.trunc() as u64;
@@ -671,7 +692,11 @@ impl Model {
         CalcResult::Number(result)
     }
 
-    pub(crate) fn fn_permutationa(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+    pub(crate) fn fn_permutationa(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -684,10 +709,20 @@ impl Model {
             Err(e) => return e,
         };
         if number < 0.0 || chosen < 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "arguments must be positive".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
         }
         let n = number.trunc() as u64;
         let k = chosen.trunc() as u64;
+
+        // Handle edge case: 0^0 = 1
+        if n == 0 && k == 0 {
+            return CalcResult::Number(1.0);
+        }
+
         let mut result = 1.0_f64;
         for _ in 0..k {
             result *= n as f64;
