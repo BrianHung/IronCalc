@@ -651,7 +651,16 @@ impl Model {
             return CalcResult::Number(0.0);
         }
 
-        let result = Self::comb(n + k - 1, k);
+        // Check for integer overflow in n + k - 1
+        let arg1 = match n.checked_add(k) {
+            Some(sum) => match sum.checked_sub(1) {
+                Some(result) => result,
+                None => return CalcResult::new_error(Error::NUM, cell, "overflow".to_string()),
+            },
+            None => return CalcResult::new_error(Error::NUM, cell, "overflow".to_string()),
+        };
+
+        let result = Self::comb(arg1, k);
         if result.is_infinite() {
             return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
         }

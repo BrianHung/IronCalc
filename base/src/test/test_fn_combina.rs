@@ -36,3 +36,18 @@ fn combina_mathematical_identity() {
 
     assert_eq!(model._get_text("A1"), model._get_text("A2"));
 }
+
+#[test]
+fn combina_overflow() {
+    let mut model = new_empty_model();
+
+    model._set("A1", "=COMBINA(18446744073709551615, 2)");
+    model._set("A2", "=COMBINA(18446744073709551614, 3)");
+    model._set("A3", "=COMBINA(9223372036854775807, 9223372036854775807)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), *"#NUM!");
+    assert_eq!(model._get_text("A2"), *"#NUM!");
+    assert_eq!(model._get_text("A3"), *"#NUM!");
+}

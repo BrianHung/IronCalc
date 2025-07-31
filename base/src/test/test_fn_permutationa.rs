@@ -36,3 +36,18 @@ fn permutationa_power_equivalence() {
 
     assert_eq!(model._get_text("A1"), model._get_text("A2"));
 }
+
+#[test]
+fn permutationa_overflow() {
+    let mut model = new_empty_model();
+
+    model._set("A1", "=PERMUTATIONA(100, 10)");
+    model._set("A2", "=PERMUTATIONA(1000, 100)");
+    model._set("A3", "=PERMUTATIONA(10, 100)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), *"1E+20");
+    assert_eq!(model._get_text("A2"), *"1E+300");
+    assert_eq!(model._get_text("A3"), *"1E+100");
+}

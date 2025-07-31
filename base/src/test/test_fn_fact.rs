@@ -26,3 +26,18 @@ fn fact_comprehensive() {
     assert_eq!(model._get_text("A7"), *"#NUM!");
     assert_eq!(model._get_text("A8"), *"#ERROR!");
 }
+
+#[test]
+fn fact_overflow() {
+    let mut model = new_empty_model();
+
+    model._set("A1", "=FACT(170)");
+    model._set("A2", "=FACT(171)");
+    model._set("A3", "=FACT(200)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), *"7.25742E+306");
+    assert_eq!(model._get_text("A2"), *"#NUM!");
+    assert_eq!(model._get_text("A3"), *"#NUM!");
+}
