@@ -157,6 +157,12 @@ pub enum Function {
     Year,
 
     // Financial
+    Coupdaybs,
+    Coupdays,
+    Coupdaysnc,
+    Coupncd,
+    Coupnum,
+    Couppcd,
     Cumipmt,
     Cumprinc,
     Db,
@@ -253,7 +259,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 204> {
         [
             Function::And,
             Function::False,
@@ -389,6 +395,12 @@ impl Function {
             Function::Nominal,
             Function::Effect,
             Function::Pduration,
+            Function::Coupdaybs,
+            Function::Coupdays,
+            Function::Coupdaysnc,
+            Function::Coupncd,
+            Function::Coupnum,
+            Function::Couppcd,
             Function::Tbillyield,
             Function::Tbillprice,
             Function::Tbilleq,
@@ -656,6 +668,13 @@ impl Function {
             "EFFECT" => Some(Function::Effect),
             "PDURATION" | "_XLFN.PDURATION" => Some(Function::Pduration),
 
+            "COUPDAYBS" => Some(Function::Coupdaybs),
+            "COUPDAYS" => Some(Function::Coupdays),
+            "COUPDAYSNC" => Some(Function::Coupdaysnc),
+            "COUPNCD" => Some(Function::Coupncd),
+            "COUPNUM" => Some(Function::Coupnum),
+            "COUPPCD" => Some(Function::Couppcd),
+
             "TBILLYIELD" => Some(Function::Tbillyield),
             "TBILLPRICE" => Some(Function::Tbillprice),
             "TBILLEQ" => Some(Function::Tbilleq),
@@ -868,6 +887,12 @@ impl fmt::Display for Function {
             Function::Nominal => write!(f, "NOMINAL"),
             Function::Effect => write!(f, "EFFECT"),
             Function::Pduration => write!(f, "PDURATION"),
+            Function::Coupdaybs => write!(f, "COUPDAYBS"),
+            Function::Coupdays => write!(f, "COUPDAYS"),
+            Function::Coupdaysnc => write!(f, "COUPDAYSNC"),
+            Function::Coupncd => write!(f, "COUPNCD"),
+            Function::Coupnum => write!(f, "COUPNUM"),
+            Function::Couppcd => write!(f, "COUPPCD"),
             Function::Tbillyield => write!(f, "TBILLYIELD"),
             Function::Tbillprice => write!(f, "TBILLPRICE"),
             Function::Tbilleq => write!(f, "TBILLEQ"),
@@ -1110,6 +1135,12 @@ impl Model {
             Function::Nominal => self.fn_nominal(args, cell),
             Function::Effect => self.fn_effect(args, cell),
             Function::Pduration => self.fn_pduration(args, cell),
+            Function::Coupdaybs => self.fn_coupdaybs(args, cell),
+            Function::Coupdays => self.fn_coupdays(args, cell),
+            Function::Coupdaysnc => self.fn_coupdaysnc(args, cell),
+            Function::Coupncd => self.fn_coupncd(args, cell),
+            Function::Coupnum => self.fn_coupnum(args, cell),
+            Function::Couppcd => self.fn_couppcd(args, cell),
             Function::Tbillyield => self.fn_tbillyield(args, cell),
             Function::Tbillprice => self.fn_tbillprice(args, cell),
             Function::Tbilleq => self.fn_tbilleq(args, cell),

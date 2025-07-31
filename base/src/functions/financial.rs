@@ -41,6 +41,75 @@ fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String>
     Ok(end_day <= start_day)
 }
 
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn is_last_day_of_feb(date: chrono::NaiveDate) -> bool {
+    date.month() == 2 && date.day() == if is_leap_year(date.year()) { 29 } else { 28 }
+}
+
+fn days360_us(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+
+    if d1 == 31 || is_last_day_of_feb(start) {
+        d1 = 30;
+    }
+    if d2 == 31 && (d1 == 30 || d1 == 31) {
+        d2 = 30;
+    }
+
+    360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)
+}
+
+fn days360_eu(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+
+    if d1 == 31 {
+        d1 = 30;
+    }
+    if d2 == 31 {
+        d2 = 30;
+    }
+
+    360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)
+}
+
+fn days_between(start: chrono::NaiveDate, end: chrono::NaiveDate, basis: i32) -> i32 {
+    match basis {
+        0 => days360_us(start, end),
+        4 => days360_eu(start, end),
+        _ => (end - start).num_days() as i32,
+    }
+}
+
+fn coupon_dates(
+    settlement: chrono::NaiveDate,
+    maturity: chrono::NaiveDate,
+    freq: i32,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let months = 12 / freq;
+    let step = chrono::Months::new(months as u32);
+    let mut ncd = maturity;
+    loop {
+        let prev = ncd.checked_sub_months(step).unwrap();
+        if settlement >= prev {
+            return (prev, ncd);
+        }
+        ncd = prev;
+    }
+}
+
 fn compute_payment(
     rate: f64,
     nper: f64,
@@ -1513,6 +1582,320 @@ impl Model {
         let result = (100.0 - pr) * 360.0 / (pr * days);
 
         CalcResult::Number(result)
+    }
+
+    // COUPDAYBS(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdaybs(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let (pcd, _) = coupon_dates(settlement_date, maturity_date, frequency);
+        let days = days_between(pcd, settlement_date, basis);
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPDAYS(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdays(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let (pcd, ncd) = coupon_dates(settlement_date, maturity_date, frequency);
+        let days = match basis {
+            2 | 0 | 4 => 360 / frequency,
+            3 => 365 / frequency,
+            _ => days_between(pcd, ncd, basis),
+        };
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPDAYSNC(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdaysnc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let (_, ncd) = coupon_dates(settlement_date, maturity_date, frequency);
+        let days = days_between(settlement_date, ncd, basis);
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPNCD(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupncd(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let (_, ncd) = coupon_dates(settlement_date, maturity_date, frequency);
+        match crate::formatter::dates::date_to_serial_number(ncd.day(), ncd.month(), ncd.year()) {
+            Ok(n) => CalcResult::Number(n as f64),
+            Err(msg) => CalcResult::new_error(Error::NUM, cell, msg),
+        }
+    }
+
+    // COUPNUM(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupnum(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let months = 12 / frequency;
+        let step = chrono::Months::new(months as u32);
+        let mut date = maturity_date;
+        let mut count = 0;
+        while settlement_date < date {
+            count += 1;
+            date = date.checked_sub_months(step).unwrap();
+        }
+        CalcResult::Number(count as f64)
+    }
+
+    // COUPPCD(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_couppcd(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 3 || args.len() > 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if args.len() > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(frequency == 1 || frequency == 2 || frequency == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid frequency".to_string());
+        }
+        if basis < 0 || basis > 4 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid basis".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < maturity".to_string());
+        }
+
+        let settlement_date = match from_excel_date(settlement) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let maturity_date = match from_excel_date(maturity) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+
+        let (pcd, _) = coupon_dates(settlement_date, maturity_date, frequency);
+        match crate::formatter::dates::date_to_serial_number(pcd.day(), pcd.month(), pcd.year()) {
+            Ok(n) => CalcResult::Number(n as f64),
+            Err(msg) => CalcResult::new_error(Error::NUM, cell, msg),
+        }
     }
 
     // DOLLARDE(fractional_dollar, fraction)

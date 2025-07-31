@@ -468,3 +468,32 @@ fn fn_db_misc() {
 
     assert_eq!(model._get_text("B1"), "$0.00");
 }
+
+#[test]
+fn fn_coupon_functions() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2001,1,25)");
+    model._set("A2", "=DATE(2001,11,15)");
+
+    model._set("B1", "=COUPDAYBS(A1,A2,2,1)");
+    model._set("B2", "=COUPDAYS(A1,A2,2,1)");
+    model._set("B3", "=COUPDAYSNC(A1,A2,2,1)");
+    model._set("B4", "=COUPNCD(A1,A2,2,1)");
+    model._set("B5", "=COUPNUM(A1,A2,2,1)");
+    model._set("B6", "=COUPPCD(A1,A2,2,1)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("B1"), "71");
+    assert_eq!(model._get_text("B2"), "181");
+    assert_eq!(model._get_text("B3"), "110");
+    assert_eq!(
+        model.get_cell_value_by_ref("Sheet1!B4"),
+        Ok(CellValue::Number(37026.0))
+    );
+    assert_eq!(model._get_text("B5"), "2");
+    assert_eq!(
+        model.get_cell_value_by_ref("Sheet1!B6"),
+        Ok(CellValue::Number(36845.0))
+    );
+}
