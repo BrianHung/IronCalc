@@ -1710,7 +1710,11 @@ impl<'a> Model<'a> {
         CalcResult::Number(result)
     }
 
-    pub(crate) fn fn_permutationa(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+    pub(crate) fn fn_permutationa(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);
         }
