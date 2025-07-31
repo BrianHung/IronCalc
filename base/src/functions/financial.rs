@@ -1678,9 +1678,8 @@ impl Model {
 
         let (pcd, ncd) = coupon_dates(settlement_date, maturity_date, frequency);
         let days = match basis {
-            2 | 0 | 4 => 360 / frequency,
-            3 => 365 / frequency,
-            _ => days_between(pcd, ncd, basis),
+            0 | 4 => 360 / frequency,           // 30/360 conventions
+            _ => days_between(pcd, ncd, basis), // Actual day counts
         };
         CalcResult::Number(days as f64)
     }
