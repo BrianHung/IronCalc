@@ -165,6 +165,7 @@ pub enum Function {
     Dollarfr,
     Effect,
     Fv,
+    Fvschedule,
     Ipmt,
     Irr,
     Ispmt,
@@ -253,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -370,6 +371,7 @@ impl Function {
             Function::Rate,
             Function::Nper,
             Function::Fv,
+            Function::Fvschedule,
             Function::Ppmt,
             Function::Ipmt,
             Function::Npv,
@@ -640,6 +642,7 @@ impl Function {
             "RATE" => Some(Function::Rate),
             "NPER" => Some(Function::Nper),
             "FV" => Some(Function::Fv),
+            "FVSCHEDULE" => Some(Function::Fvschedule),
             "PPMT" => Some(Function::Ppmt),
             "IPMT" => Some(Function::Ipmt),
             "NPV" => Some(Function::Npv),
@@ -849,6 +852,7 @@ impl fmt::Display for Function {
             Function::Rate => write!(f, "RATE"),
             Function::Nper => write!(f, "NPER"),
             Function::Fv => write!(f, "FV"),
+            Function::Fvschedule => write!(f, "FVSCHEDULE"),
             Function::Ppmt => write!(f, "PPMT"),
             Function::Ipmt => write!(f, "IPMT"),
             Function::Npv => write!(f, "NPV"),
@@ -1091,6 +1095,7 @@ impl Model {
             Function::Rate => self.fn_rate(args, cell),
             Function::Nper => self.fn_nper(args, cell),
             Function::Fv => self.fn_fv(args, cell),
+            Function::Fvschedule => self.fn_fvschedule(args, cell),
             Function::Ppmt => self.fn_ppmt(args, cell),
             Function::Ipmt => self.fn_ipmt(args, cell),
             Function::Npv => self.fn_npv(args, cell),
