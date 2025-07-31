@@ -541,7 +541,7 @@ impl Model {
             0
         };
         let calc = if arg_count > 7 {
-            match self.get_number_no_bools(&args[7], cell) {
+            match self.get_number(&args[7], cell) {
                 Ok(f) => f != 0.0,
                 Err(s) => return s,
             }
@@ -554,6 +554,12 @@ impl Model {
         }
         if !(0..=4).contains(&basis) {
             return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
+        }
+        if par < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "par cannot be negative".to_string());
+        }
+        if rate < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "rate cannot be negative".to_string());
         }
 
         let issue_d = match from_excel_date(issue as i64) {
@@ -571,6 +577,16 @@ impl Model {
 
         if settle_d < issue_d {
             return CalcResult::new_error(Error::NUM, cell, "settlement < issue".to_string());
+        }
+        if first_d < issue_d {
+            return CalcResult::new_error(Error::NUM, cell, "first_interest < issue".to_string());
+        }
+        if settle_d < first_d {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement < first_interest".to_string(),
+            );
         }
 
         let months = 12 / freq;
@@ -648,6 +664,12 @@ impl Model {
 
         if !(0..=4).contains(&basis) {
             return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
+        }
+        if par < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "par cannot be negative".to_string());
+        }
+        if rate < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "rate cannot be negative".to_string());
         }
 
         let issue_d = match from_excel_date(issue as i64) {
