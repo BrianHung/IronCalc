@@ -552,4 +552,193 @@ impl Model {
         }
         CalcResult::Number((x + random() * (y - x)).floor())
     }
+
+    pub(crate) fn fn_fact(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if number < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "number must be positive".to_string());
+        }
+        let n = number.trunc() as u64;
+        if n > 170 {
+            return CalcResult::new_error(Error::NUM, cell, "number too large".to_string());
+        }
+        let mut result = 1.0;
+        for i in 2..=n {
+            result *= i as f64;
+        }
+        CalcResult::Number(result)
+    }
+
+    fn comb(n: u64, k: u64) -> f64 {
+        if k == 0 || n == k {
+            return 1.0;
+        }
+        let k = if k > n - k { n - k } else { k };
+        let mut result = 1.0_f64;
+        let mut i = 1_u64;
+        while i <= k {
+            result *= (n - k + i) as f64;
+            result /= i as f64;
+            i += 1;
+        }
+        result
+    }
+
+    pub(crate) fn fn_combin(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let chosen = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if number < 0.0 || chosen < 0.0 {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
+        }
+        let n = number.trunc() as u64;
+        let k = chosen.trunc() as u64;
+        if k > n {
+            return CalcResult::new_error(Error::NUM, cell, "number_chosen > number".to_string());
+        }
+        let result = Self::comb(n, k);
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_combina(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let chosen = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if number < 0.0 || chosen < 0.0 {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
+        }
+        let n = number.trunc() as u64;
+        let k = chosen.trunc() as u64;
+
+        // Handle edge cases
+        if n == 0 && k == 0 {
+            return CalcResult::Number(1.0);
+        }
+        if n == 0 && k > 0 {
+            return CalcResult::Number(0.0);
+        }
+
+        // Check for integer overflow in n + k - 1
+        let arg1 = match n.checked_add(k) {
+            Some(sum) => match sum.checked_sub(1) {
+                Some(result) => result,
+                None => return CalcResult::new_error(Error::NUM, cell, "overflow".to_string()),
+            },
+            None => return CalcResult::new_error(Error::NUM, cell, "overflow".to_string()),
+        };
+
+        let result = Self::comb(arg1, k);
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_permut(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let chosen = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if number < 0.0 || chosen < 0.0 {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
+        }
+        let n = number.trunc() as u64;
+        let k = chosen.trunc() as u64;
+        if k > n {
+            return CalcResult::new_error(Error::NUM, cell, "number_chosen > number".to_string());
+        }
+        let mut result = 1.0_f64;
+        for i in 0..k {
+            result *= (n - i) as f64;
+        }
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_permutationa(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let chosen = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        if number < 0.0 || chosen < 0.0 {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "arguments must be positive".to_string(),
+            );
+        }
+        let n = number.trunc() as u64;
+        let k = chosen.trunc() as u64;
+
+        // Handle edge case: 0^0 = 1
+        if n == 0 && k == 0 {
+            return CalcResult::Number(1.0);
+        }
+
+        let mut result = 1.0_f64;
+        for _ in 0..k {
+            result *= n as f64;
+        }
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
 }
