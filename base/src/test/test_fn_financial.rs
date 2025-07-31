@@ -468,3 +468,43 @@ fn fn_db_misc() {
 
     assert_eq!(model._get_text("B1"), "$0.00");
 }
+
+#[test]
+fn fn_new_financial_functions() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2021,1,1)");
+    model._set("A2", "=DATE(2021,7,1)");
+
+    model._set("B1", "=PRICEDISC(A1,A2,5%,100)");
+    model._set("B2", "=YIELDDISC(A1,A2,B1,100)");
+    model._set("B3", "=DISC(A1,A2,B1,100)");
+    model._set("B4", "=RECEIVED(A1,A2,1000,5%)");
+    model._set("B5", "=INTRATE(A1,A2,1000,1050)");
+    model._set("B6", "=PRICEMAT(A1,A2,DATE(2020,7,1),6%,5%)");
+    model._set("B7", "=YIELDMAT(A1,A2,DATE(2020,7,1),6%,99)");
+
+    model.evaluate();
+
+    assert_eq!(
+        model.get_cell_value_by_ref("Sheet1!B1"),
+        Ok(CellValue::Number(97.5))
+    );
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B2") {
+        assert!((v - 0.051282051).abs() < 1e-6);
+    }
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B3") {
+        assert!((v - 0.05).abs() < 1e-6);
+    }
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B4") {
+        assert!((v - 1025.641025).abs() < 1e-6);
+    }
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B5") {
+        assert!((v - 0.10).abs() < 1e-6);
+    }
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B6") {
+        assert!((v - 100.414634).abs() < 1e-6);
+    }
+    if let Ok(CellValue::Number(v)) = model.get_cell_value_by_ref("Sheet1!B7") {
+        assert!((v - 0.078431372).abs() < 1e-6);
+    }
+}

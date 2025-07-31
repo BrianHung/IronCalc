@@ -41,6 +41,79 @@ fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String>
     Ok(end_day <= start_day)
 }
 
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn diff_days(start_date: i64, end_date: i64, basis: i32) -> Result<i32, String> {
+    let mut start = from_excel_date(start_date)?;
+    let mut end = from_excel_date(end_date)?;
+    if start_date > end_date {
+        std::mem::swap(&mut start, &mut end);
+    }
+    let mut d1 = start.day() as i32;
+    let mut m1 = start.month() as i32;
+    let mut y1 = start.year();
+    let mut d2 = end.day() as i32;
+    let mut m2 = end.month() as i32;
+    let mut y2 = end.year();
+    let diff = match basis {
+        0 => {
+            if d1 == 31 {
+                d1 = 30;
+            }
+            if d1 == 30 && d2 == 31 {
+                d2 = 30;
+            } else if m1 == 2 && d1 == if is_leap_year(y1) { 29 } else { 28 } {
+                d1 = 30;
+                if m2 == 2 && d2 == if is_leap_year(y2) { 29 } else { 28 } {
+                    d2 = 30;
+                }
+            }
+            (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
+        }
+        1 | 2 | 3 => (end - start).num_days() as i32,
+        4 => {
+            if d1 == 31 {
+                d1 = 30;
+            }
+            if d2 == 31 {
+                d2 = 30;
+            }
+            (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
+        }
+        _ => return Err("invalid basis".to_string()),
+    };
+    Ok(diff)
+}
+
+fn days_in_year(date: i64, basis: i32) -> Result<i32, String> {
+    let dt = from_excel_date(date)?;
+    let year = dt.year();
+    Ok(match basis {
+        0 | 2 | 4 => 360,
+        3 => 365,
+        1 => {
+            if is_leap_year(year) {
+                366
+            } else {
+                365
+            }
+        }
+        _ => return Err("invalid basis".to_string()),
+    })
+}
+
+fn year_frac(start_date: i64, end_date: i64, basis: i32) -> Result<f64, String> {
+    let diff = diff_days(start_date, end_date, basis)? as f64;
+    let days = days_in_year(start_date, basis)? as f64;
+    Ok(diff / days)
+}
+
+fn year_diff(start_date: i64, end_date: i64, basis: i32) -> Result<f64, String> {
+    year_frac(start_date, end_date, basis)
+}
+
 fn compute_payment(
     rate: f64,
     nper: f64,
@@ -1512,6 +1585,330 @@ impl Model {
         let days = maturity - settlement;
         let result = (100.0 - pr) * 360.0 / (pr * days);
 
+        CalcResult::Number(result)
+    }
+
+    // PRICEDISC(sd, md, discount, redemption, [basis])
+    pub(crate) fn fn_pricedisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let discount = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let redemption = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 5 {
+            match self.get_number_no_bools(&args[4], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if settlement >= maturity || discount <= 0.0 || redemption <= 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid number for date".to_string());
+        }
+        let yd = match year_diff(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let result = redemption * (1.0 - discount * yd);
+        CalcResult::Number(result)
+    }
+
+    // PRICEMAT(sd, md, id, rate, yld, [basis])
+    pub(crate) fn fn_pricemat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let yld = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if rate < 0.0 || yld < 0.0 || settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let f_iss_mat = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let f_iss_set = match year_frac(issue as i64, settlement as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let f_set_mat = match year_frac(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let mut result = 1.0 + f_iss_mat * rate;
+        result /= 1.0 + f_set_mat * yld;
+        result -= f_iss_set * rate;
+        result *= 100.0;
+        CalcResult::Number(result)
+    }
+
+    // YIELDDISC(sd, md, pr, redemption, [basis])
+    pub(crate) fn fn_yielddisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let pr = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let redemption = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 5 {
+            match self.get_number_no_bools(&args[4], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if settlement >= maturity || pr <= 0.0 || redemption <= 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let yf = match year_frac(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let result = (redemption / pr - 1.0) / yf;
+        CalcResult::Number(result)
+    }
+
+    // YIELDMAT(sd, md, id, rate, pr, [basis])
+    pub(crate) fn fn_yieldmat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let price = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if price <= 0.0 || rate < 0.0 || settlement >= maturity || settlement < issue {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let f_iss_mat = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let f_iss_set = match year_frac(issue as i64, settlement as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let f_set_mat = match year_frac(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let mut y = 1.0 + f_iss_mat * rate;
+        y /= price / 100.0 + f_iss_set * rate;
+        y -= 1.0;
+        y /= f_set_mat;
+        CalcResult::Number(y)
+    }
+
+    // DISC(settlement, maturity, pr, redemption, [basis])
+    pub(crate) fn fn_disc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let pr = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let redemption = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 5 {
+            match self.get_number_no_bools(&args[4], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if pr <= 0.0 || redemption <= 0.0 || settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let yf = match year_frac(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let result = (1.0 - pr / redemption) / yf;
+        CalcResult::Number(result)
+    }
+
+    // RECEIVED(settlement, maturity, investment, discount, [basis])
+    pub(crate) fn fn_received(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let investment = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let discount = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 5 {
+            match self.get_number_no_bools(&args[4], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if investment <= 0.0 || discount <= 0.0 || settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let yd = match year_diff(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let result = investment / (1.0 - discount * yd);
+        CalcResult::Number(result)
+    }
+
+    // INTRATE(settlement, maturity, investment, redemption, [basis])
+    pub(crate) fn fn_intrate(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let investment = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let redemption = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 5 {
+            match self.get_number_no_bools(&args[4], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if investment <= 0.0 || redemption <= 0.0 || settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        let yd = match year_diff(settlement as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let result = ((redemption / investment) - 1.0) / yd;
         CalcResult::Number(result)
     }
 
