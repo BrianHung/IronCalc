@@ -468,3 +468,23 @@ fn fn_db_misc() {
 
     assert_eq!(model._get_text("B1"), "$0.00");
 }
+
+#[test]
+fn fn_accrint_accrintm() {
+    let mut model = new_empty_model();
+    model._set("A1", "=DATE(2018,10,15)"); // issue and first interest
+    model._set("A2", "=DATE(2019,2,1)"); // settlement for ACCRINT
+    model._set("A3", "5%"); // rate
+    model._set("A4", "1000"); // par
+
+    model._set("B1", "=ACCRINT(A1,A1,A2,A3,A4,2)");
+
+    model._set("C1", "=DATE(2016,4,5)"); // issue for ACCRINTM
+    model._set("C2", "=DATE(2019,2,1)"); // settlement for ACCRINTM
+    model._set("B2", "=ACCRINTM(C1,C2,A3,A4)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("B1"), "14.722222222");
+    assert_eq!(model._get_text("B2"), "141.111111111");
+}
