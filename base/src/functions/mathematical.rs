@@ -1671,4 +1671,73 @@ impl<'a> Model<'a> {
         }
         CalcResult::Number(result)
     }
+
+    pub(crate) fn fn_permut(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let n = match self.get_number(&args[0], cell) {
+            Ok(f) => f.floor(),
+            Err(s) => return s,
+        };
+        let k = match self.get_number(&args[1], cell) {
+            Ok(f) => f.floor(),
+            Err(s) => return s,
+        };
+        if n < 0.0 || k < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Arguments must be non-negative integers".to_string(),
+            };
+        }
+        if k > n {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "k cannot be greater than n".to_string(),
+            };
+        }
+        let n = n as usize;
+        let k = k as usize;
+        let mut result = 1.0;
+        for i in 0..k {
+            result *= (n - i) as f64;
+        }
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_permutationa(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let n = match self.get_number(&args[0], cell) {
+            Ok(f) => f.floor(),
+            Err(s) => return s,
+        };
+        let k = match self.get_number(&args[1], cell) {
+            Ok(f) => f.floor(),
+            Err(s) => return s,
+        };
+        if n < 0.0 || k < 0.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Arguments must be non-negative integers".to_string(),
+            };
+        }
+        let n = n as usize;
+        let k = k as usize;
+        let mut result = 1.0;
+        for _ in 0..k {
+            result *= n as f64;
+        }
+        if result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
+        CalcResult::Number(result)
+    }
 }

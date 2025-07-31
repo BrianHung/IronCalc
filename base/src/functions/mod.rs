@@ -118,6 +118,8 @@ pub enum Function {
     Arabic,
     Combin,
     Combina,
+    Permut,
+    Permutationa,
     Sumsq,
 
     // Information
@@ -428,6 +430,11 @@ macro_rules! impl_function_lookup {
         impl Functions {
             pub fn lookup(&self, name: &str) -> Option<Function> {
                 let key = name.to_uppercase();
+                match key.as_str() {
+                    "PERMUT" => return Some(Function::Permut),
+                    "PERMUTATIONA" => return Some(Function::Permutationa),
+                    _ => {}
+                }
                 $(
                     if self.$field == key {
                         return Some(Function::$variant);
@@ -906,6 +913,8 @@ impl Function {
             Function::Arabic => functions.arabic.clone(),
             Function::Combin => functions.combin.clone(),
             Function::Combina => functions.combina.clone(),
+            Function::Permut => "PERMUT".to_string(),
+            Function::Permutationa => "PERMUTATIONA".to_string(),
             Function::Sumsq => functions.sumsq.clone(),
             Function::ErrorType => functions.errortype.clone(),
             Function::Formulatext => functions.formulatext.clone(),
@@ -1168,7 +1177,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 345> {
+    pub fn into_iter() -> IntoIter<Function, 347> {
         [
             Function::And,
             Function::False,
@@ -1425,6 +1434,8 @@ impl Function {
             Function::Arabic,
             Function::Combin,
             Function::Combina,
+            Function::Permut,
+            Function::Permutationa,
             Function::Sumsq,
             Function::N,
             Function::Cell,
@@ -1701,6 +1712,11 @@ impl<'a> Model<'a> {
             Function::Round => self.fn_round(args, cell),
             Function::Rounddown => self.fn_rounddown(args, cell),
             Function::Roundup => self.fn_roundup(args, cell),
+            Function::Fact => self.fn_fact(args, cell),
+            Function::Combin => self.fn_combin(args, cell),
+            Function::Combina => self.fn_combina(args, cell),
+            Function::Permut => self.fn_permut(args, cell),
+            Function::Permutationa => self.fn_permutationa(args, cell),
             Function::Sum => self.fn_sum(args, cell),
             Function::Sumif => self.fn_sumif(args, cell),
             Function::Sumifs => self.fn_sumifs(args, cell),
@@ -1913,6 +1929,8 @@ impl<'a> Model<'a> {
             Function::Arabic => self.fn_arabic(args, cell),
             Function::Combin => self.fn_combin(args, cell),
             Function::Combina => self.fn_combina(args, cell),
+            Function::Permut => self.fn_permut(args, cell),
+            Function::Permutationa => self.fn_permutationa(args, cell),
             Function::Sumsq => self.fn_sumsq(args, cell),
             Function::N => self.fn_n(args, cell),
             Function::Cell => self.fn_cell(args, cell),
