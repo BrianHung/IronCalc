@@ -41,3 +41,18 @@ fn permut_mathematical_relationships() {
     assert_eq!(model._get_text("A1"), model._get_text("A2"));
     assert_eq!(model._get_text("A3"), model._get_text("A4"));
 }
+
+#[test]
+fn permut_overflow() {
+    let mut model = new_empty_model();
+
+    model._set("A1", "=PERMUT(100, 50)");
+    model._set("A2", "=PERMUT(1000, 500)");
+    model._set("A3", "=PERMUT(200, 100)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), *"3.06852E+93");
+    assert_eq!(model._get_text("A2"), *"#NUM!");
+    assert_eq!(model._get_text("A3"), *"8.45055E+216");
+}

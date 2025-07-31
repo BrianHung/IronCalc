@@ -41,3 +41,17 @@ fn combin_mathematical_properties() {
     assert_eq!(model._get_text("A1"), model._get_text("A2"));
     assert_eq!(model._get_text("A3"), model._get_text("A4"));
 }
+
+#[test]
+fn combin_overflow() {
+    let mut model = new_empty_model();
+
+    model._set("A1", "=COMBIN(1000, 500)");
+    model._set("A2", "=COMBIN(10000, 5000)");
+
+    model.evaluate();
+
+    let a1_result = model._get_text("A1");
+    assert!(a1_result == "#NUM!" || !a1_result.is_empty());
+    assert_eq!(model._get_text("A2"), *"#NUM!");
+}
