@@ -114,6 +114,10 @@ fn floor_comprehensive() {
     model._set("A6", "=FLOOR.PRECISE(-4.3)");
     model._set("A7", "=FLOOR.PRECISE(4.3,2)");
     model._set("A8", "=FLOOR.PRECISE(-4.3,2)");
+    // Test negative number without significance - should default to -1.0 and round away from zero
+    model._set("A9", "=FLOOR.MATH(-6.7)");
+    // Test CEILING.MATH negative number without significance - should default to -1.0 and round toward zero
+    model._set("A10", "=CEILING.MATH(-6.7)");
 
     model.evaluate();
 
@@ -125,6 +129,8 @@ fn floor_comprehensive() {
     assert_eq!(model._get_text("A6"), *"-4");
     assert_eq!(model._get_text("A7"), *"4");
     assert_eq!(model._get_text("A8"), *"-4");
+    assert_eq!(model._get_text("A9"), *"-7"); // -6.7 rounded away from zero with default significance -1.0
+    assert_eq!(model._get_text("A10"), *"-6"); // -6.7 rounded toward zero with default significance -1.0
 }
 
 #[test]

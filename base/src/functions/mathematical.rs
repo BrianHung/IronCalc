@@ -408,7 +408,12 @@ impl Model {
                 Err(e) => return e,
             }
         } else {
-            1.0
+            // Default significance: 1.0 for positive numbers, -1.0 for negative numbers
+            if number >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
         };
 
         // Validate and normalize significance
@@ -537,7 +542,12 @@ impl Model {
                 Err(e) => return e,
             }
         } else {
-            1.0
+            // Default significance: 1.0 for positive numbers, -1.0 for negative numbers
+            if number >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
         };
 
         // Validate and normalize significance
