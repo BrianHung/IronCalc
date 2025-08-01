@@ -97,6 +97,7 @@ pub enum Function {
     Type,
 
     // Lookup and reference
+    Address,
     Hlookup,
     Index,
     Indirect,
@@ -107,6 +108,7 @@ pub enum Function {
     Rows,
     Vlookup,
     Xlookup,
+    Xmatch,
 
     // Text
     Concat,
@@ -117,6 +119,8 @@ pub enum Function {
     Len,
     Lower,
     Mid,
+    Proper,
+    Replace,
     Rept,
     Right,
     Search,
@@ -253,7 +257,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 202> {
         [
             Function::And,
             Function::False,
@@ -303,6 +307,7 @@ impl Function {
             Function::Columns,
             Function::Index,
             Function::Indirect,
+            Function::Address,
             Function::Hlookup,
             Function::Lookup,
             Function::Match,
@@ -311,6 +316,7 @@ impl Function {
             Function::Rows,
             Function::Vlookup,
             Function::Xlookup,
+            Function::Xmatch,
             Function::Concatenate,
             Function::Exact,
             Function::Value,
@@ -322,6 +328,8 @@ impl Function {
             Function::Len,
             Function::Lower,
             Function::Mid,
+            Function::Proper,
+            Function::Replace,
             Function::Right,
             Function::Search,
             Function::Text,
@@ -469,6 +477,7 @@ impl Function {
             Function::Minifs => "_xlfn.MINIFS".to_string(),
             Function::Switch => "_xlfn.SWITCH".to_string(),
             Function::Xlookup => "_xlfn.XLOOKUP".to_string(),
+            Function::Xmatch => "_xlfn.XMATCH".to_string(),
             Function::Xor => "_xlfn.XOR".to_string(),
             Function::Textbefore => "_xlfn.TEXTBEFORE".to_string(),
             Function::Textafter => "_xlfn.TEXTAFTER".to_string(),
@@ -562,6 +571,7 @@ impl Function {
             "COLUMNS" => Some(Function::Columns),
             "INDEX" => Some(Function::Index),
             "INDIRECT" => Some(Function::Indirect),
+            "ADDRESS" => Some(Function::Address),
             "HLOOKUP" => Some(Function::Hlookup),
             "LOOKUP" => Some(Function::Lookup),
             "MATCH" => Some(Function::Match),
@@ -570,6 +580,7 @@ impl Function {
             "ROWS" => Some(Function::Rows),
             "VLOOKUP" => Some(Function::Vlookup),
             "XLOOKUP" | "_XLFN.XLOOKUP" => Some(Function::Xlookup),
+            "XMATCH" | "_XLFN.XMATCH" => Some(Function::Xmatch),
 
             "CONCATENATE" => Some(Function::Concatenate),
             "EXACT" => Some(Function::Exact),
@@ -582,6 +593,8 @@ impl Function {
             "LEN" => Some(Function::Len),
             "LOWER" => Some(Function::Lower),
             "MID" => Some(Function::Mid),
+            "PROPER" => Some(Function::Proper),
+            "REPLACE" => Some(Function::Replace),
             "RIGHT" => Some(Function::Right),
             "SEARCH" => Some(Function::Search),
             "TEXT" => Some(Function::Text),
@@ -781,6 +794,7 @@ impl fmt::Display for Function {
             Function::Columns => write!(f, "COLUMNS"),
             Function::Index => write!(f, "INDEX"),
             Function::Indirect => write!(f, "INDIRECT"),
+            Function::Address => write!(f, "ADDRESS"),
             Function::Hlookup => write!(f, "HLOOKUP"),
             Function::Lookup => write!(f, "LOOKUP"),
             Function::Match => write!(f, "MATCH"),
@@ -789,6 +803,7 @@ impl fmt::Display for Function {
             Function::Rows => write!(f, "ROWS"),
             Function::Vlookup => write!(f, "VLOOKUP"),
             Function::Xlookup => write!(f, "XLOOKUP"),
+            Function::Xmatch => write!(f, "XMATCH"),
             Function::Concatenate => write!(f, "CONCATENATE"),
             Function::Exact => write!(f, "EXACT"),
             Function::Value => write!(f, "VALUE"),
@@ -800,6 +815,8 @@ impl fmt::Display for Function {
             Function::Len => write!(f, "LEN"),
             Function::Lower => write!(f, "LOWER"),
             Function::Mid => write!(f, "MID"),
+            Function::Proper => write!(f, "PROPER"),
+            Function::Replace => write!(f, "REPLACE"),
             Function::Right => write!(f, "RIGHT"),
             Function::Search => write!(f, "SEARCH"),
             Function::Text => write!(f, "TEXT"),
@@ -1019,6 +1036,7 @@ impl Model {
             Function::Columns => self.fn_columns(args, cell),
             Function::Index => self.fn_index(args, cell),
             Function::Indirect => self.fn_indirect(args, cell),
+            Function::Address => self.fn_address(args, cell),
             Function::Hlookup => self.fn_hlookup(args, cell),
             Function::Lookup => self.fn_lookup(args, cell),
             Function::Match => self.fn_match(args, cell),
@@ -1027,6 +1045,7 @@ impl Model {
             Function::Rows => self.fn_rows(args, cell),
             Function::Vlookup => self.fn_vlookup(args, cell),
             Function::Xlookup => self.fn_xlookup(args, cell),
+            Function::Xmatch => self.fn_xmatch(args, cell),
             // Text
             Function::Concatenate => self.fn_concatenate(args, cell),
             Function::Exact => self.fn_exact(args, cell),
@@ -1039,6 +1058,8 @@ impl Model {
             Function::Len => self.fn_len(args, cell),
             Function::Lower => self.fn_lower(args, cell),
             Function::Mid => self.fn_mid(args, cell),
+            Function::Proper => self.fn_proper(args, cell),
+            Function::Replace => self.fn_replace(args, cell),
             Function::Right => self.fn_right(args, cell),
             Function::Search => self.fn_search(args, cell),
             Function::Text => self.fn_text(args, cell),

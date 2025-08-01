@@ -25,33 +25,33 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | FIND        | <Badge type="tip" text="Available" />          | –             |
 | FINDB       | <Badge type="info" text="Not implemented yet" /> | –             |
 | FIXED       | <Badge type="info" text="Not implemented yet" /> | –             |
-| LEFT        | <Badge type="tip" text="Available" />          | –             |
+| LEFT        | <Badge type="tip" text="Available" />          | [LEFT](text/left) |
 | LEFTB       | <Badge type="info" text="Not implemented yet" /> | –             |
 | LEN         | <Badge type="tip" text="Available" />          | –             |
 | LENB        | <Badge type="info" text="Not implemented yet" /> | –             |
-| LOWER       | <Badge type="info" text="Not implemented yet" /> | –             |
-| MID         | <Badge type="info" text="Not implemented yet" /> | –             |
+| LOWER       | <Badge type="tip" text="Available" />          | [LOWER](text/lower) |
+| MID         | <Badge type="tip" text="Available" />          | [MID](text/mid) |
 | MIDB        | <Badge type="info" text="Not implemented yet" /> | –             |
 | NUMBERVALUE | <Badge type="info" text="Not implemented yet" /> | –             |
 | PHONETIC    | <Badge type="info" text="Not implemented yet" /> | –             |
-| PROPER      | <Badge type="info" text="Not implemented yet" /> | –             |
-| REPLACE     | <Badge type="info" text="Not implemented yet" /> | –             |
+| PROPER      | <Badge type="tip" text="Available" />          | –             |
+| REPLACE     | <Badge type="tip" text="Available" />          | –             |
 | REPLACEB    | <Badge type="info" text="Not implemented yet" /> | –             |
-| REPT        | <Badge type="tip" text="Available" />          | –             |
-| RIGHT       | <Badge type="tip" text="Available" />          | –             |
+| REPT        | <Badge type="tip" text="Available" />          | [REPT](text/rept) |
+| RIGHT       | <Badge type="tip" text="Available" />          | [RIGHT](text/right) |
 | RIGHTB      | <Badge type="info" text="Not implemented yet" /> | –             |
-| SEARCH      | <Badge type="tip" text="Available" />          | –             |
+| SEARCH      | <Badge type="tip" text="Available" />          | [SEARCH](text/search) |
 | SEARCHB     | <Badge type="info" text="Not implemented yet" /> | –             |
-| SUBSTITUTE  | <Badge type="tip" text="Available" />          | –             |
-| T           | <Badge type="tip" text="Available" />          | –             |
-| TEXT        | <Badge type="tip" text="Available" />          | –             |
-| TEXTAFTER   | <Badge type="tip" text="Available" />          | –             |
-| TEXTBEFORE  | <Badge type="tip" text="Available" />          | –             |
-| TEXTJOIN    | <Badge type="tip" text="Available" />          | –             |
+| SUBSTITUTE  | <Badge type="tip" text="Available" />          | [SUBSTITUTE](text/substitute) |
+| T           | <Badge type="tip" text="Available" />          | [T](text/t) |
+| TEXT        | <Badge type="tip" text="Available" />          | [TEXT](text/text) |
+| TEXTAFTER   | <Badge type="tip" text="Available" />          | [TEXTAFTER](text/textafter) |
+| TEXTBEFORE  | <Badge type="tip" text="Available" />          | [TEXTBEFORE](text/textbefore) |
+| TEXTJOIN    | <Badge type="tip" text="Available" />          | [TEXTJOIN](text/textjoin) |
 | TEXTSPLIT   | <Badge type="info" text="Not implemented yet" /> | –             |
-| TRIM        | <Badge type="tip" text="Available" />          | –             |
+| TRIM        | <Badge type="tip" text="Available" />          | [TRIM](text/trim) |
 | UNICHAR     | <Badge type="info" text="Not implemented yet" /> | –             |
-| UNICODE     | <Badge type="tip" text="Available" />          | –             |
-| UPPER       | <Badge type="tip" text="Available" />          | –             |
-| VALUE       | <Badge type="tip" text="Available" />          | –             |
-| VALUETOTEXT | <Badge type="tip" text="Available" />          | –             |
+| UNICODE     | <Badge type="tip" text="Available" />          | [UNICODE](text/unicode) |
+| UPPER       | <Badge type="tip" text="Available" />          | [UPPER](text/upper) |
+| VALUE       | <Badge type="tip" text="Available" />          | [VALUE](text/value) |
+| VALUETOTEXT | <Badge type="tip" text="Available" />          | [VALUETOTEXT](text/valuetotext) |
