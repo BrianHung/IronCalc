@@ -383,24 +383,49 @@ impl Model {
         args: &[Node],
         cell: CellReferenceIndex,
     ) -> CalcResult {
-        if args.is_empty() || args.len() > 3 {
+        let arg_count = args.len();
+        if !(1..=3).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
+
         let number = match self.get_number(&args[0], cell) {
             Ok(f) => f,
             Err(s) => return s,
         };
-        let significance = if args.len() >= 2 {
+
+        // Handle special values
+        if number.is_nan() || number.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Number cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        let mut significance = if arg_count >= 2 {
             match self.get_number(&args[1], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
             }
-        } else if number < 0.0 {
-            -1.0
         } else {
             1.0
         };
-        let mode = if args.len() == 3 {
+
+        // Validate and normalize significance
+        if significance.is_nan() || significance.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Significance cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        if significance == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        significance = significance.abs();
+
+        let mode = if arg_count == 3 {
             match self.get_number(&args[2], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
@@ -408,17 +433,20 @@ impl Model {
         } else {
             0.0
         };
-        let m = significance.abs();
-        if m == 0.0 {
-            return CalcResult::Number(0.0);
-        }
+
         let result = if number >= 0.0 {
-            (number / m).ceil() * m
-        } else if mode == -1.0 {
-            (number / m).floor() * m
+            (number / significance).ceil() * significance
+        } else if mode < 0.0 {
+            (number / significance).floor() * significance
         } else {
-            (number / m).ceil() * m
+            (number / significance).ceil() * significance
         };
+
+        // Validate result
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "Result overflow".to_string());
+        }
+
         CalcResult::Number(result)
     }
 
@@ -427,14 +455,26 @@ impl Model {
         args: &[Node],
         cell: CellReferenceIndex,
     ) -> CalcResult {
-        if args.is_empty() || args.len() > 2 {
+        let arg_count = args.len();
+        if !(1..=2).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
+
         let number = match self.get_number(&args[0], cell) {
             Ok(f) => f,
             Err(s) => return s,
         };
-        let significance = if args.len() == 2 {
+
+        // Handle special values
+        if number.is_nan() || number.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Number cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        let mut significance = if arg_count == 2 {
             match self.get_number(&args[1], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
@@ -442,11 +482,28 @@ impl Model {
         } else {
             1.0
         };
-        let m = significance.abs();
-        if m == 0.0 {
+
+        // Validate and normalize significance
+        if significance.is_nan() || significance.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Significance cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        if significance == 0.0 {
             return CalcResult::Number(0.0);
         }
-        let result = (number / m).ceil() * m;
+        significance = significance.abs();
+
+        let result = (number / significance).ceil() * significance;
+
+        // Validate result
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "Result overflow".to_string());
+        }
+
         CalcResult::Number(result)
     }
 
@@ -455,14 +512,26 @@ impl Model {
     }
 
     pub(crate) fn fn_floor_math(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        if args.is_empty() || args.len() > 3 {
+        let arg_count = args.len();
+        if !(1..=3).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
+
         let number = match self.get_number(&args[0], cell) {
             Ok(f) => f,
             Err(s) => return s,
         };
-        let significance = if args.len() >= 2 {
+
+        // Handle special values
+        if number.is_nan() || number.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Number cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        let mut significance = if arg_count >= 2 {
             match self.get_number(&args[1], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
@@ -470,7 +539,22 @@ impl Model {
         } else {
             1.0
         };
-        let mode = if args.len() == 3 {
+
+        // Validate and normalize significance
+        if significance.is_nan() || significance.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Significance cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        if significance == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        significance = significance.abs();
+
+        let mode = if arg_count == 3 {
             match self.get_number(&args[2], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
@@ -478,17 +562,20 @@ impl Model {
         } else {
             0.0
         };
-        let m = significance.abs();
-        if m == 0.0 {
-            return CalcResult::Number(0.0);
-        }
+
         let result = if number >= 0.0 {
-            (number / m).floor() * m
-        } else if mode == -1.0 {
-            (number / m).ceil() * m
+            (number / significance).floor() * significance
+        } else if mode < 0.0 {
+            (number / significance).ceil() * significance
         } else {
-            (number / m).floor() * m
+            (number / significance).floor() * significance
         };
+
+        // Validate result
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "Result overflow".to_string());
+        }
+
         CalcResult::Number(result)
     }
 
@@ -497,14 +584,26 @@ impl Model {
         args: &[Node],
         cell: CellReferenceIndex,
     ) -> CalcResult {
-        if args.is_empty() || args.len() > 2 {
+        let arg_count = args.len();
+        if !(1..=2).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
+
         let number = match self.get_number(&args[0], cell) {
             Ok(f) => f,
             Err(s) => return s,
         };
-        let significance = if args.len() == 2 {
+
+        // Handle special values
+        if number.is_nan() || number.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Number cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        let mut significance = if arg_count == 2 {
             match self.get_number(&args[1], cell) {
                 Ok(f) => f,
                 Err(e) => return e,
@@ -512,15 +611,32 @@ impl Model {
         } else {
             1.0
         };
-        let m = significance.abs();
-        if m == 0.0 {
+
+        // Validate and normalize significance
+        if significance.is_nan() || significance.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Significance cannot be NaN or infinite".to_string(),
+            );
+        }
+
+        if significance == 0.0 {
             return CalcResult::Number(0.0);
         }
+        significance = significance.abs();
+
         let result = if number >= 0.0 {
-            (number / m).floor() * m
+            (number / significance).floor() * significance
         } else {
-            (number / m).ceil() * m
+            (number / significance).ceil() * significance
         };
+
+        // Validate result
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(Error::NUM, cell, "Result overflow".to_string());
+        }
+
         CalcResult::Number(result)
     }
 
