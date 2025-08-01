@@ -8,6 +8,10 @@ use crate::{
 };
 
 use super::util::build_criteria;
+use statrs::distribution::{
+    Beta, Binomial, Continuous, ContinuousCDF, Discrete, DiscreteCDF, Exp, Gamma, Poisson, Weibull,
+};
+use statrs::function::gamma::{gamma, ln_gamma};
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -732,8 +736,6 @@ impl Model {
     }
 
     pub(crate) fn fn_beta_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Beta, Continuous, ContinuousCDF};
-
         if args.len() < 4 || args.len() > 6 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -772,12 +774,14 @@ impl Model {
         };
 
         if alpha <= 0.0 || beta <= 0.0 || b <= a || x < a || x > b {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Beta::new(alpha, beta) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
 
         let z = (x - a) / (b - a);
@@ -789,8 +793,6 @@ impl Model {
     }
 
     pub(crate) fn fn_beta_inv(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Beta, ContinuousCDF};
-
         if args.len() < 3 || args.len() > 5 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -825,12 +827,14 @@ impl Model {
         };
 
         if p < 0.0 || p > 1.0 || alpha <= 0.0 || beta <= 0.0 || b <= a {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Beta::new(alpha, beta) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
 
         let res = dist.inverse_cdf(p) * (b - a) + a;
@@ -838,8 +842,6 @@ impl Model {
     }
 
     pub(crate) fn fn_gamma_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Continuous, ContinuousCDF, Gamma};
-
         if args.len() != 4 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -862,12 +864,14 @@ impl Model {
         };
 
         if x < 0.0 || alpha <= 0.0 || beta <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Gamma::new(alpha, 1.0 / beta) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
 
         if cumulative {
@@ -878,8 +882,6 @@ impl Model {
     }
 
     pub(crate) fn fn_gamma_inv(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Gamma, ContinuousCDF};
-
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -898,20 +900,20 @@ impl Model {
         };
 
         if p < 0.0 || p > 1.0 || alpha <= 0.0 || beta <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Gamma::new(alpha, 1.0 / beta) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
 
         CalcResult::Number(dist.inverse_cdf(p))
     }
 
     pub(crate) fn fn_gamma(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::function::gamma::gamma;
-
         if args.len() != 1 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -922,15 +924,13 @@ impl Model {
         };
 
         if x == 0.0 || (x < 0.0 && (x.fract() == 0.0)) {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         CalcResult::Number(gamma(x))
     }
 
     pub(crate) fn fn_gammaln(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::function::gamma::ln_gamma;
-
         if args.len() != 1 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -939,18 +939,20 @@ impl Model {
             Err(e) => return e,
         };
         if x <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         CalcResult::Number(ln_gamma(x))
     }
 
-    pub(crate) fn fn_gammaln_precise(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+    pub(crate) fn fn_gammaln_precise(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         self.fn_gammaln(args, cell)
     }
 
     pub(crate) fn fn_expon_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Exp, Continuous, ContinuousCDF};
-
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -968,12 +970,14 @@ impl Model {
         };
 
         if x < 0.0 || lambda <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Exp::new(lambda) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
         if cumulative {
             CalcResult::Number(dist.cdf(x))
@@ -982,9 +986,11 @@ impl Model {
         }
     }
 
-    pub(crate) fn fn_weibull_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Continuous, ContinuousCDF, Weibull};
-
+    pub(crate) fn fn_weibull_dist(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         if args.len() != 4 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -1005,11 +1011,13 @@ impl Model {
             Err(e) => return e,
         };
         if x < 0.0 || alpha <= 0.0 || beta <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Weibull::new(alpha, beta) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
         if cumulative {
             CalcResult::Number(dist.cdf(x))
@@ -1018,9 +1026,11 @@ impl Model {
         }
     }
 
-    pub(crate) fn fn_poisson_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Poisson, DiscreteCDF, Discrete};
-
+    pub(crate) fn fn_poisson_dist(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -1037,11 +1047,13 @@ impl Model {
             Err(e) => return e,
         };
         if x < 0.0 || mean <= 0.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Poisson::new(mean) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
         let k = x.floor() as u64;
         if cumulative {
@@ -1052,8 +1064,6 @@ impl Model {
     }
 
     pub(crate) fn fn_binom_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Binomial, DiscreteCDF, Discrete};
-
         if args.len() != 4 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -1075,11 +1085,13 @@ impl Model {
         };
 
         if trials < 0.0 || p < 0.0 || p > 1.0 || number_s < 0.0 || number_s > trials {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Binomial::new(p, trials.round() as u64) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
         let k = number_s.floor() as u64;
         if cumulative {
@@ -1090,8 +1102,6 @@ impl Model {
     }
 
     pub(crate) fn fn_binom_inv(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Binomial, DiscreteCDF};
-
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
@@ -1109,19 +1119,23 @@ impl Model {
         };
 
         if trials < 0.0 || p < 0.0 || p > 1.0 || alpha < 0.0 || alpha > 1.0 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Binomial::new(p, trials.round() as u64) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
         let result = dist.inverse_cdf(alpha) as f64;
         CalcResult::Number(result)
     }
 
-    pub(crate) fn fn_binom_dist_range(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        use statrs::distribution::{Binomial, Discrete};
-
+    pub(crate) fn fn_binom_dist_range(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
         if !(3..=4).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
@@ -1147,21 +1161,24 @@ impl Model {
             s1
         };
 
-        if trials < 0.0 || p < 0.0 || p > 1.0 || s1 < 0.0 || s2 < s1 {
-            return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string());
+        if trials < 0.0 || p < 0.0 || p > 1.0 || s1 < 0.0 || s2 < s1 || s2 > trials {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
         let dist = match Binomial::new(p, trials.round() as u64) {
             Ok(d) => d,
-            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameter".to_string()),
+            Err(_) => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
+            }
         };
 
-        let mut prob = 0.0;
-        let start = s1.floor() as u64;
-        let end = s2.floor() as u64;
-        for k in start..=end {
-            prob += dist.pmf(k);
+        // Use CDF-based calculation for better numerical stability
+        let k1 = s1.floor() as u64;
+        let k2 = s2.floor() as u64;
+        let mut result = dist.cdf(k2);
+        if k1 > 0 {
+            result -= dist.cdf(k1 - 1);
         }
-        CalcResult::Number(prob)
+        CalcResult::Number(result)
     }
 }

@@ -51,10 +51,14 @@ fn test_expon_weibull_poisson() {
 fn test_binomial_functions() {
     let mut model = new_empty_model();
     model._set("A1", "=BINOM.DIST(6,10,0.5,FALSE)");
-    model._set("A2", "=BINOM.INV(6,0.5,0.75)");
-    model._set("A3", "=BINOM.DIST.RANGE(60,0.75,45,50)");
+    model._set("A2", "=BINOM.DIST(6,10,0.5,TRUE)");
+    model._set("A3", "=BINOM.INV(6,0.5,0.75)");
+    model._set("A4", "=BINOM.DIST.RANGE(60,0.75,48)");
+    model._set("A5", "=BINOM.DIST.RANGE(60,0.75,45,50)");
     model.evaluate();
     assert_eq!(model._get_text("A1"), *"0.205078125");
-    assert_eq!(model._get_text("A2"), *"4");
-    assert_eq!(model._get_text("A3"), *"0.523629793");
+    assert_eq!(model._get_text("A2"), *"0.828125");
+    assert_eq!(model._get_text("A3"), *"4");
+    assert_eq!(model._get_text("A4"), *"0.083974967");
+    assert_eq!(model._get_text("A5"), *"0.523629793");
 }
