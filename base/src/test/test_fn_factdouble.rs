@@ -35,11 +35,13 @@ fn edge_cases() {
     let mut model = new_empty_model();
     model._set("A1", "=FACTDOUBLE(-0.5)"); // Between -1 and 0
     model._set("A2", "=FACTDOUBLE(0.9)"); // Decimal that rounds to 0
-    model._set("A3", "=FACTDOUBLE(1)"); // Simple case
-    model._set("A4", "=FACTDOUBLE(2)"); // Simple even case
+    model._set("A3", "=FACTDOUBLE(10.7)"); // Large decimal input
+    model._set("A4", "=FACTDOUBLE(15)"); // Larger odd number
+    model._set("A5", "=FACTDOUBLE(16)"); // Larger even number
     model.evaluate();
     assert_eq!(model._get_text("A1"), *"1");
     assert_eq!(model._get_text("A2"), *"1");
-    assert_eq!(model._get_text("A3"), *"1");
-    assert_eq!(model._get_text("A4"), *"2");
+    assert_eq!(model._get_text("A3"), *"3840");
+    assert_eq!(model._get_text("A4"), *"2027025");
+    assert_eq!(model._get_text("A5"), *"10321920");
 }
