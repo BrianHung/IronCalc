@@ -403,3 +403,53 @@ pub(crate) fn build_criteria<'a>(value: &'a CalcResult) -> Box<dyn Fn(&CalcResul
         CalcResult::EmptyCell | CalcResult::EmptyArg => Box::new(result_is_equal_to_empty),
     }
 }
+
+/// Adjust range bounds when they span entire rows/columns to actual worksheet dimensions
+pub(crate) fn adjust_range_to_worksheet_bounds(
+    model: &Model,
+    left: CellReferenceIndex,
+    right: CellReferenceIndex,
+    cell: CellReferenceIndex,
+) -> Result<(CellReferenceIndex, CellReferenceIndex), CalcResult> {
+    let mut end_row = right.row;
+    let start_row = left.row;
+    let mut end_col = right.column;
+    let start_col = left.column;
+
+    if start_row == 1 && end_row == LAST_ROW {
+        end_row = match model.workbook.worksheet(left.sheet) {
+            Ok(worksheet) => worksheet.dimension().max_row,
+            Err(_) => {
+                return Err(CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                ));
+            }
+        };
+    }
+    if start_col == 1 && end_col == LAST_COLUMN {
+        end_col = match model.workbook.worksheet(left.sheet) {
+            Ok(worksheet) => worksheet.dimension().max_column,
+            Err(_) => {
+                return Err(CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                ));
+            }
+        };
+    }
+
+    let adjusted_left = CellReferenceIndex {
+        sheet: left.sheet,
+        column: start_col,
+        row: start_row,
+    };
+    let adjusted_right = CellReferenceIndex {
+        sheet: left.sheet,
+        column: end_col,
+        row: end_row,
+    };
+    Ok((adjusted_left, adjusted_right))
+}
