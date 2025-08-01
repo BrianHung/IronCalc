@@ -742,6 +742,13 @@ impl Model {
             Err(s) => return s,
         };
         let result = 0.5 * erf(z / std::f64::consts::SQRT_2);
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Invalid parameter for GAUSS function".to_string(),
+            );
+        }
         CalcResult::Number(result)
     }
 
@@ -754,6 +761,13 @@ impl Model {
             Err(s) => return s,
         };
         let result = (1.0 / (2.0 * PI).sqrt()) * f64::exp(-0.5 * x * x);
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Invalid parameter for PHI function".to_string(),
+            );
+        }
         CalcResult::Number(result)
     }
 
@@ -776,6 +790,14 @@ impl Model {
         if std_dev <= 0.0 {
             return CalcResult::new_error(Error::NUM, cell, "standard_dev must be > 0".to_string());
         }
-        CalcResult::Number((x - mean) / std_dev)
+        let result = (x - mean) / std_dev;
+        if result.is_nan() || result.is_infinite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Invalid parameter for STANDARDIZE function".to_string(),
+            );
+        }
+        CalcResult::Number(result)
     }
 }
