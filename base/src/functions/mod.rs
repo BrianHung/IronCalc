@@ -57,6 +57,10 @@ pub enum Function {
     Log,
     Log10,
     Ln,
+    Exp,
+    Factdouble,
+    Sign,
+    Trunc,
     Max,
     Min,
     Pi,
@@ -253,7 +257,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 202> {
         [
             Function::And,
             Function::False,
@@ -281,6 +285,10 @@ impl Function {
             Function::Abs,
             Function::Pi,
             Function::Ln,
+            Function::Exp,
+            Function::Factdouble,
+            Function::Sign,
+            Function::Trunc,
             Function::Log,
             Function::Log10,
             Function::Sqrt,
@@ -541,6 +549,10 @@ impl Function {
             "ATAN2" => Some(Function::Atan2),
 
             "LN" => Some(Function::Ln),
+            "EXP" => Some(Function::Exp),
+            "FACTDOUBLE" => Some(Function::Factdouble),
+            "SIGN" => Some(Function::Sign),
+            "TRUNC" => Some(Function::Trunc),
             "LOG" => Some(Function::Log),
             "LOG10" => Some(Function::Log10),
 
@@ -747,6 +759,10 @@ impl fmt::Display for Function {
             Function::Log => write!(f, "LOG"),
             Function::Log10 => write!(f, "LOG10"),
             Function::Ln => write!(f, "LN"),
+            Function::Exp => write!(f, "EXP"),
+            Function::Factdouble => write!(f, "FACTDOUBLE"),
+            Function::Sign => write!(f, "SIGN"),
+            Function::Trunc => write!(f, "TRUNC"),
             Function::Sin => write!(f, "SIN"),
             Function::Cos => write!(f, "COS"),
             Function::Tan => write!(f, "TAN"),
@@ -977,6 +993,10 @@ impl Model {
             Function::Log => self.fn_log(args, cell),
             Function::Log10 => self.fn_log10(args, cell),
             Function::Ln => self.fn_ln(args, cell),
+            Function::Exp => self.fn_exp(args, cell),
+            Function::Factdouble => self.fn_factdouble(args, cell),
+            Function::Sign => self.fn_sign(args, cell),
+            Function::Trunc => self.fn_trunc(args, cell),
             Function::Sin => self.fn_sin(args, cell),
             Function::Cos => self.fn_cos(args, cell),
             Function::Tan => self.fn_tan(args, cell),
