@@ -378,6 +378,152 @@ impl Model {
         }
     }
 
+    pub(crate) fn fn_ceiling_math(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
+        if args.is_empty() || args.len() > 3 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = if args.len() >= 2 {
+            match self.get_number(&args[1], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else if number < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let mode = if args.len() == 3 {
+            match self.get_number(&args[2], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else {
+            0.0
+        };
+        let m = significance.abs();
+        if m == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        let result = if number >= 0.0 {
+            (number / m).ceil() * m
+        } else if mode == -1.0 {
+            (number / m).floor() * m
+        } else {
+            (number / m).ceil() * m
+        };
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_ceiling_precise(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
+        if args.is_empty() || args.len() > 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = if args.len() == 2 {
+            match self.get_number(&args[1], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else {
+            1.0
+        };
+        let m = significance.abs();
+        if m == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        let result = (number / m).ceil() * m;
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_iso_ceiling(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        self.fn_ceiling_precise(args, cell)
+    }
+
+    pub(crate) fn fn_floor_math(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.is_empty() || args.len() > 3 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = if args.len() >= 2 {
+            match self.get_number(&args[1], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else {
+            1.0
+        };
+        let mode = if args.len() == 3 {
+            match self.get_number(&args[2], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else {
+            0.0
+        };
+        let m = significance.abs();
+        if m == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        let result = if number >= 0.0 {
+            (number / m).floor() * m
+        } else if mode == -1.0 {
+            (number / m).ceil() * m
+        } else {
+            (number / m).floor() * m
+        };
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_floor_precise(
+        &mut self,
+        args: &[Node],
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
+        if args.is_empty() || args.len() > 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let significance = if args.len() == 2 {
+            match self.get_number(&args[1], cell) {
+                Ok(f) => f,
+                Err(e) => return e,
+            }
+        } else {
+            1.0
+        };
+        let m = significance.abs();
+        if m == 0.0 {
+            return CalcResult::Number(0.0);
+        }
+        let result = if number >= 0.0 {
+            (number / m).floor() * m
+        } else {
+            (number / m).ceil() * m
+        };
+        CalcResult::Number(result)
+    }
+
     single_number_fn!(fn_log10, |f| if f <= 0.0 {
         Err(Error::NUM)
     } else {

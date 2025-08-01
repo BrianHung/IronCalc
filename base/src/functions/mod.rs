@@ -54,6 +54,11 @@ pub enum Function {
     Columns,
     Cos,
     Cosh,
+    CeilingMath,
+    CeilingPrecise,
+    IsoCeiling,
+    FloorMath,
+    FloorPrecise,
     Log,
     Log10,
     Ln,
@@ -253,7 +258,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 203> {
         [
             Function::And,
             Function::False,
@@ -274,6 +279,11 @@ impl Function {
             Function::Atan,
             Function::Sinh,
             Function::Cosh,
+            Function::CeilingMath,
+            Function::CeilingPrecise,
+            Function::IsoCeiling,
+            Function::FloorMath,
+            Function::FloorPrecise,
             Function::Tanh,
             Function::Asinh,
             Function::Acosh,
@@ -527,6 +537,11 @@ impl Function {
 
             "SINH" => Some(Function::Sinh),
             "COSH" => Some(Function::Cosh),
+            "CEILING.MATH" => Some(Function::CeilingMath),
+            "CEILING.PRECISE" => Some(Function::CeilingPrecise),
+            "ISO.CEILING" => Some(Function::IsoCeiling),
+            "FLOOR.MATH" => Some(Function::FloorMath),
+            "FLOOR.PRECISE" => Some(Function::FloorPrecise),
             "TANH" => Some(Function::Tanh),
 
             "ASINH" => Some(Function::Asinh),
@@ -755,6 +770,11 @@ impl fmt::Display for Function {
             Function::Atan => write!(f, "ATAN"),
             Function::Sinh => write!(f, "SINH"),
             Function::Cosh => write!(f, "COSH"),
+            Function::CeilingMath => write!(f, "CEILING.MATH"),
+            Function::CeilingPrecise => write!(f, "CEILING.PRECISE"),
+            Function::IsoCeiling => write!(f, "ISO.CEILING"),
+            Function::FloorMath => write!(f, "FLOOR.MATH"),
+            Function::FloorPrecise => write!(f, "FLOOR.PRECISE"),
             Function::Tanh => write!(f, "TANH"),
             Function::Asinh => write!(f, "ASINH"),
             Function::Acosh => write!(f, "ACOSH"),
@@ -987,6 +1007,11 @@ impl Model {
 
             Function::Sinh => self.fn_sinh(args, cell),
             Function::Cosh => self.fn_cosh(args, cell),
+            Function::CeilingMath => self.fn_ceiling_math(args, cell),
+            Function::CeilingPrecise => self.fn_ceiling_precise(args, cell),
+            Function::IsoCeiling => self.fn_iso_ceiling(args, cell),
+            Function::FloorMath => self.fn_floor_math(args, cell),
+            Function::FloorPrecise => self.fn_floor_precise(args, cell),
             Function::Tanh => self.fn_tanh(args, cell),
 
             Function::Asinh => self.fn_asinh(args, cell),
