@@ -388,6 +388,21 @@ impl Model {
     } else {
         Ok(f64::ln(f))
     });
+    single_number_fn!(fn_exp, |f| {
+        let r = f64::exp(f);
+        if r.is_infinite() {
+            Err(Error::NUM)
+        } else {
+            Ok(r)
+        }
+    });
+    single_number_fn!(fn_sign, |f| Ok(if f > 0.0 {
+        1.0
+    } else if f < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }));
     single_number_fn!(fn_sin, |f| Ok(f64::sin(f)));
     single_number_fn!(fn_cos, |f| Ok(f64::cos(f)));
     single_number_fn!(fn_tan, |f| Ok(f64::tan(f)));
@@ -518,6 +533,77 @@ impl Model {
                 error: Error::NUM,
                 origin: cell,
                 message: "Invalid arguments for POWER".to_string(),
+            };
+        }
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_trunc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let n_args = args.len();
+        if !(1..=2).contains(&n_args) {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let digits = if n_args == 1 {
+            0.0
+        } else {
+            match self.get_number(&args[1], cell) {
+                Ok(f) => {
+                    if f > 0.0 {
+                        f.floor()
+                    } else {
+                        f.ceil()
+                    }
+                }
+                Err(s) => return s,
+            }
+        };
+        let result = if digits >= 0.0 {
+            let scale = 10.0_f64.powf(digits);
+            (value * scale).trunc() / scale
+        } else {
+            let scale = 10.0_f64.powf(-digits);
+            (value / scale).trunc() * scale
+        };
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_factdouble(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let value = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        if value < -1.0 {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Number must be >= -1".to_string(),
+            };
+        }
+        let mut n = if value > 0.0 {
+            value.floor()
+        } else {
+            value.ceil()
+        } as i64;
+        if n == 0 || n == -1 {
+            return CalcResult::Number(1.0);
+        }
+        let mut result = 1.0;
+        while n > 1 {
+            result *= n as f64;
+            n -= 2;
+        }
+        if result.is_infinite() {
+            return CalcResult::Error {
+                error: Error::NUM,
+                origin: cell,
+                message: "Result overflow".to_string(),
             };
         }
         CalcResult::Number(result)
