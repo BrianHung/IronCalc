@@ -67,6 +67,8 @@ pub enum Function {
     Round,
     Rounddown,
     Roundup,
+    Even,
+    Odd,
     Sin,
     Sinh,
     Sqrt,
@@ -253,7 +255,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 200> {
         [
             Function::And,
             Function::False,
@@ -295,6 +297,8 @@ impl Function {
             Function::Round,
             Function::Rounddown,
             Function::Roundup,
+            Function::Even,
+            Function::Odd,
             Function::Sum,
             Function::Sumif,
             Function::Sumifs,
@@ -552,6 +556,8 @@ impl Function {
             "ROUND" => Some(Function::Round),
             "ROUNDDOWN" => Some(Function::Rounddown),
             "ROUNDUP" => Some(Function::Roundup),
+            "EVEN" => Some(Function::Even),
+            "ODD" => Some(Function::Odd),
             "SUM" => Some(Function::Sum),
             "SUMIF" => Some(Function::Sumif),
             "SUMIFS" => Some(Function::Sumifs),
@@ -773,6 +779,8 @@ impl fmt::Display for Function {
             Function::Round => write!(f, "ROUND"),
             Function::Rounddown => write!(f, "ROUNDDOWN"),
             Function::Roundup => write!(f, "ROUNDUP"),
+            Function::Even => write!(f, "EVEN"),
+            Function::Odd => write!(f, "ODD"),
             Function::Sum => write!(f, "SUM"),
             Function::Sumif => write!(f, "SUMIF"),
             Function::Sumifs => write!(f, "SUMIFS"),
@@ -1009,6 +1017,8 @@ impl Model {
             Function::Round => self.fn_round(args, cell),
             Function::Rounddown => self.fn_rounddown(args, cell),
             Function::Roundup => self.fn_roundup(args, cell),
+            Function::Even => self.fn_even(args, cell),
+            Function::Odd => self.fn_odd(args, cell),
             Function::Sum => self.fn_sum(args, cell),
             Function::Sumif => self.fn_sumif(args, cell),
             Function::Sumifs => self.fn_sumifs(args, cell),
