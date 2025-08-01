@@ -8,6 +8,8 @@ use crate::{
 };
 
 use super::util::build_criteria;
+use statrs::distribution::{ContinuousCDF, Normal};
+use statrs::function::erf::erf;
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -729,5 +731,141 @@ impl Model {
             };
         }
         CalcResult::Number(product.powf(1.0 / count))
+    }
+
+    fn get_numbers_from_arg(
+        &mut self,
+        arg: &Node,
+        cell: &CellReferenceIndex,
+    ) -> Result<Vec<f64>, CalcResult> {
+        let mut values = Vec::new();
+        match self.evaluate_node_in_context(arg, *cell) {
+            CalcResult::Number(value) => values.push(value),
+            CalcResult::Range { left, right } => {
+                if left.sheet != right.sheet {
+                    return Err(CalcResult::new_error(
+                        Error::VALUE,
+                        *cell,
+                        "Ranges are in different sheets".to_string(),
+                    ));
+                }
+                for row in left.row..=right.row {
+                    for column in left.column..=right.column {
+                        match self.evaluate_cell(CellReferenceIndex { sheet: left.sheet, row, column }) {
+                            CalcResult::Number(v) => values.push(v),
+                            CalcResult::Error { .. } => {
+                                return Err(CalcResult::new_error(
+                                    Error::VALUE,
+                                    *cell,
+                                    "Expected number".to_string(),
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            error @ CalcResult::Error { .. } => return Err(error),
+            _ => {}
+        }
+        Ok(values)
+    }
+
+    pub(crate) fn fn_norm_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let x = match self.get_number_no_bools(&args[0], cell) { Ok(v) => v, Err(e) => return e };
+        let mean = match self.get_number_no_bools(&args[1], cell) { Ok(v) => v, Err(e) => return e };
+        let std = match self.get_number_no_bools(&args[2], cell) { Ok(v) => v, Err(e) => return e };
+        let cumulative = match self.get_boolean(&args[3], cell) { Ok(b) => b, Err(e) => return e };
+        if std <= 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "Standard deviation must be > 0".to_string());
+        }
+        let z = (x - mean) / std;
+        let result = if cumulative {
+            0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
+        } else {
+            (1.0 / (std * (2.0 * std::f64::consts::PI).sqrt())) * f64::exp(-0.5 * z * z)
+        };
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_norm_inv(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 3 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let p = match self.get_number_no_bools(&args[0], cell) { Ok(v) => v, Err(e) => return e };
+        let mean = match self.get_number_no_bools(&args[1], cell) { Ok(v) => v, Err(e) => return e };
+        let std = match self.get_number_no_bools(&args[2], cell) { Ok(v) => v, Err(e) => return e };
+        if p <= 0.0 || p >= 1.0 || std <= 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid arguments".to_string());
+        }
+        let normal = match Normal::new(mean, std) {
+            Ok(n) => n,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string()),
+        };
+        CalcResult::Number(ContinuousCDF::inverse_cdf(&normal, p))
+    }
+
+    pub(crate) fn fn_norm_s_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let z = match self.get_number_no_bools(&args[0], cell) { Ok(v) => v, Err(e) => return e };
+        let cumulative = match self.get_boolean(&args[1], cell) { Ok(b) => b, Err(e) => return e };
+        if cumulative {
+            CalcResult::Number(0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2)))
+        } else {
+            CalcResult::Number((1.0 / (2.0 * std::f64::consts::PI).sqrt()) * f64::exp(-0.5 * z * z))
+        }
+    }
+
+    pub(crate) fn fn_norm_s_inv(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let p = match self.get_number_no_bools(&args[0], cell) { Ok(v) => v, Err(e) => return e };
+        if p <= 0.0 || p >= 1.0 {
+            return CalcResult::new_error(Error::NUM, cell, "Probability out of range".to_string());
+        }
+        let normal = Normal::new(0.0, 1.0).unwrap();
+        CalcResult::Number(ContinuousCDF::inverse_cdf(&normal, p))
+    }
+
+    pub(crate) fn fn_covariance_p(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let arr1 = match self.get_numbers_from_arg(&args[0], &cell) { Ok(v) => v, Err(e) => return e };
+        let arr2 = match self.get_numbers_from_arg(&args[1], &cell) { Ok(v) => v, Err(e) => return e };
+        if arr1.len() != arr2.len() || arr1.is_empty() {
+            return CalcResult::new_error(Error::DIV, cell, "Invalid data".to_string());
+        }
+        let mean1: f64 = arr1.iter().sum::<f64>() / arr1.len() as f64;
+        let mean2: f64 = arr2.iter().sum::<f64>() / arr2.len() as f64;
+        let mut total = 0.0;
+        for (x, y) in arr1.iter().zip(arr2.iter()) {
+            total += (x - mean1) * (y - mean2);
+        }
+        CalcResult::Number(total / arr1.len() as f64)
+    }
+
+    pub(crate) fn fn_covariance_s(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let arr1 = match self.get_numbers_from_arg(&args[0], &cell) { Ok(v) => v, Err(e) => return e };
+        let arr2 = match self.get_numbers_from_arg(&args[1], &cell) { Ok(v) => v, Err(e) => return e };
+        if arr1.len() != arr2.len() || arr1.len() < 2 {
+            return CalcResult::new_error(Error::DIV, cell, "Invalid data".to_string());
+        }
+        let mean1: f64 = arr1.iter().sum::<f64>() / arr1.len() as f64;
+        let mean2: f64 = arr2.iter().sum::<f64>() / arr2.len() as f64;
+        let mut total = 0.0;
+        for (x, y) in arr1.iter().zip(arr2.iter()) {
+            total += (x - mean1) * (y - mean2);
+        }
+        CalcResult::Number(total / ((arr1.len() - 1) as f64))
     }
 }

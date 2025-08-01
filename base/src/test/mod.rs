@@ -68,4 +68,6 @@ mod test_percentage;
 mod test_set_functions_error_handling;
 mod test_today;
 mod test_types;
+mod test_fn_norm;
+mod test_fn_covariance;
 mod user_model;

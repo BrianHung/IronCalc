@@ -145,6 +145,12 @@ pub enum Function {
     Maxifs,
     Minifs,
     Geomean,
+    CovarianceP,
+    CovarianceS,
+    NormDist,
+    NormInv,
+    NormSDist,
+    NormSInv,
 
     // Date and time
     Date,
@@ -253,7 +259,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 204> {
         [
             Function::And,
             Function::False,
@@ -357,6 +363,12 @@ impl Function {
             Function::Maxifs,
             Function::Minifs,
             Function::Geomean,
+            Function::CovarianceP,
+            Function::CovarianceS,
+            Function::NormDist,
+            Function::NormInv,
+            Function::NormSDist,
+            Function::NormSInv,
             Function::Year,
             Function::Day,
             Function::Month,
@@ -625,6 +637,12 @@ impl Function {
             "MAXIFS" | "_XLFN.MAXIFS" => Some(Function::Maxifs),
             "MINIFS" | "_XLFN.MINIFS" => Some(Function::Minifs),
             "GEOMEAN" => Some(Function::Geomean),
+            "COVARIANCE.P" => Some(Function::CovarianceP),
+            "COVARIANCE.S" => Some(Function::CovarianceS),
+            "NORM.DIST" => Some(Function::NormDist),
+            "NORM.INV" => Some(Function::NormInv),
+            "NORM.S.DIST" => Some(Function::NormSDist),
+            "NORM.S.INV" => Some(Function::NormSInv),
             // Date and Time
             "YEAR" => Some(Function::Year),
             "DAY" => Some(Function::Day),
@@ -836,6 +854,12 @@ impl fmt::Display for Function {
             Function::Maxifs => write!(f, "MAXIFS"),
             Function::Minifs => write!(f, "MINIFS"),
             Function::Geomean => write!(f, "GEOMEAN"),
+            Function::CovarianceP => write!(f, "COVARIANCE.P"),
+            Function::CovarianceS => write!(f, "COVARIANCE.S"),
+            Function::NormDist => write!(f, "NORM.DIST"),
+            Function::NormInv => write!(f, "NORM.INV"),
+            Function::NormSDist => write!(f, "NORM.S.DIST"),
+            Function::NormSInv => write!(f, "NORM.S.INV"),
             Function::Year => write!(f, "YEAR"),
             Function::Day => write!(f, "DAY"),
             Function::Month => write!(f, "MONTH"),
@@ -1076,6 +1100,12 @@ impl Model {
             Function::Maxifs => self.fn_maxifs(args, cell),
             Function::Minifs => self.fn_minifs(args, cell),
             Function::Geomean => self.fn_geomean(args, cell),
+            Function::CovarianceP => self.fn_covariance_p(args, cell),
+            Function::CovarianceS => self.fn_covariance_s(args, cell),
+            Function::NormDist => self.fn_norm_dist(args, cell),
+            Function::NormInv => self.fn_norm_inv(args, cell),
+            Function::NormSDist => self.fn_norm_s_dist(args, cell),
+            Function::NormSInv => self.fn_norm_s_inv(args, cell),
             // Date and Time
             Function::Year => self.fn_year(args, cell),
             Function::Day => self.fn_day(args, cell),
