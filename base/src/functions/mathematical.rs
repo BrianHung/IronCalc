@@ -391,15 +391,62 @@ impl Model {
     single_number_fn!(fn_sin, |f| Ok(f64::sin(f)));
     single_number_fn!(fn_cos, |f| Ok(f64::cos(f)));
     single_number_fn!(fn_tan, |f| Ok(f64::tan(f)));
+    single_number_fn!(fn_cot, |f| {
+        let t = f64::tan(f);
+        if t == 0.0 {
+            Err(Error::DIV)
+        } else {
+            Ok(1.0 / t)
+        }
+    });
     single_number_fn!(fn_sinh, |f| Ok(f64::sinh(f)));
     single_number_fn!(fn_cosh, |f| Ok(f64::cosh(f)));
+    single_number_fn!(fn_coth, |f| {
+        let t = f64::tanh(f);
+        if t == 0.0 {
+            Err(Error::DIV)
+        } else {
+            Ok(1.0 / t)
+        }
+    });
     single_number_fn!(fn_tanh, |f| Ok(f64::tanh(f)));
+    single_number_fn!(fn_sec, |f| {
+        let c = f64::cos(f);
+        if c == 0.0 {
+            Err(Error::DIV)
+        } else {
+            Ok(1.0 / c)
+        }
+    });
+    single_number_fn!(fn_sech, |f| Ok(1.0 / f64::cosh(f)));
+    single_number_fn!(fn_csc, |f| {
+        let s = f64::sin(f);
+        if s == 0.0 {
+            Err(Error::DIV)
+        } else {
+            Ok(1.0 / s)
+        }
+    });
+    single_number_fn!(fn_csch, |f| {
+        let s = f64::sinh(f);
+        if s == 0.0 {
+            Err(Error::DIV)
+        } else {
+            Ok(1.0 / s)
+        }
+    });
     single_number_fn!(fn_asin, |f| Ok(f64::asin(f)));
     single_number_fn!(fn_acos, |f| Ok(f64::acos(f)));
     single_number_fn!(fn_atan, |f| Ok(f64::atan(f)));
+    single_number_fn!(fn_acot, |f| Ok(f64::atan2(1.0, f)));
     single_number_fn!(fn_asinh, |f| Ok(f64::asinh(f)));
     single_number_fn!(fn_acosh, |f| Ok(f64::acosh(f)));
     single_number_fn!(fn_atanh, |f| Ok(f64::atanh(f)));
+    single_number_fn!(fn_acoth, |f: f64| if f.abs() <= 1.0 {
+        Err(Error::NUM)
+    } else {
+        Ok(f64::atanh(1.0 / f))
+    });
     single_number_fn!(fn_abs, |f| Ok(f64::abs(f)));
     single_number_fn!(fn_sqrt, |f| if f < 0.0 {
         Err(Error::NUM)
