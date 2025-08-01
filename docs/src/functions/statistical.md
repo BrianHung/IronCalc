@@ -57,7 +57,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | GAMMA.INV                | <Badge type="info" text="Not implemented yet" /> | –             |
 | GAMMALN                  | <Badge type="info" text="Not implemented yet" /> | –             |
 | GAMMALN.PRECISE          | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAUSS                    | <Badge type="info" text="Not implemented yet" /> | –             |
+| GAUSS                    | <Badge type="tip" text="Available" />            | –             |
 | GEOMEAN                  | <Badge type="info" text="Available" />            | –             |
 | GROWTH                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | HARMEAN                  | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -87,7 +87,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | PERCENTRANK.INC          | <Badge type="info" text="Not implemented yet" /> | –             |
 | PERMUT                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | PERMUTATIONA             | <Badge type="info" text="Not implemented yet" /> | –             |
-| PHI                      | <Badge type="info" text="Not implemented yet" /> | –             |
+| PHI                      | <Badge type="tip" text="Available" />            | –             |
 | POISSON.DIST             | <Badge type="info" text="Not implemented yet" /> | –             |
 | PROB                     | <Badge type="info" text="Not implemented yet" /> | –             |
 | QUARTILE.EXC             | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -99,7 +99,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | SKEW.P                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | SLOPE                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | SMALL                    | <Badge type="info" text="Not implemented yet" /> | –             |
-| STANDARDIZE              | <Badge type="info" text="Not implemented yet" /> | –             |
+| STANDARDIZE              | <Badge type="tip" text="Available" />            | –             |
 | STDEV.P                  | <Badge type="info" text="Not implemented yet" /> | –             |
 | STDEV.S                  | <Badge type="info" text="Not implemented yet" /> | –             |
 | STDEVA                   | <Badge type="info" text="Not implemented yet" /> | –             |

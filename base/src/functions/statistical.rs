@@ -7,7 +7,9 @@ use crate::{
     model::Model,
 };
 
+use super::engineering::transcendental::erf;
 use super::util::build_criteria;
+use std::f64::consts::PI;
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -729,5 +731,51 @@ impl Model {
             };
         }
         CalcResult::Number(product.powf(1.0 / count))
+    }
+
+    pub(crate) fn fn_gauss(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let z = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let result = 0.5 * erf(z / std::f64::consts::SQRT_2);
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_phi(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 1 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let x = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let result = (1.0 / (2.0 * PI).sqrt()) * f64::exp(-0.5 * x * x);
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_standardize(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 3 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let x = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let mean = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let std_dev = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        if std_dev <= 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "standard_dev must be > 0".to_string());
+        }
+        CalcResult::Number((x - mean) / std_dev)
     }
 }

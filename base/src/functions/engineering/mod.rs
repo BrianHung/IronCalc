@@ -4,4 +4,4 @@ mod complex;
 mod convert;
 mod misc;
 mod number_basis;
-mod transcendental;
+pub(crate) mod transcendental;
