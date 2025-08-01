@@ -115,7 +115,6 @@ fn floor_comprehensive() {
     model._set("A7", "=FLOOR.PRECISE(4.3,2)");
     model._set("A8", "=FLOOR.PRECISE(-4.3,2)");
 
-
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"20");
@@ -131,18 +130,18 @@ fn floor_comprehensive() {
 #[test]
 fn default_significance_behavior() {
     let mut model = new_empty_model();
-    
+
     // Test default significance: +1.0 for positive, -1.0 for negative
-    model._set("A1", "=FLOOR.MATH(6.7)");    // positive -> significance 1.0
-    model._set("A2", "=FLOOR.MATH(-6.7)");   // negative -> significance -1.0  
-    model._set("A3", "=CEILING.MATH(6.7)");  // positive -> significance 1.0
+    model._set("A1", "=FLOOR.MATH(6.7)"); // positive -> significance 1.0
+    model._set("A2", "=FLOOR.MATH(-6.7)"); // negative -> significance -1.0
+    model._set("A3", "=CEILING.MATH(6.7)"); // positive -> significance 1.0
     model._set("A4", "=CEILING.MATH(-6.7)"); // negative -> significance -1.0
-    
+
     model.evaluate();
-    
-    assert_eq!(model._get_text("A1"), *"6");  // 6.7 floors to 6
+
+    assert_eq!(model._get_text("A1"), *"6"); // 6.7 floors to 6
     assert_eq!(model._get_text("A2"), *"-7"); // -6.7 floors away from zero to -7
-    assert_eq!(model._get_text("A3"), *"7");  // 6.7 ceilings to 7  
+    assert_eq!(model._get_text("A3"), *"7"); // 6.7 ceilings to 7
     assert_eq!(model._get_text("A4"), *"-6"); // -6.7 ceilings toward zero to -6
 }
 
