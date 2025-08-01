@@ -391,7 +391,9 @@ impl Model {
     single_number_fn!(fn_exp, |f| {
         let r = f64::exp(f);
         if r.is_infinite() {
-            Err(Error::NUM)
+            Err(Error::DIV) // DIV for overflow (better Excel compatibility)
+        } else if r.is_nan() {
+            Err(Error::NUM) // NUM for invalid calculations
         } else {
             Ok(r)
         }
