@@ -785,6 +785,8 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Formulatext => args_signature_scalars(arg_count, 1, 0),
         Function::Unicode => args_signature_scalars(arg_count, 1, 0),
         Function::Geomean => vec![Signature::Vector; arg_count],
+        Function::Gauss | Function::Phi => args_signature_scalars(arg_count, 1, 0),
+        Function::Standardize => args_signature_scalars(arg_count, 3, 0),
     }
 }
 
@@ -990,5 +992,6 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Eomonth => scalar_arguments(args),
         Function::Formulatext => not_implemented(args),
         Function::Geomean => not_implemented(args),
+        Function::Gauss | Function::Phi | Function::Standardize => scalar_arguments(args),
     }
 }
