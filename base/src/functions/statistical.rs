@@ -13,6 +13,48 @@ use statrs::distribution::{
 };
 use statrs::function::gamma::{gamma, ln_gamma};
 
+/// Safely converts an f64 to u64, returning an error for invalid values
+fn safe_f64_to_u64(value: f64, cell: CellReferenceIndex) -> Result<u64, CalcResult> {
+    // Check for NaN
+    if value.is_nan() {
+        return Err(CalcResult::new_error(
+            Error::NUM,
+            cell,
+            "Invalid number (NaN)".to_string(),
+        ));
+    }
+
+    // Check for infinity
+    if value.is_infinite() {
+        return Err(CalcResult::new_error(
+            Error::NUM,
+            cell,
+            "Invalid number (infinity)".to_string(),
+        ));
+    }
+
+    // Check for negative values
+    if value < 0.0 {
+        return Err(CalcResult::new_error(
+            Error::NUM,
+            cell,
+            "Number must be non-negative".to_string(),
+        ));
+    }
+
+    // Check if value exceeds u64::MAX
+    if value > u64::MAX as f64 {
+        return Err(CalcResult::new_error(
+            Error::NUM,
+            cell,
+            "Number too large".to_string(),
+        ));
+    }
+
+    // Safe conversion
+    Ok(value.floor() as u64)
+}
+
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.is_empty() {
@@ -1055,7 +1097,10 @@ impl Model {
                 return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
             }
         };
-        let k = x.floor() as u64;
+        let k = match safe_f64_to_u64(x, cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
         if cumulative {
             CalcResult::Number(dist.cdf(k))
         } else {
@@ -1087,13 +1132,20 @@ impl Model {
         if trials < 0.0 || !(0.0..=1.0).contains(&p) || number_s < 0.0 || number_s > trials {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
-        let dist = match Binomial::new(p, trials.round() as u64) {
+        let trials_u64 = match safe_f64_to_u64(trials.round(), cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
+        let dist = match Binomial::new(p, trials_u64) {
             Ok(d) => d,
             Err(_) => {
                 return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
             }
         };
-        let k = number_s.floor() as u64;
+        let k = match safe_f64_to_u64(number_s, cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
         if cumulative {
             CalcResult::Number(dist.cdf(k))
         } else {
@@ -1121,7 +1173,11 @@ impl Model {
         if trials < 0.0 || !(0.0..=1.0).contains(&p) || !(0.0..=1.0).contains(&alpha) {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
-        let dist = match Binomial::new(p, trials.round() as u64) {
+        let trials_u64 = match safe_f64_to_u64(trials.round(), cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
+        let dist = match Binomial::new(p, trials_u64) {
             Ok(d) => d,
             Err(_) => {
                 return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
@@ -1165,7 +1221,11 @@ impl Model {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
-        let dist = match Binomial::new(p, trials.round() as u64) {
+        let trials_u64 = match safe_f64_to_u64(trials.round(), cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
+        let dist = match Binomial::new(p, trials_u64) {
             Ok(d) => d,
             Err(_) => {
                 return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string())
@@ -1173,8 +1233,14 @@ impl Model {
         };
 
         // Use CDF-based calculation for better numerical stability
-        let k1 = s1.floor() as u64;
-        let k2 = s2.floor() as u64;
+        let k1 = match safe_f64_to_u64(s1, cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
+        let k2 = match safe_f64_to_u64(s2, cell) {
+            Ok(val) => val,
+            Err(e) => return e,
+        };
         let mut result = dist.cdf(k2);
         if k1 > 0 {
             result -= dist.cdf(k1 - 1);
