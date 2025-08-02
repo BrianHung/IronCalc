@@ -16,11 +16,11 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | AVERAGEA                 | <Badge type="tip" text="Available" />            | –             |
 | AVERAGEIF                | <Badge type="tip" text="Available" />            | –             |
 | AVERAGEIFS               | <Badge type="tip" text="Available" />            | –             |
-| BETA.DIST                | <Badge type="info" text="Not implemented yet" /> | –             |
-| BETA.INV                 | <Badge type="info" text="Not implemented yet" /> | –             |
-| BINOM.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
-| BINOM.DIST.RANGE         | <Badge type="info" text="Not implemented yet" /> | –             |
-| BINOM.INV                | <Badge type="info" text="Not implemented yet" /> | –             |
+| BETA.DIST                | <Badge type="tip" text="Available" />            | –             |
+| BETA.INV                 | <Badge type="tip" text="Available" />            | –             |
+| BINOM.DIST               | <Badge type="tip" text="Available" />            | –             |
+| BINOM.DIST.RANGE         | <Badge type="tip" text="Available" />            | –             |
+| BINOM.INV                | <Badge type="tip" text="Available" />            | –             |
 | CHISQ.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
 | CHISQ.DIST.RT            | <Badge type="info" text="Not implemented yet" /> | –             |
 | CHISQ.INV                | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -37,7 +37,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | COVARIANCE.P             | <Badge type="info" text="Not implemented yet" /> | –             |
 | COVARIANCE.S             | <Badge type="info" text="Not implemented yet" /> | –             |
 | DEVSQ                    | <Badge type="info" text="Not implemented yet" /> | –             |
-| EXPON.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
+| EXPON.DIST               | <Badge type="tip" text="Available" />            | –             |
 | F.DIST                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | F.DIST.RT                | <Badge type="info" text="Not implemented yet" /> | –             |
 | F.INV                    | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -52,11 +52,11 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | FORECAST.ETS.STAT        | <Badge type="info" text="Not implemented yet" /> | –             |
 | FORECAST.LINEAR          | <Badge type="info" text="Not implemented yet" /> | –             |
 | FREQUENCY                | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAMMA                    | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAMMA.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAMMA.INV                | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAMMALN                  | <Badge type="info" text="Not implemented yet" /> | –             |
-| GAMMALN.PRECISE          | <Badge type="info" text="Not implemented yet" /> | –             |
+| GAMMA                    | <Badge type="tip" text="Available" />            | –             |
+| GAMMA.DIST               | <Badge type="tip" text="Available" />            | –             |
+| GAMMA.INV                | <Badge type="tip" text="Available" />            | –             |
+| GAMMALN                  | <Badge type="tip" text="Available" />            | –             |
+| GAMMALN.PRECISE          | <Badge type="tip" text="Available" />            | –             |
 | GAUSS                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | GEOMEAN                  | <Badge type="info" text="Available" />            | –             |
 | GROWTH                   | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -88,7 +88,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | PERMUT                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | PERMUTATIONA             | <Badge type="info" text="Not implemented yet" /> | –             |
 | PHI                      | <Badge type="info" text="Not implemented yet" /> | –             |
-| POISSON.DIST             | <Badge type="info" text="Not implemented yet" /> | –             |
+| POISSON.DIST             | <Badge type="tip" text="Available" />            | –             |
 | PROB                     | <Badge type="info" text="Not implemented yet" /> | –             |
 | QUARTILE.EXC             | <Badge type="info" text="Not implemented yet" /> | –             |
 | QUARTILE.INC             | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -117,5 +117,5 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | VAR.S                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | VARA                     | <Badge type="info" text="Not implemented yet" /> | –             |
 | VARPA                    | <Badge type="info" text="Not implemented yet" /> | –             |
-| WEIBULL.DIST             | <Badge type="info" text="Not implemented yet" /> | –             |
+| WEIBULL.DIST             | <Badge type="tip" text="Available" />            | –             |
 | Z.TEST                   | <Badge type="info" text="Not implemented yet" /> | –             |
