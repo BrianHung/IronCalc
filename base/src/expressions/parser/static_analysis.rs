@@ -784,10 +784,9 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Randbetween => args_signature_scalars(arg_count, 2, 0),
         Function::Formulatext => args_signature_scalars(arg_count, 1, 0),
         Function::Unicode => args_signature_scalars(arg_count, 1, 0),
-        Function::Geomean => vec![Signature::Vector; arg_count],
-        Function::Harmean => vec![Signature::Vector; arg_count],
-        Function::Avedev => vec![Signature::Vector; arg_count],
-        Function::Devsq => vec![Signature::Vector; arg_count],
+        Function::Geomean | Function::Harmean | Function::Avedev | Function::Devsq => {
+            vec![Signature::Vector; arg_count]
+        }
     }
 }
 
@@ -992,9 +991,8 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Randbetween => scalar_arguments(args),
         Function::Eomonth => scalar_arguments(args),
         Function::Formulatext => not_implemented(args),
-        Function::Geomean => not_implemented(args),
-        Function::Harmean => not_implemented(args),
-        Function::Avedev => not_implemented(args),
-        Function::Devsq => not_implemented(args),
+        Function::Geomean | Function::Harmean | Function::Avedev | Function::Devsq => {
+            not_implemented(args)
+        }
     }
 }

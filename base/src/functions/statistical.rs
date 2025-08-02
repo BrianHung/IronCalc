@@ -9,6 +9,108 @@ use crate::{
 
 use super::util::build_criteria;
 
+/// Helper function to extract numeric values from arguments, with optional positive-only validation
+fn extract_numeric_values(
+    model: &mut Model,
+    args: &[Node],
+    cell: CellReferenceIndex,
+    positive_only: bool,
+) -> Result<Vec<f64>, CalcResult> {
+    let mut values = Vec::new();
+
+    for arg in args {
+        match model.evaluate_node_in_context(arg, cell) {
+            CalcResult::Number(value) => {
+                if positive_only && value <= 0.0 {
+                    return Err(CalcResult::new_error(
+                        Error::NUM,
+                        cell,
+                        "Values must be positive".to_string(),
+                    ));
+                }
+                values.push(value);
+            }
+            CalcResult::Boolean(b) => {
+                if let Node::ReferenceKind { .. } = arg {
+                    // Skip booleans in cell references
+                } else {
+                    let value = if b { 1.0 } else { 0.0 };
+                    if positive_only && value <= 0.0 {
+                        return Err(CalcResult::new_error(
+                            Error::NUM,
+                            cell,
+                            "Values must be positive".to_string(),
+                        ));
+                    }
+                    values.push(value);
+                }
+            }
+            CalcResult::Range { left, right } => {
+                if left.sheet != right.sheet {
+                    return Err(CalcResult::new_error(
+                        Error::VALUE,
+                        cell,
+                        "Ranges are in different sheets".to_string(),
+                    ));
+                }
+                for row in left.row..=right.row {
+                    for column in left.column..=right.column {
+                        match model.evaluate_cell(CellReferenceIndex {
+                            sheet: left.sheet,
+                            row,
+                            column,
+                        }) {
+                            CalcResult::Number(value) => {
+                                if positive_only && value <= 0.0 {
+                                    return Err(CalcResult::new_error(
+                                        Error::NUM,
+                                        cell,
+                                        "Values must be positive".to_string(),
+                                    ));
+                                }
+                                values.push(value);
+                            }
+                            error @ CalcResult::Error { .. } => return Err(error),
+                            CalcResult::Range { .. } => {
+                                return Err(CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    "Unexpected Range".to_string(),
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            error @ CalcResult::Error { .. } => return Err(error),
+            CalcResult::String(s) => {
+                if let Node::ReferenceKind { .. } = arg {
+                    // Skip strings in cell references
+                } else if let Ok(value) = s.parse::<f64>() {
+                    if positive_only && value <= 0.0 {
+                        return Err(CalcResult::new_error(
+                            Error::NUM,
+                            cell,
+                            "Values must be positive".to_string(),
+                        ));
+                    }
+                    values.push(value);
+                } else {
+                    return Err(CalcResult::Error {
+                        error: Error::VALUE,
+                        origin: cell,
+                        message: "Argument cannot be cast into number".to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(values)
+}
+
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.is_empty() {
@@ -735,168 +837,12 @@ impl Model {
         if args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let mut count = 0.0;
-        let mut sum_reciprocal = 0.0;
-        for arg in args {
-            match self.evaluate_node_in_context(arg, cell) {
-                CalcResult::Number(value) => {
-                    if value <= 0.0 {
-                        return CalcResult::new_error(
-                            Error::NUM,
-                            cell,
-                            "Data points must be > 0".to_string(),
-                        );
-                    }
-                    count += 1.0;
-                    sum_reciprocal += 1.0 / value;
-                }
-                CalcResult::Boolean(b) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        let value = if b { 1.0 } else { 0.0 };
-                        if value <= 0.0 {
-                            return CalcResult::new_error(
-                                Error::NUM,
-                                cell,
-                                "Data points must be > 0".to_string(),
-                            );
-                        }
-                        count += 1.0;
-                        sum_reciprocal += 1.0 / value;
-                    }
-                }
-                CalcResult::Range { left, right } => {
-                    if left.sheet != right.sheet {
-                        return CalcResult::new_error(
-                            Error::VALUE,
-                            cell,
-                            "Ranges are in different sheets".to_string(),
-                        );
-                    }
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    if value <= 0.0 {
-                                        return CalcResult::new_error(
-                                            Error::NUM,
-                                            cell,
-                                            "Data points must be > 0".to_string(),
-                                        );
-                                    }
-                                    count += 1.0;
-                                    sum_reciprocal += 1.0 / value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                CalcResult::Range { .. } => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::String(s) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        if let Ok(t) = s.parse::<f64>() {
-                            if t <= 0.0 {
-                                return CalcResult::new_error(
-                                    Error::NUM,
-                                    cell,
-                                    "Data points must be > 0".to_string(),
-                                );
-                            }
-                            count += 1.0;
-                            sum_reciprocal += 1.0 / t;
-                        } else {
-                            return CalcResult::Error {
-                                error: Error::VALUE,
-                                origin: cell,
-                                message: "Argument cannot be cast into number".to_string(),
-                            };
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if count == 0.0 {
-            return CalcResult::Error {
-                error: Error::DIV,
-                origin: cell,
-                message: "Division by Zero".to_string(),
-            };
-        }
-        CalcResult::Number(count / sum_reciprocal)
-    }
 
-    pub(crate) fn fn_avedev(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        if args.is_empty() {
-            return CalcResult::new_args_number_error(cell);
-        }
-        let mut values: Vec<f64> = Vec::new();
-        for arg in args {
-            match self.evaluate_node_in_context(arg, cell) {
-                CalcResult::Number(value) => values.push(value),
-                CalcResult::Boolean(b) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        values.push(if b { 1.0 } else { 0.0 });
-                    }
-                }
-                CalcResult::Range { left, right } => {
-                    if left.sheet != right.sheet {
-                        return CalcResult::new_error(
-                            Error::VALUE,
-                            cell,
-                            "Ranges are in different sheets".to_string(),
-                        );
-                    }
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => values.push(value),
-                                error @ CalcResult::Error { .. } => return error,
-                                CalcResult::Range { .. } => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::String(s) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        if let Ok(t) = s.parse::<f64>() {
-                            values.push(t);
-                        } else {
-                            return CalcResult::Error {
-                                error: Error::VALUE,
-                                origin: cell,
-                                message: "Argument cannot be cast into number".to_string(),
-                            };
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        let values = match extract_numeric_values(self, args, cell, true) {
+            Ok(v) => v,
+            Err(error) => return error,
+        };
+
         if values.is_empty() {
             return CalcResult::Error {
                 error: Error::DIV,
@@ -904,9 +850,33 @@ impl Model {
                 message: "Division by Zero".to_string(),
             };
         }
+
+        let count = values.len() as f64;
+        let sum_recip: f64 = values.iter().map(|v| 1.0 / v).sum();
+        CalcResult::Number(count / sum_recip)
+    }
+
+    pub(crate) fn fn_avedev(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.is_empty() {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let values = match extract_numeric_values(self, args, cell, false) {
+            Ok(v) => v,
+            Err(error) => return error,
+        };
+
+        if values.is_empty() {
+            return CalcResult::Error {
+                error: Error::DIV,
+                origin: cell,
+                message: "Division by Zero".to_string(),
+            };
+        }
+
         let count = values.len() as f64;
         let mean: f64 = values.iter().sum::<f64>() / count;
-        let total: f64 = values.iter().map(|v| (*v - mean).abs()).sum();
+        let total: f64 = values.iter().map(|v| (v - mean).abs()).sum();
         CalcResult::Number(total / count)
     }
 
@@ -914,61 +884,12 @@ impl Model {
         if args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let mut values: Vec<f64> = Vec::new();
-        for arg in args {
-            match self.evaluate_node_in_context(arg, cell) {
-                CalcResult::Number(value) => values.push(value),
-                CalcResult::Boolean(b) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        values.push(if b { 1.0 } else { 0.0 });
-                    }
-                }
-                CalcResult::Range { left, right } => {
-                    if left.sheet != right.sheet {
-                        return CalcResult::new_error(
-                            Error::VALUE,
-                            cell,
-                            "Ranges are in different sheets".to_string(),
-                        );
-                    }
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => values.push(value),
-                                error @ CalcResult::Error { .. } => return error,
-                                CalcResult::Range { .. } => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::String(s) => {
-                    if !matches!(arg, Node::ReferenceKind { .. }) {
-                        if let Ok(t) = s.parse::<f64>() {
-                            values.push(t);
-                        } else {
-                            return CalcResult::Error {
-                                error: Error::VALUE,
-                                origin: cell,
-                                message: "Argument cannot be cast into number".to_string(),
-                            };
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+
+        let values = match extract_numeric_values(self, args, cell, false) {
+            Ok(v) => v,
+            Err(error) => return error,
+        };
+
         if values.is_empty() {
             return CalcResult::Error {
                 error: Error::DIV,
@@ -976,9 +897,10 @@ impl Model {
                 message: "Division by Zero".to_string(),
             };
         }
+
         let count = values.len() as f64;
         let mean: f64 = values.iter().sum::<f64>() / count;
-        let total: f64 = values.iter().map(|v| (*v - mean).powi(2)).sum();
-        CalcResult::Number(total)
+        let devsq: f64 = values.iter().map(|v| (v - mean).powi(2)).sum();
+        CalcResult::Number(devsq)
     }
 }
