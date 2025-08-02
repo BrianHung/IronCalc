@@ -392,47 +392,64 @@ impl Model {
     single_number_fn!(fn_cos, |f| Ok(f64::cos(f)));
     single_number_fn!(fn_tan, |f| Ok(f64::tan(f)));
     single_number_fn!(fn_cot, |f| {
-        let t = f64::tan(f);
-        if t == 0.0 {
+        let result = 1.0 / f64::tan(f);
+        if result.is_infinite() {
             Err(Error::DIV)
+        } else if result.is_nan() {
+            Err(Error::NUM)
         } else {
-            Ok(1.0 / t)
+            Ok(result)
         }
     });
     single_number_fn!(fn_sinh, |f| Ok(f64::sinh(f)));
     single_number_fn!(fn_cosh, |f| Ok(f64::cosh(f)));
     single_number_fn!(fn_coth, |f| {
-        let t = f64::tanh(f);
-        if t == 0.0 {
+        let result = 1.0 / f64::tanh(f);
+        if result.is_infinite() {
             Err(Error::DIV)
+        } else if result.is_nan() {
+            Err(Error::NUM)
         } else {
-            Ok(1.0 / t)
+            Ok(result)
         }
     });
     single_number_fn!(fn_tanh, |f| Ok(f64::tanh(f)));
     single_number_fn!(fn_sec, |f| {
-        let c = f64::cos(f);
-        if c == 0.0 {
+        let result = 1.0 / f64::cos(f);
+        if result.is_infinite() {
             Err(Error::DIV)
+        } else if result.is_nan() {
+            Err(Error::NUM)
         } else {
-            Ok(1.0 / c)
+            Ok(result)
         }
     });
-    single_number_fn!(fn_sech, |f| Ok(1.0 / f64::cosh(f)));
-    single_number_fn!(fn_csc, |f| {
-        let s = f64::sin(f);
-        if s == 0.0 {
-            Err(Error::DIV)
+    single_number_fn!(fn_sech, |f| {
+        let result = 1.0 / f64::cosh(f);
+        if result.is_nan() {
+            Err(Error::NUM)
         } else {
-            Ok(1.0 / s)
+            Ok(result)
+        }
+    });
+    single_number_fn!(fn_csc, |f| {
+        let result = 1.0 / f64::sin(f);
+        if result.is_infinite() {
+            Err(Error::DIV)
+        } else if result.is_nan() {
+            Err(Error::NUM)
+        } else {
+            Ok(result)
         }
     });
     single_number_fn!(fn_csch, |f| {
-        let s = f64::sinh(f);
-        if s == 0.0 {
+        let result = 1.0 / f64::sinh(f);
+        if result.is_infinite() {
             Err(Error::DIV)
+        } else if result.is_nan() {
+            Err(Error::NUM)
         } else {
-            Ok(1.0 / s)
+            Ok(result)
         }
     });
     single_number_fn!(fn_asin, |f| Ok(f64::asin(f)));
@@ -442,10 +459,19 @@ impl Model {
     single_number_fn!(fn_asinh, |f| Ok(f64::asinh(f)));
     single_number_fn!(fn_acosh, |f| Ok(f64::acosh(f)));
     single_number_fn!(fn_atanh, |f| Ok(f64::atanh(f)));
-    single_number_fn!(fn_acoth, |f: f64| if f.abs() <= 1.0 {
-        Err(Error::NUM)
-    } else {
-        Ok(f64::atanh(1.0 / f))
+    single_number_fn!(fn_acoth, |f: f64| {
+        if f == 1.0 || f == -1.0 {
+            return Err(Error::DIV);
+        }
+        if f.abs() < 1.0 {
+            return Err(Error::NUM);
+        }
+        let result = f64::atanh(1.0 / f);
+        if result.is_nan() {
+            Err(Error::NUM)
+        } else {
+            Ok(result)
+        }
     });
     single_number_fn!(fn_abs, |f| Ok(f64::abs(f)));
     single_number_fn!(fn_sqrt, |f| if f < 0.0 {
