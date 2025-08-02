@@ -166,20 +166,20 @@ fn test_argument_validation_comprehensive() {
     let no_arg_functions = ["COT", "COTH", "ACOT", "ACOTH", "CSC", "CSCH", "SEC", "SECH"];
 
     for (i, func) in no_arg_functions.iter().enumerate() {
-        model._set(&format!("A{}", i + 1), &format!("={}()", func));
+        model._set(&format!("A{}", i + 1), &format!("={func}()"));
     }
 
     // Test all functions with too many arguments (should all error)
     for (i, func) in no_arg_functions.iter().enumerate() {
-        model._set(&format!("B{}", i + 1), &format!("={}(1,2)", func));
+        model._set(&format!("B{}", i + 1), &format!("={func}(1,2)"));
     }
 
     model.evaluate();
 
     // All should be #ERROR!
     for i in 1..=no_arg_functions.len() {
-        assert_eq!(model._get_text(&format!("A{}", i)), *"#ERROR!");
-        assert_eq!(model._get_text(&format!("B{}", i)), *"#ERROR!");
+        assert_eq!(model._get_text(&format!("A{i}")), *"#ERROR!");
+        assert_eq!(model._get_text(&format!("B{i}")), *"#ERROR!");
     }
 }
 
