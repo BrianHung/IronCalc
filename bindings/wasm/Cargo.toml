@@ -18,6 +18,8 @@ ironcalc_base = { path = "../../base", version = "0.5", features = ["use_regex_l
 serde = { version = "1.0", features = ["derive"] }
 wasm-bindgen = "0.2.100"
 serde-wasm-bindgen = "0.4"
+# Enable JS feature for getrandom to support WASM targets (required by statrs dependency)
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.38"
