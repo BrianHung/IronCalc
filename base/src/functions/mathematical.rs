@@ -402,24 +402,16 @@ impl Model {
     single_number_fn!(fn_atanh, |f| Ok(f64::atanh(f)));
     single_number_fn!(fn_abs, |f| Ok(f64::abs(f)));
     single_number_fn!(fn_even, |f: f64| {
-        let mut n = if f > 0.0 { f.ceil() } else { f.floor() };
-        if (n as i64) % 2 != 0 {
-            if f >= 0.0 {
-                n += 1.0;
-            } else {
-                n -= 1.0;
-            }
+        let mut n = if f >= 0.0 { f.ceil() } else { f.floor() };
+        if (n as i64).abs() % 2 != 0 {
+            n += if f >= 0.0 { 1.0 } else { -1.0 };
         }
         Ok(n)
     });
     single_number_fn!(fn_odd, |f: f64| {
-        let mut n = if f > 0.0 { f.ceil() } else { f.floor() };
-        if (n as i64) % 2 == 0 {
-            if f >= 0.0 {
-                n += 1.0;
-            } else {
-                n -= 1.0;
-            }
+        let mut n = if f >= 0.0 { f.ceil() } else { f.floor() };
+        if (n as i64).abs() % 2 == 0 {
+            n += if f >= 0.0 { 1.0 } else { -1.0 };
         }
         Ok(n)
     });
