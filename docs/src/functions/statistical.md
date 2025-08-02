@@ -34,8 +34,8 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | COUNTBLANK               | <Badge type="tip" text="Available" />            | –             |
 | COUNTIF                  | <Badge type="tip" text="Available" />            | –             |
 | COUNTIFS                 | <Badge type="tip" text="Available" />            | –             |
-| COVARIANCE.P             | <Badge type="info" text="Not implemented yet" /> | –             |
-| COVARIANCE.S             | <Badge type="info" text="Not implemented yet" /> | –             |
+| COVARIANCE.P             | <Badge type="tip" text="Available" /> | –             |
+| COVARIANCE.S             | <Badge type="tip" text="Available" /> | –             |
 | DEVSQ                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | EXPON.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
 | F.DIST                   | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -76,10 +76,10 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | MODE.MULT                | <Badge type="info" text="Not implemented yet" /> | –             |
 | MODE.SNGL                | <Badge type="info" text="Not implemented yet" /> | –             |
 | NEGBINOM.DIST            | <Badge type="info" text="Not implemented yet" /> | –             |
-| NORM.DIST                | <Badge type="info" text="Not implemented yet" /> | –             |
-| NORM.INV                 | <Badge type="info" text="Not implemented yet" /> | –             |
-| NORM.S.DIST              | <Badge type="info" text="Not implemented yet" /> | –             |
-| NORM.S.INV               | <Badge type="info" text="Not implemented yet" /> | –             |
+| NORM.DIST                | <Badge type="tip" text="Available" /> | –             |
+| NORM.INV                 | <Badge type="tip" text="Available" /> | –             |
+| NORM.S.DIST              | <Badge type="tip" text="Available" /> | –             |
+| NORM.S.INV               | <Badge type="tip" text="Available" /> | –             |
 | PEARSON                  | <Badge type="info" text="Not implemented yet" /> | –             |
 | PERCENTILE.EXC           | <Badge type="info" text="Not implemented yet" /> | –             |
 | PERCENTILE.INC           | <Badge type="info" text="Not implemented yet" /> | –             |
