@@ -2,6 +2,9 @@
 
 use crate::test::util::new_empty_model;
 
+// High precision tolerance for roundtrip tests since inverse identities should be mathematically exact
+const ROUNDTRIP_TOLERANCE: f64 = 1e-14;
+
 #[test]
 fn test_basic_values_and_arguments() {
     let mut model = new_empty_model();
@@ -225,4 +228,144 @@ fn test_function_symmetry() {
     let sec_pos = model._get_text("B1").parse::<f64>().unwrap();
     let sec_neg = model._get_text("B2").parse::<f64>().unwrap();
     assert!((sec_pos - sec_neg).abs() < 1e-14);
+}
+
+#[test]
+fn test_inverse_function_roundtrips() {
+    let mut model = new_empty_model();
+
+    // Test COT/ACOT roundtrips across multiple values
+    // COT is defined for x ≠ nπ, so we pick values that avoid singularities
+    let cot_test_values = [0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0];
+
+    for (i, &val) in cot_test_values.iter().enumerate() {
+        // Test ACOT(COT(x)) = x for x in valid domain
+        model._set(&format!("A{}", i + 1), &format!("=ACOT(COT({}))", val));
+        model._set(&format!("AA{}", i + 1), &format!("={}", val));
+
+        // Test COT(ACOT(x)) = x for x in all reals
+        model._set(&format!("B{}", i + 1), &format!("=COT(ACOT({}))", val));
+        model._set(&format!("BB{}", i + 1), &format!("={}", val));
+    }
+
+    // Test COTH/ACOTH roundtrips
+    // ACOTH is defined for |x| > 1, COTH is defined for x ≠ 0
+    let acoth_test_values = [1.5, 2.0, 3.0, 5.0, -1.5, -2.0, -3.0];
+    let coth_test_values = [0.5, 1.0, 1.5, 2.0, -0.5, -1.0, -2.0];
+
+    for (i, &val) in acoth_test_values.iter().enumerate() {
+        // Test COTH(ACOTH(x)) = x for |x| > 1
+        model._set(&format!("C{}", i + 1), &format!("=COTH(ACOTH({}))", val));
+        model._set(&format!("CC{}", i + 1), &format!("={}", val));
+    }
+
+    for (i, &val) in coth_test_values.iter().enumerate() {
+        // Test ACOTH(COTH(x)) = x for x ≠ 0
+        model._set(&format!("D{}", i + 1), &format!("=ACOTH(COTH({}))", val));
+        model._set(&format!("DD{}", i + 1), &format!("={}", val));
+    }
+
+    model.evaluate();
+
+    // Verify COT/ACOT roundtrips
+    for i in 1..=cot_test_values.len() {
+        let acot_cot_result = model._get_text(&format!("A{}", i)).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("AA{}", i)).parse::<f64>().unwrap();
+        assert!(
+            (acot_cot_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
+            "ACOT(COT({})) failed: got {}, expected {}",
+            original_value,
+            acot_cot_result,
+            original_value
+        );
+
+        let cot_acot_result = model._get_text(&format!("B{}", i)).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("BB{}", i)).parse::<f64>().unwrap();
+        assert!(
+            (cot_acot_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
+            "COT(ACOT({})) failed: got {}, expected {}",
+            original_value,
+            cot_acot_result,
+            original_value
+        );
+    }
+
+    // Verify COTH/ACOTH roundtrips
+    for i in 1..=acoth_test_values.len() {
+        let coth_acoth_result = model._get_text(&format!("C{}", i)).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("CC{}", i)).parse::<f64>().unwrap();
+        assert!(
+            (coth_acoth_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
+            "COTH(ACOTH({})) failed: got {}, expected {}",
+            original_value,
+            coth_acoth_result,
+            original_value
+        );
+    }
+
+    for i in 1..=coth_test_values.len() {
+        let acoth_coth_result = model._get_text(&format!("D{}", i)).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("DD{}", i)).parse::<f64>().unwrap();
+        assert!(
+            (acoth_coth_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
+            "ACOTH(COTH({})) failed: got {}, expected {}",
+            original_value,
+            acoth_coth_result,
+            original_value
+        );
+    }
+}
+
+#[test]
+fn test_roundtrip_boundary_conditions() {
+    let mut model = new_empty_model();
+
+    // Test edge cases for roundtrip identities
+
+    // COT/ACOT: Test values near but not at singularities
+    model._set("A1", "=ACOT(COT(0.001))"); // Very close to 0
+    model._set("A2", "=0.001");
+
+    model._set("B1", "=COT(ACOT(1000))"); // Large positive value
+    model._set("B2", "=1000");
+
+    model._set("C1", "=COT(ACOT(-1000))"); // Large negative value
+    model._set("C2", "=-1000");
+
+    // COTH/ACOTH: Test values just outside the domain boundaries
+    model._set("D1", "=COTH(ACOTH(1.000001))"); // Just above 1
+    model._set("D2", "=1.000001");
+
+    model._set("E1", "=COTH(ACOTH(-1.000001))"); // Just below -1
+    model._set("E2", "=-1.000001");
+
+    model._set("F1", "=ACOTH(COTH(0.001))"); // Very close to 0
+    model._set("F2", "=0.001");
+
+    model.evaluate();
+
+    // Verify edge case roundtrips
+    let result_a = model._get_text("A1").parse::<f64>().unwrap();
+    let expected_a = model._get_text("A2").parse::<f64>().unwrap();
+    assert!((result_a - expected_a).abs() < ROUNDTRIP_TOLERANCE);
+
+    let result_b = model._get_text("B1").parse::<f64>().unwrap();
+    let expected_b = model._get_text("B2").parse::<f64>().unwrap();
+    assert!((result_b - expected_b).abs() < ROUNDTRIP_TOLERANCE);
+
+    let result_c = model._get_text("C1").parse::<f64>().unwrap();
+    let expected_c = model._get_text("C2").parse::<f64>().unwrap();
+    assert!((result_c - expected_c).abs() < ROUNDTRIP_TOLERANCE);
+
+    let result_d = model._get_text("D1").parse::<f64>().unwrap();
+    let expected_d = model._get_text("D2").parse::<f64>().unwrap();
+    assert!((result_d - expected_d).abs() < ROUNDTRIP_TOLERANCE);
+
+    let result_e = model._get_text("E1").parse::<f64>().unwrap();
+    let expected_e = model._get_text("E2").parse::<f64>().unwrap();
+    assert!((result_e - expected_e).abs() < ROUNDTRIP_TOLERANCE);
+
+    let result_f = model._get_text("F1").parse::<f64>().unwrap();
+    let expected_f = model._get_text("F2").parse::<f64>().unwrap();
+    assert!((result_f - expected_f).abs() < ROUNDTRIP_TOLERANCE);
 }
