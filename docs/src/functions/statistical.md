@@ -11,7 +11,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 
 | Function                 | Status                                           | Documentation |
 | ------------------------ |--------------------------------------------------| ------------- |
-| AVEDEV                   | <Badge type="info" text="Not implemented yet" /> | –             |
+| AVEDEV                   | <Badge type="tip" text="Available" />            | –             |
 | AVERAGE                  | <Badge type="tip" text="Available" />            | –             |
 | AVERAGEA                 | <Badge type="tip" text="Available" />            | –             |
 | AVERAGEIF                | <Badge type="tip" text="Available" />            | –             |
@@ -36,7 +36,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | COUNTIFS                 | <Badge type="tip" text="Available" />            | –             |
 | COVARIANCE.P             | <Badge type="info" text="Not implemented yet" /> | –             |
 | COVARIANCE.S             | <Badge type="info" text="Not implemented yet" /> | –             |
-| DEVSQ                    | <Badge type="info" text="Not implemented yet" /> | –             |
+| DEVSQ                    | <Badge type="tip" text="Available" />            | –             |
 | EXPON.DIST               | <Badge type="info" text="Not implemented yet" /> | –             |
 | F.DIST                   | <Badge type="info" text="Not implemented yet" /> | –             |
 | F.DIST.RT                | <Badge type="info" text="Not implemented yet" /> | –             |
@@ -60,7 +60,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | GAUSS                    | <Badge type="info" text="Not implemented yet" /> | –             |
 | GEOMEAN                  | <Badge type="info" text="Available" />            | –             |
 | GROWTH                   | <Badge type="info" text="Not implemented yet" /> | –             |
-| HARMEAN                  | <Badge type="info" text="Not implemented yet" /> | –             |
+| HARMEAN                  | <Badge type="tip" text="Available" />            | –             |
 | HYPGEOM.DIST             | <Badge type="info" text="Not implemented yet" /> | –             |
 | INTERCEPT                | <Badge type="info" text="Not implemented yet" /> | –             |
 | KURT                     | <Badge type="info" text="Not implemented yet" /> | –             |
