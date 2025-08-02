@@ -826,7 +826,7 @@ impl Model {
             1.0
         };
 
-        if p < 0.0 || p > 1.0 || alpha <= 0.0 || beta <= 0.0 || b <= a {
+        if !(0.0..=1.0).contains(&p) || alpha <= 0.0 || beta <= 0.0 || b <= a {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
@@ -899,7 +899,7 @@ impl Model {
             Err(e) => return e,
         };
 
-        if p < 0.0 || p > 1.0 || alpha <= 0.0 || beta <= 0.0 {
+        if !(0.0..=1.0).contains(&p) || alpha <= 0.0 || beta <= 0.0 {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
@@ -1084,7 +1084,7 @@ impl Model {
             Err(e) => return e,
         };
 
-        if trials < 0.0 || p < 0.0 || p > 1.0 || number_s < 0.0 || number_s > trials {
+        if trials < 0.0 || !(0.0..=1.0).contains(&p) || number_s < 0.0 || number_s > trials {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Binomial::new(p, trials.round() as u64) {
@@ -1118,7 +1118,7 @@ impl Model {
             Err(e) => return e,
         };
 
-        if trials < 0.0 || p < 0.0 || p > 1.0 || alpha < 0.0 || alpha > 1.0 {
+        if trials < 0.0 || !(0.0..=1.0).contains(&p) || !(0.0..=1.0).contains(&alpha) {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
         let dist = match Binomial::new(p, trials.round() as u64) {
@@ -1161,7 +1161,7 @@ impl Model {
             s1
         };
 
-        if trials < 0.0 || p < 0.0 || p > 1.0 || s1 < 0.0 || s2 < s1 || s2 > trials {
+        if trials < 0.0 || !(0.0..=1.0).contains(&p) || s1 < 0.0 || s2 < s1 || s2 > trials {
             return CalcResult::new_error(Error::NUM, cell, "Invalid parameters".to_string());
         }
 
