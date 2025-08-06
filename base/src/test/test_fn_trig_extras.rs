@@ -240,12 +240,12 @@ fn test_inverse_function_roundtrips() {
 
     for (i, &val) in cot_test_values.iter().enumerate() {
         // Test ACOT(COT(x)) = x for x in valid domain
-        model._set(&format!("A{}", i + 1), &format!("=ACOT(COT({}))", val));
-        model._set(&format!("AA{}", i + 1), &format!("={}", val));
+        model._set(&format!("A{}", i + 1), &format!("=ACOT(COT({val}))"));
+        model._set(&format!("AA{}", i + 1), &format!("={val}"));
 
         // Test COT(ACOT(x)) = x for x in all reals
-        model._set(&format!("B{}", i + 1), &format!("=COT(ACOT({}))", val));
-        model._set(&format!("BB{}", i + 1), &format!("={}", val));
+        model._set(&format!("B{}", i + 1), &format!("=COT(ACOT({val}))"));
+        model._set(&format!("BB{}", i + 1), &format!("={val}"));
     }
 
     // Test COTH/ACOTH roundtrips
@@ -255,63 +255,51 @@ fn test_inverse_function_roundtrips() {
 
     for (i, &val) in acoth_test_values.iter().enumerate() {
         // Test COTH(ACOTH(x)) = x for |x| > 1
-        model._set(&format!("C{}", i + 1), &format!("=COTH(ACOTH({}))", val));
-        model._set(&format!("CC{}", i + 1), &format!("={}", val));
+        model._set(&format!("C{}", i + 1), &format!("=COTH(ACOTH({val}))"));
+        model._set(&format!("CC{}", i + 1), &format!("={val}"));
     }
 
     for (i, &val) in coth_test_values.iter().enumerate() {
         // Test ACOTH(COTH(x)) = x for x ≠ 0
-        model._set(&format!("D{}", i + 1), &format!("=ACOTH(COTH({}))", val));
-        model._set(&format!("DD{}", i + 1), &format!("={}", val));
+        model._set(&format!("D{}", i + 1), &format!("=ACOTH(COTH({val}))"));
+        model._set(&format!("DD{}", i + 1), &format!("={val}"));
     }
 
     model.evaluate();
 
     // Verify COT/ACOT roundtrips
     for i in 1..=cot_test_values.len() {
-        let acot_cot_result = model._get_text(&format!("A{}", i)).parse::<f64>().unwrap();
-        let original_value = model._get_text(&format!("AA{}", i)).parse::<f64>().unwrap();
+        let acot_cot_result = model._get_text(&format!("A{i}")).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("AA{i}")).parse::<f64>().unwrap();
         assert!(
             (acot_cot_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
-            "ACOT(COT({})) failed: got {}, expected {}",
-            original_value,
-            acot_cot_result,
-            original_value
+            "ACOT(COT({original_value})) failed: got {acot_cot_result}, expected {original_value}"
         );
 
-        let cot_acot_result = model._get_text(&format!("B{}", i)).parse::<f64>().unwrap();
-        let original_value = model._get_text(&format!("BB{}", i)).parse::<f64>().unwrap();
+        let cot_acot_result = model._get_text(&format!("B{i}")).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("BB{i}")).parse::<f64>().unwrap();
         assert!(
             (cot_acot_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
-            "COT(ACOT({})) failed: got {}, expected {}",
-            original_value,
-            cot_acot_result,
-            original_value
+            "COT(ACOT({original_value})) failed: got {cot_acot_result}, expected {original_value}"
         );
     }
 
     // Verify COTH/ACOTH roundtrips
     for i in 1..=acoth_test_values.len() {
-        let coth_acoth_result = model._get_text(&format!("C{}", i)).parse::<f64>().unwrap();
-        let original_value = model._get_text(&format!("CC{}", i)).parse::<f64>().unwrap();
+        let coth_acoth_result = model._get_text(&format!("C{i}")).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("CC{i}")).parse::<f64>().unwrap();
         assert!(
             (coth_acoth_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
-            "COTH(ACOTH({})) failed: got {}, expected {}",
-            original_value,
-            coth_acoth_result,
-            original_value
+            "COTH(ACOTH({original_value})) failed: got {coth_acoth_result}, expected {original_value}"
         );
     }
 
     for i in 1..=coth_test_values.len() {
-        let acoth_coth_result = model._get_text(&format!("D{}", i)).parse::<f64>().unwrap();
-        let original_value = model._get_text(&format!("DD{}", i)).parse::<f64>().unwrap();
+        let acoth_coth_result = model._get_text(&format!("D{i}")).parse::<f64>().unwrap();
+        let original_value = model._get_text(&format!("DD{i}")).parse::<f64>().unwrap();
         assert!(
             (acoth_coth_result - original_value).abs() < ROUNDTRIP_TOLERANCE,
-            "ACOTH(COTH({})) failed: got {}, expected {}",
-            original_value,
-            acoth_coth_result,
-            original_value
+            "ACOTH(COTH({original_value})) failed: got {acoth_coth_result}, expected {original_value}"
         );
     }
 }
