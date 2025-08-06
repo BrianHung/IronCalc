@@ -40,13 +40,15 @@ impl UserModel {
     Ok(UserModel { model })
   }
 
-  pub fn undo(&mut self) -> Result<()> {
-    self.model.undo().map_err(to_js_error)
-  }
+      #[napi]
+    pub fn undo(&mut self) -> Result<()> {
+        self.model.undo().map_err(to_js_error)
+    }
 
-  pub fn redo(&mut self) -> Result<()> {
-    self.model.redo().map_err(to_js_error)
-  }
+    #[napi]
+    pub fn redo(&mut self) -> Result<()> {
+        self.model.redo().map_err(to_js_error)
+    }
 
   #[napi(js_name = "canUndo")]
   pub fn can_undo(&self) -> bool {

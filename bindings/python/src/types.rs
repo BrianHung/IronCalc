@@ -3,6 +3,8 @@ use xlsx::base::types::{
     Alignment, Border, BorderItem, BorderStyle, CellType, Fill, Font, FontScheme,
     HorizontalAlignment, Style, VerticalAlignment,
 };
+use xlsx::base::expressions::types::Area;
+
 
 #[derive(Clone)]
 #[pyclass]
@@ -149,6 +151,35 @@ pub struct PyFont {
     #[pyo3(get)]
     pub scheme: PyFontScheme,
 }
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyDefinedName {
+    #[pyo3(get)]
+    pub name: String,
+    #[pyo3(get)]
+    pub scope: Option<u32>,
+    #[pyo3(get)]
+    pub formula: String,
+}
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyArea {
+    #[pyo3(get)]
+    pub sheet: u32,
+    #[pyo3(get)]
+    pub row: i32,
+    #[pyo3(get)]
+    pub column: i32,
+    #[pyo3(get)]
+    pub width: i32,
+    #[pyo3(get)]
+    pub height: i32,
+}
+
+// Simplified approach - just use the BorderArea directly via JSON serialization
+// This matches the approach used in WASM and NodeJS bindings
 
 #[pyclass]
 #[derive(Clone)]
@@ -465,3 +496,31 @@ impl From<CellType> for PyCellType {
         }
     }
 }
+
+// Conversions for new types
+
+impl From<PyArea> for Area {
+    fn from(py_area: PyArea) -> Self {
+        Area {
+            sheet: py_area.sheet,
+            row: py_area.row,
+            column: py_area.column,
+            width: py_area.width,
+            height: py_area.height,
+        }
+    }
+}
+
+impl From<Area> for PyArea {
+    fn from(area: Area) -> Self {
+        PyArea {
+            sheet: area.sheet,
+            row: area.row,
+            column: area.column,
+            width: area.width,
+            height: area.height,
+        }
+    }
+}
+
+// Border conversion functions removed - will use JSON serialization approach like other bindings

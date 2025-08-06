@@ -1,0 +1,64 @@
+# API Parity Enforcement Makefile
+# Include this in your main Makefile or use directly
+
+.PHONY: check-api-parity install-hooks check-compilation parity-matrix
+
+# Check API parity across all bindings
+check-api-parity:
+	@echo "🎯 Checking API parity across all bindings..."
+	@python3 scripts/enforce_api_parity.py .
+
+# Check that all bindings compile
+check-compilation:
+	@echo "🔧 Checking compilation of all bindings..."
+	@cargo check --manifest-path bindings/python/Cargo.toml --quiet
+	@cargo check --manifest-path bindings/nodejs/Cargo.toml --quiet  
+	@cargo check --manifest-path bindings/wasm/Cargo.toml --quiet
+	@echo "✅ All bindings compile successfully"
+
+# Generate just the parity matrix
+parity-matrix:
+	@echo "📊 Generating API parity matrix..."
+	@python3 scripts/enforce_api_parity.py . 2>/dev/null || true
+	@echo "📋 Matrix saved to API_PARITY_MATRIX.md"
+
+# Install git hooks for automatic checking
+install-hooks:
+	@echo "🔧 Installing git hooks..."
+	@chmod +x scripts/pre-commit-api-parity.sh
+	@ln -sf ../../scripts/pre-commit-api-parity.sh .git/hooks/pre-commit
+	@echo "✅ Pre-commit hook installed"
+
+# Full parity check (compilation + API parity)
+check-full: check-compilation check-api-parity
+	@echo "🎉 Full parity check completed!"
+
+# CI target - fail on any issues
+ci-check: check-full
+	@echo "🚀 CI parity check passed!"
+
+# Development target - just warnings
+dev-check:
+	@echo "🔍 Development parity check..."
+	@python3 scripts/enforce_api_parity.py . --warning-mode
+
+# Clean generated files
+clean-parity:
+	@rm -f API_PARITY_MATRIX.md
+	@echo "🧹 Cleaned parity artifacts"
+
+help-parity:
+	@echo "📚 API Parity Enforcement Commands:"
+	@echo ""
+	@echo "  check-api-parity  - Run full API parity enforcement"
+	@echo "  check-compilation - Check that all bindings compile"
+	@echo "  parity-matrix     - Generate API parity matrix only"
+	@echo "  install-hooks     - Install git pre-commit hooks"
+	@echo "  check-full        - Run compilation + parity checks"
+	@echo "  ci-check          - CI-ready check (fail on issues)"
+	@echo "  dev-check         - Development check (warnings only)"
+	@echo "  clean-parity      - Clean generated files"
+	@echo ""
+	@echo "Usage examples:"
+	@echo "  make -f Makefile.api-parity check-full"
+	@echo "  make -f Makefile.api-parity install-hooks"

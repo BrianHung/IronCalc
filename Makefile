@@ -10,7 +10,7 @@ format:
 	cargo fmt
 
 .PHONY: tests
-tests: lint
+tests: lint check-api-parity
 	cargo test
 	make remove-artifacts
 	# Regretabbly we need to build the wasm twice, once for the nodejs tests
@@ -44,3 +44,13 @@ coverage:
 .PHONY: docs
 docs:
 	cargo doc --no-deps
+
+# API Parity Enforcement
+include Makefile.api-parity
+
+.PHONY: install-api-hooks
+install-api-hooks:
+	@echo "🔧 Installing API parity git hooks..."
+	@chmod +x scripts/pre-commit-api-parity.sh
+	@ln -sf ../../scripts/pre-commit-api-parity.sh .git/hooks/pre-commit
+	@echo "✅ API parity pre-commit hook installed"

@@ -1,0 +1,84 @@
+name: API Parity Enforcement
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'bindings/**/*.rs'
+      - 'bindings/**/*.ts'
+      - 'base/src/**/*.rs'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'bindings/**/*.rs'
+      - 'bindings/**/*.ts'
+      - 'base/src/**/*.rs'
+
+jobs:
+  api-parity-check:
+    runs-on: ubuntu-latest
+    name: Check API Parity Across Bindings
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Check compilation of all bindings
+      run: |
+        echo "🔍 Checking compilation of all bindings..."
+        cargo check --manifest-path bindings/python/Cargo.toml
+        cargo check --manifest-path bindings/nodejs/Cargo.toml  
+        cargo check --manifest-path bindings/wasm/Cargo.toml
+        echo "✅ All bindings compile successfully"
+        
+    - name: Run API Parity Enforcement
+      run: |
+        cd scripts
+        python3 enforce_api_parity.py ..
+        
+    - name: Upload API Parity Matrix
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: api-parity-matrix
+        path: API_PARITY_MATRIX.md
+        
+    - name: Comment PR with parity status
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = 'API_PARITY_MATRIX.md';
+          
+          if (fs.existsSync(path)) {
+            const matrix = fs.readFileSync(path, 'utf8');
+            const comment = `## 📊 API Parity Status\n\n${matrix}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }

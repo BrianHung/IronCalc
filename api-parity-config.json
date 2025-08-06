@@ -1,0 +1,100 @@
+{
+  "version": "1.0",
+  "description": "API Parity Configuration for IronCalc Bindings",
+  "rules": {
+    "core_functions": {
+      "description": "Functions that MUST exist in all bindings",
+      "severity": "error",
+      "model_functions": [
+        "set_user_input",
+        "get_cell_content", 
+        "get_cell_type",
+        "get_formatted_cell_value",
+        "evaluate"
+      ],
+      "usermodel_functions": [
+        "undo",
+        "redo", 
+        "can_undo",
+        "can_redo",
+        "new_sheet",
+        "delete_sheet",
+        "rename_sheet",
+        "insert_rows",
+        "insert_columns", 
+        "delete_rows",
+        "delete_columns",
+        "set_user_input",
+        "get_cell_content"
+      ]
+    },
+    "utility_functions": {
+      "description": "Utility functions that should exist (platform naming allowed)",
+      "severity": "warning",
+      "functions": [
+        {
+          "concept": "get_tokens",
+          "variants": ["get_tokens"]
+        },
+        {
+          "concept": "column_name_conversion", 
+          "variants": ["column_name_from_number", "column_name_from_number_js"]
+        }
+      ]
+    },
+    "defined_names": {
+      "description": "Defined names management functions",
+      "severity": "error",
+      "functions": [
+        "new_defined_name",
+        "update_defined_name", 
+        "delete_defined_name",
+        "get_defined_name_list"
+      ],
+      "naming_variations": {
+        "delete_defined_name": ["delete_defined_name", "delete_definedname"]
+      }
+    },
+    "platform_specific": {
+      "description": "Platform-specific functions that are allowed to differ",
+      "severity": "info",
+      "nodejs_specific": [
+        "from_xlsx",
+        "from_icalc", 
+        "from_bytes",
+        "new"
+      ],
+      "python_specific": [
+        "create",
+        "create_user_model",
+        "load_from_xlsx",
+        "load_from_icalc",
+        "load_from_bytes",
+        "test_panic"
+      ],
+      "wasm_specific": [
+        "new",
+        "from_bytes"
+      ]
+    }
+  },
+  "bindings": {
+    "nodejs": {
+      "model_file": "bindings/nodejs/src/model.rs",
+      "usermodel_file": "bindings/nodejs/src/user_model.rs", 
+      "lib_file": "bindings/nodejs/src/lib.rs"
+    },
+    "wasm": {
+      "main_file": "bindings/wasm/src/lib.rs"
+    },
+    "python": {
+      "main_file": "bindings/python/src/lib.rs"
+    }
+  },
+  "reporting": {
+    "generate_matrix": true,
+    "matrix_file": "API_PARITY_MATRIX.md",
+    "fail_on_error": true,
+    "warn_on_missing_utility": true
+  }
+}
