@@ -33,6 +33,18 @@ Programmed in Rust, you will be able to use it from a variety of programming lan
 
 We will build different _skins_: in the terminal, as a desktop application or use it in you own web application.
 
+## Repository structure
+
+The project is split into a handful of crates and supporting packages so that different use cases can reuse the core engine:
+
+- `base/` – the main Rust engine that evaluates spreadsheet models.
+- `xlsx/` – readers and writers for the XLSX file format, plus examples.
+- `bindings/` – language bindings that expose the engine outside of Rust.
+- `webapp/` – a web client for experimenting with the engine in the browser.
+- `assets/` – shared assets such as icons and localization files.
+
+Supporting configuration, documentation and automation live in the top-level files (`Cargo.toml`, `docs/`, `generate_locale/`, etc.). Consult the individual directories for deeper implementation details.
+
 # Building
 
 ```bash
