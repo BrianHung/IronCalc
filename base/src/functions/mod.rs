@@ -52,6 +52,7 @@ pub enum Function {
     Choose,
     Column,
     Columns,
+    Combina,
     Cos,
     Cosh,
     Log,
@@ -253,7 +254,7 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn into_iter() -> IntoIter<Function, 198> {
+    pub fn into_iter() -> IntoIter<Function, 199> {
         [
             Function::And,
             Function::False,
@@ -301,6 +302,7 @@ impl Function {
             Function::Choose,
             Function::Column,
             Function::Columns,
+            Function::Combina,
             Function::Index,
             Function::Indirect,
             Function::Hlookup,
@@ -560,6 +562,7 @@ impl Function {
             "CHOOSE" => Some(Function::Choose),
             "COLUMN" => Some(Function::Column),
             "COLUMNS" => Some(Function::Columns),
+            "COMBINA" => Some(Function::Combina),
             "INDEX" => Some(Function::Index),
             "INDIRECT" => Some(Function::Indirect),
             "HLOOKUP" => Some(Function::Hlookup),
@@ -779,6 +782,7 @@ impl fmt::Display for Function {
             Function::Choose => write!(f, "CHOOSE"),
             Function::Column => write!(f, "COLUMN"),
             Function::Columns => write!(f, "COLUMNS"),
+            Function::Combina => write!(f, "COMBINA"),
             Function::Index => write!(f, "INDEX"),
             Function::Indirect => write!(f, "INDIRECT"),
             Function::Hlookup => write!(f, "HLOOKUP"),
@@ -1004,6 +1008,7 @@ impl Model {
             Function::Max => self.fn_max(args, cell),
             Function::Min => self.fn_min(args, cell),
             Function::Product => self.fn_product(args, cell),
+            Function::Combina => self.fn_combina(args, cell),
             Function::Rand => self.fn_rand(args, cell),
             Function::Randbetween => self.fn_randbetween(args, cell),
             Function::Round => self.fn_round(args, cell),

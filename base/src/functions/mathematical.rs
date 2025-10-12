@@ -281,6 +281,103 @@ impl Model {
         CalcResult::Number(result)
     }
 
+    pub(crate) fn fn_combina(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 2 {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let number = match self.get_number(&args[0], cell) {
+            Ok(f) => f.trunc(),
+            Err(e) => return e,
+        };
+        let number_chosen = match self.get_number(&args[1], cell) {
+            Ok(f) => f.trunc(),
+            Err(e) => return e,
+        };
+
+        if !number.is_finite() || !number_chosen.is_finite() {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Arguments must be finite numbers".to_string(),
+            );
+        }
+
+        if number < 0.0 || number_chosen < 0.0 {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Arguments must be greater than or equal to zero".to_string(),
+            );
+        }
+
+        if number == 0.0 {
+            return if number_chosen == 0.0 {
+                CalcResult::Number(1.0)
+            } else {
+                CalcResult::Number(0.0)
+            };
+        }
+
+        if number > u64::MAX as f64 || number_chosen > u64::MAX as f64 {
+            return CalcResult::new_error(Error::NUM, cell, "Arguments are too large".to_string());
+        }
+
+        let n = number as u64;
+        let k = number_chosen as u64;
+
+        if k == 0 {
+            return CalcResult::Number(1.0);
+        }
+
+        let total = match n.checked_add(k) {
+            Some(sum) => match sum.checked_sub(1) {
+                Some(value) => value,
+                None => {
+                    return CalcResult::new_error(
+                        Error::NUM,
+                        cell,
+                        "Invalid combination".to_string(),
+                    )
+                }
+            },
+            None => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid combination".to_string())
+            }
+        };
+
+        let remaining = match total.checked_sub(k) {
+            Some(value) => value,
+            None => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid combination".to_string())
+            }
+        };
+        let r = k.min(remaining);
+
+        let start = match total.checked_sub(r) {
+            Some(value) => value,
+            None => {
+                return CalcResult::new_error(Error::NUM, cell, "Invalid combination".to_string())
+            }
+        };
+
+        let mut result = 1.0_f64;
+        for i in 0..r {
+            let numerator = (start + i + 1) as f64;
+            let denominator = (i + 1) as f64;
+            result *= numerator / denominator;
+            if !result.is_finite() {
+                return CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "COMBINA result is out of range".to_string(),
+                );
+            }
+        }
+
+        CalcResult::Number(result)
+    }
+
     /// SUMIF(criteria_range, criteria, [sum_range])
     /// if sum_rage is missing then criteria_range will be used
     pub(crate) fn fn_sumif(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
