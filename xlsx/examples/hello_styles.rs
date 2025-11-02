@@ -12,6 +12,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     model.set_cell_style(sheet, row, column, &style)?;
 
     // saves to disk
-    save_to_xlsx(&model, "hello-styles.xlsx")?;
+    let output_path = "hello-styles.xlsx";
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_file(output_path)?;
+    }
+    save_to_xlsx(&model, output_path)?;
     Ok(())
 }

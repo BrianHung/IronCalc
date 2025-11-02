@@ -267,29 +267,36 @@ enum ParseReferenceError {
 // NB: Maybe use regexes for this?
 fn parse_reference(s: &str) -> Result<CellReferenceRC, ParseReferenceError> {
     let bytes = s.as_bytes();
-    let mut sheet_name = "".to_string();
-    let mut column = "".to_string();
-    let mut row = "".to_string();
+    let mut sheet_name = String::new();
+    let mut column = String::new();
+    let mut row = String::new();
     let mut state = "sheet"; // "sheet", "col", "row"
     for &byte in bytes {
         match state {
             "sheet" => {
                 if byte == b'!' {
-                    state = "col"
+                    state = "col";
                 } else {
                     sheet_name.push(byte as char);
                 }
             }
             "col" => {
+                if byte == b'$' {
+                    continue;
+                }
                 if byte.is_ascii_alphabetic() {
-                    column.push(byte as char);
+                    column.push((byte as char).to_ascii_uppercase());
                 } else {
                     state = "row";
-                    row.push(byte as char);
+                    if byte != b'$' {
+                        row.push(byte as char);
+                    }
                 }
             }
             _ => {
-                row.push(byte as char);
+                if byte != b'$' {
+                    row.push(byte as char);
+                }
             }
         }
     }
@@ -298,6 +305,31 @@ fn parse_reference(s: &str) -> Result<CellReferenceRC, ParseReferenceError> {
         row: row.parse::<i32>().map_err(ParseReferenceError::RowError)?,
         column: column_to_number(&column).map_err(ParseReferenceError::ColumnError)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_reference_supports_absolute_references() {
+        let reference = parse_reference("Sheet 1!$B$12").unwrap();
+        assert_eq!(reference.sheet, "Sheet 1");
+        assert_eq!(reference.column, 2);
+        assert_eq!(reference.row, 12);
+    }
+
+    #[test]
+    fn parse_reference_supports_mixed_absolute_relative() {
+        let reference = parse_reference("Data!$C4").unwrap();
+        assert_eq!(reference.sheet, "Data");
+        assert_eq!(reference.column, 3);
+        assert_eq!(reference.row, 4);
+        let reference = parse_reference("Pivot!D$7").unwrap();
+        assert_eq!(reference.sheet, "Pivot");
+        assert_eq!(reference.column, 4);
+        assert_eq!(reference.row, 7);
+    }
 }
 
 fn from_a1_to_rc(

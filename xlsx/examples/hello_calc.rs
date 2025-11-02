@@ -23,6 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     model.evaluate();
 
     // saves to disk
-    save_to_xlsx(&model, "hello-calc.xlsx")?;
+    let output_path = "hello-calc.xlsx";
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_file(output_path)?;
+    }
+    save_to_xlsx(&model, output_path)?;
     Ok(())
 }

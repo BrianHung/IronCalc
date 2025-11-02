@@ -14,6 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     worksheet.set_row_height(row, row_height)?;
 
     // saves to disk
-    save_to_xlsx(&model, "widths-and-heights.xlsx")?;
+    let output_path = "widths-and-heights.xlsx";
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_file(output_path)?;
+    }
+    save_to_xlsx(&model, output_path)?;
     Ok(())
 }
