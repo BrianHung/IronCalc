@@ -33,6 +33,10 @@ Programmed in Rust, you will be able to use it from a variety of programming lan
 
 We will build different _skins_: in the terminal, as a desktop application or use it in you own web application.
 
+> Iron sheets awake
+> Rusted cells hum counting sums
+> Tables breathe in sync
+
 # Building
 
 ```bash
