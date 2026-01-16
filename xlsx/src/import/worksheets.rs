@@ -259,23 +259,63 @@ enum ParseReferenceError {
     RowError(ParseIntError),
     #[error("ColumnError: {0}")]
     ColumnError(String),
+    #[error("InvalidSheetName: {0}")]
+    InvalidSheetName(String),
 }
 
-// This parses Sheet1!AS23 into sheet, column and row
-// FIXME: This is buggy. Does not check that is a valid sheet name
-// There is a similar named function in ironcalc_base. We probably should fix both at the same time.
-// NB: Maybe use regexes for this?
+/// Validates that a sheet name follows Excel's rules:
+/// - Cannot be empty
+/// - Must be 31 characters or fewer
+/// - Cannot contain: \ / * ? : [ ]
+fn is_valid_sheet_name(name: &str) -> bool {
+    let invalid = ['\\', '/', '*', '?', ':', '[', ']'];
+    !name.is_empty() && name.chars().count() <= 31 && !name.contains(&invalid[..])
+}
+
+/// Removes quotes from a sheet name if present and unescapes single quotes.
+/// Excel sheet names are quoted with single quotes when they contain special characters or spaces.
+/// Within quotes, single quotes are escaped by doubling them ('').
+fn unquote_sheet_name(name: &str) -> String {
+    if name.starts_with('\'') && name.ends_with('\'') && name.len() >= 2 {
+        // Remove surrounding quotes and unescape doubled single quotes
+        name[1..name.len() - 1].replace("''", "'")
+    } else {
+        name.to_string()
+    }
+}
+
+// This parses Sheet1!AS23 or 'My Sheet'!AS23 into sheet, column and row
 fn parse_reference(s: &str) -> Result<CellReferenceRC, ParseReferenceError> {
     let bytes = s.as_bytes();
     let mut sheet_name = "".to_string();
     let mut column = "".to_string();
     let mut row = "".to_string();
     let mut state = "sheet"; // "sheet", "col", "row"
-    for &byte in bytes {
+    let mut in_quotes = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
         match state {
             "sheet" => {
-                if byte == b'!' {
-                    state = "col"
+                if byte == b'\'' && sheet_name.is_empty() {
+                    // Starting a quoted sheet name
+                    in_quotes = true;
+                    sheet_name.push(byte as char);
+                } else if byte == b'!' && !in_quotes {
+                    state = "col";
+                } else if byte == b'\'' && in_quotes {
+                    // Check if this is an escaped quote ('') or end quote
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        // Escaped quote: add both quotes and skip next char
+                        sheet_name.push(byte as char);
+                        sheet_name.push(byte as char);
+                        i += 1; // Skip the next quote
+                    } else {
+                        // End quote
+                        sheet_name.push(byte as char);
+                        in_quotes = false;
+                    }
                 } else {
                     sheet_name.push(byte as char);
                 }
@@ -292,9 +332,20 @@ fn parse_reference(s: &str) -> Result<CellReferenceRC, ParseReferenceError> {
                 row.push(byte as char);
             }
         }
+        i += 1;
     }
+
+    // Unquote and validate the sheet name
+    let unquoted_sheet_name = unquote_sheet_name(&sheet_name);
+    if !is_valid_sheet_name(&unquoted_sheet_name) {
+        return Err(ParseReferenceError::InvalidSheetName(format!(
+            "Invalid sheet name: '{}'",
+            unquoted_sheet_name
+        )));
+    }
+
     Ok(CellReferenceRC {
-        sheet: sheet_name,
+        sheet: unquoted_sheet_name,
         row: row.parse::<i32>().map_err(ParseReferenceError::RowError)?,
         column: column_to_number(&column).map_err(ParseReferenceError::ColumnError)?,
     })
@@ -1103,4 +1154,113 @@ pub(super) fn load_sheets<R: Read + std::io::Seek>(
         }
     }
     Ok((sheets, selected_sheet))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_reference_valid_simple() {
+        let result = parse_reference("Sheet1!A1");
+        assert!(result.is_ok());
+        let cell_ref = result.unwrap();
+        assert_eq!(cell_ref.sheet, "Sheet1");
+        assert_eq!(cell_ref.row, 1);
+        assert_eq!(cell_ref.column, 1);
+    }
+
+    #[test]
+    fn test_parse_reference_valid_quoted() {
+        let result = parse_reference("'My Sheet'!B2");
+        assert!(result.is_ok());
+        let cell_ref = result.unwrap();
+        assert_eq!(cell_ref.sheet, "My Sheet");
+        assert_eq!(cell_ref.row, 2);
+        assert_eq!(cell_ref.column, 2);
+    }
+
+    #[test]
+    fn test_parse_reference_quoted_with_escaped_quote() {
+        let result = parse_reference("'Sheet''s Name'!C3");
+        assert!(result.is_ok());
+        let cell_ref = result.unwrap();
+        assert_eq!(cell_ref.sheet, "Sheet's Name");
+        assert_eq!(cell_ref.row, 3);
+        assert_eq!(cell_ref.column, 3);
+    }
+
+    #[test]
+    fn test_parse_reference_invalid_empty_sheet_name() {
+        let result = parse_reference("!A1");
+        assert!(result.is_err());
+        match result {
+            Err(ParseReferenceError::InvalidSheetName(_)) => (),
+            _ => panic!("Expected InvalidSheetName error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_reference_invalid_too_long() {
+        let long_name = "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDE"; // 32 characters
+        let reference = format!("{}!A1", long_name);
+        let result = parse_reference(&reference);
+        assert!(result.is_err());
+        match result {
+            Err(ParseReferenceError::InvalidSheetName(_)) => (),
+            _ => panic!("Expected InvalidSheetName error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_reference_invalid_forbidden_characters() {
+        let invalid_chars = vec!['\\', '/', '*', '?', ':', '[', ']'];
+        for ch in invalid_chars {
+            let reference = format!("Sheet{}Name!A1", ch);
+            let result = parse_reference(&reference);
+            assert!(result.is_err(), "Should reject sheet name with '{}'", ch);
+            match result {
+                Err(ParseReferenceError::InvalidSheetName(_)) => (),
+                _ => panic!("Expected InvalidSheetName error for '{}'", ch),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_reference_valid_max_length() {
+        let max_name = "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCD"; // 31 characters
+        let reference = format!("{}!A1", max_name);
+        let result = parse_reference(&reference);
+        assert!(result.is_ok());
+        let cell_ref = result.unwrap();
+        assert_eq!(cell_ref.sheet, max_name);
+    }
+
+    #[test]
+    fn test_is_valid_sheet_name() {
+        assert!(is_valid_sheet_name("Sheet1"));
+        assert!(is_valid_sheet_name("My Sheet"));
+        assert!(is_valid_sheet_name(" "));
+        assert!(is_valid_sheet_name("Zażółć gęślą jaźń"));
+        assert!(is_valid_sheet_name("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCD")); // 31 chars
+
+        assert!(!is_valid_sheet_name(""));
+        assert!(!is_valid_sheet_name("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDE")); // 32 chars
+        assert!(!is_valid_sheet_name("Sheet\\Name"));
+        assert!(!is_valid_sheet_name("Sheet/Name"));
+        assert!(!is_valid_sheet_name("Sheet*Name"));
+        assert!(!is_valid_sheet_name("Sheet?Name"));
+        assert!(!is_valid_sheet_name("Sheet:Name"));
+        assert!(!is_valid_sheet_name("Sheet[Name"));
+        assert!(!is_valid_sheet_name("Sheet]Name"));
+    }
+
+    #[test]
+    fn test_unquote_sheet_name() {
+        assert_eq!(unquote_sheet_name("Sheet1"), "Sheet1");
+        assert_eq!(unquote_sheet_name("'My Sheet'"), "My Sheet");
+        assert_eq!(unquote_sheet_name("'Sheet''s Name'"), "Sheet's Name");
+        assert_eq!(unquote_sheet_name("''"), "");
+        assert_eq!(unquote_sheet_name("'"), "'");
+    }
 }
