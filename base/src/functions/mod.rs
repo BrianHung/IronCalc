@@ -432,6 +432,14 @@ macro_rules! impl_function_lookup {
         impl Functions {
             pub fn lookup(&self, name: &str) -> Option<Function> {
                 let key = name.to_uppercase();
+                // New functions without localization support
+                match key.as_str() {
+                    "ADDRESS" => return Some(Function::Address),
+                    "XMATCH" => return Some(Function::Xmatch),
+                    "PROPER" => return Some(Function::Proper),
+                    "REPLACE" => return Some(Function::Replace),
+                    _ => {}
+                }
                 $(
                     if self.$field == key {
                         return Some(Function::$variant);

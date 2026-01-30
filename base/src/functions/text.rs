@@ -1,5 +1,6 @@
 use crate::{
     calc_result::CalcResult,
+    constants::{LAST_COLUMN, LAST_ROW},
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::format::{format_number, parse_formatted_number},
     model::Model,
@@ -8,7 +9,7 @@ use crate::{
 
 use super::{
     text_util::{substitute, text_after, text_before, Case},
-    util::{adjust_range_to_worksheet_bounds, from_wildcard_to_regex},
+    util::from_wildcard_to_regex,
 };
 
 /// Finds the first instance of 'search_for' in text starting at char index start
@@ -914,13 +915,36 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    let (bounds_left, bounds_right) =
-                        match adjust_range_to_worksheet_bounds(self, left, right, cell) {
-                            Ok(bounds) => bounds,
-                            Err(error) => return error,
+                    let row1 = left.row;
+                    let mut row2 = right.row;
+                    let column1 = left.column;
+                    let mut column2 = right.column;
+                    if row1 == 1 && row2 == LAST_ROW {
+                        row2 = match self.workbook.worksheet(left.sheet) {
+                            Ok(s) => s.dimension().max_row,
+                            Err(_) => {
+                                return CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    format!("Invalid worksheet index: '{}'", left.sheet),
+                                );
+                            }
                         };
-                    for row in bounds_left.row..bounds_right.row + 1 {
-                        for column in bounds_left.column..(bounds_right.column + 1) {
+                    }
+                    if column1 == 1 && column2 == LAST_COLUMN {
+                        column2 = match self.workbook.worksheet(left.sheet) {
+                            Ok(s) => s.dimension().max_column,
+                            Err(_) => {
+                                return CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    format!("Invalid worksheet index: '{}'", left.sheet),
+                                );
+                            }
+                        };
+                    }
+                    for row in row1..row2 + 1 {
+                        for column in column1..(column2 + 1) {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
