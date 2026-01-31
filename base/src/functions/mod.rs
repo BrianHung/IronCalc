@@ -428,6 +428,11 @@ macro_rules! impl_function_lookup {
         impl Functions {
             pub fn lookup(&self, name: &str) -> Option<Function> {
                 let key = name.to_uppercase();
+                // New functions without localization support
+                match key.as_str() {
+                    "SUMPRODUCT" => return Some(Function::Sumproduct),
+                    _ => {}
+                }
                 $(
                     if self.$field == key {
                         return Some(Function::$variant);
