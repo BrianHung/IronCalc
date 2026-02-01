@@ -829,7 +829,6 @@ impl<'a> Model<'a> {
                     let r = a.len();
                     let c = a.first().map(|row| row.len()).unwrap_or(0);
 
-                    // Check for empty arrays
                     if r == 0 || c == 0 {
                         return CalcResult::new_error(
                             Error::VALUE,
@@ -864,7 +863,7 @@ impl<'a> Model<'a> {
                     if !have_matrix {
                         rows = r;
                         cols = c;
-                        have_matrix = true; // Any array establishes matrix mode
+                        have_matrix = true;
                     } else if r != rows || c != cols {
                         return CalcResult::new_error(
                             Error::VALUE,
@@ -883,15 +882,7 @@ impl<'a> Model<'a> {
             for p in processed {
                 match p {
                     Arg::Scalar(n) => prod *= n,
-                    Arg::Array(_) => {
-                        // This should never happen since have_matrix would be true
-                        // if we have any arrays, but add safety check
-                        return CalcResult::new_error(
-                            Error::VALUE,
-                            cell,
-                            "Internal error: unexpected array in scalar mode".to_string(),
-                        );
-                    }
+                    Arg::Array(_) => unreachable!(),
                 }
             }
             return CalcResult::Number(prod);
@@ -905,7 +896,6 @@ impl<'a> Model<'a> {
                     match p {
                         Arg::Scalar(n) => prod *= *n,
                         Arg::Array(a) => {
-                            // Additional bounds check for safety
                             if i >= a.len() || j >= a[i].len() {
                                 return CalcResult::new_error(
                                     Error::VALUE,
