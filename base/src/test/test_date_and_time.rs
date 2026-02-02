@@ -598,3 +598,213 @@ fn test_isoweeknum_function() {
     assert_eq!(model._get_text("A6"), *"#ERROR!");
     assert_eq!(model._get_text("A7"), *"#NUM!");
 }
+
+/// Test for GitHub issue #627 - WORKDAY with holidays
+/// Note: The issue description was incomplete - it showed only one holiday
+/// but the actual xlsx formula references ranges with multiple holidays
+#[test]
+fn test_issue_627_workday_with_holidays() {
+    let mut model = new_empty_model();
+
+    // H39/K38 from xlsx: WORKDAY(DATE(2025,1,10),1,K39:K40)
+    // K39:K40 = Jan 13 AND Jan 14 (TWO holidays!)
+    model._set("K39", "=DATE(2025,1,13)"); // 45670 - Monday
+    model._set("K40", "=DATE(2025,1,14)"); // 45671 - Tuesday
+    model._set("A1", "=WORKDAY(DATE(2025,1,10),1,K39:K40)");
+
+    // H32 from xlsx: WORKDAY(DATE(2025,1,10),10,K32:K34)
+    // K32:K34 = Jan 14, 15, 16 (THREE holidays!)
+    model._set("K32", "=DATE(2025,1,14)"); // 45671
+    model._set("K33", "=DATE(2025,1,15)"); // 45672
+    model._set("K34", "=DATE(2025,1,16)"); // 45673
+    model._set("A2", "=WORKDAY(DATE(2025,1,10),10,K32:K34)");
+
+    model.evaluate();
+
+    // A1: Start=Jan10(Fri), 1 day, holidays=Jan13+Jan14
+    // Jan 11-12 weekend, Jan 13 holiday, Jan 14 holiday, Jan 15 = first workday
+    // Expected: 45672 (Jan 15)
+    assert_eq!(
+        model._get_text("A1"),
+        "45672",
+        "H39: Should return Jan 15 (45672)"
+    );
+
+    // A2: Start=Jan10(Fri), 10 days, holidays=Jan14,15,16
+    // Expected: 45686 (Jan 29) per xlsx
+    assert_eq!(
+        model._get_text("A2"),
+        "45686",
+        "H32: Should return Jan 29 (45686)"
+    );
+}
+
+#[test]
+fn test_issue_628_error_propagation_in_holidays() {
+    // Issue #628: When holidays contain errors, Excel propagates the first error
+    let mut model = new_empty_model();
+
+    // Set up holidays with errors
+    model._set("K1", "=DATE(2025,1,14)"); // Valid date
+    model._set("K2", "=1/0"); // #DIV/0!
+    model._set("K3", "=NA()"); // #N/A
+
+    // WORKDAY with holiday range containing errors
+    model._set("A1", "=WORKDAY(DATE(2025,1,10),3,K1:K3)");
+
+    model.evaluate();
+
+    // Excel returns #DIV/0! (the first error in the range)
+    // IronCalc should also return #DIV/0!
+    assert_eq!(
+        model._get_text("A1"),
+        "#DIV/0!",
+        "Should propagate DIV/0 error from holidays"
+    );
+}
+
+/// Comprehensive tests for issues #624, #625, #626, #628, #629
+#[test]
+fn test_issue_624_zero_handling() {
+    let mut model = new_empty_model();
+
+    // C15: WORKDAY(0, 0) -> Excel: 0
+    model._set("A1", "=WORKDAY(0, 0)");
+    // D15: WORKDAY.INTL(0, 0) -> Excel: 0
+    model._set("A2", "=WORKDAY.INTL(0, 0)");
+    // C17: WORKDAY(0, 10) -> Excel: 13 (Jan 13, 1900)
+    model._set("A3", "=WORKDAY(0, 10)");
+    // D17: WORKDAY.INTL(0, 10) -> Excel: 13
+    model._set("A4", "=WORKDAY.INTL(0, 10)");
+    // C34: WORKDAY(0.00625, 1) -> Excel: 2
+    model._set("A5", "=WORKDAY(0.00625, 1)");
+    // H50: WORKDAY(date, 10, 0) - holiday 0 should be ignored
+    model._set("A6", "=WORKDAY(DATE(2025,1,10),10,0)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("A1"), "0", "WORKDAY(0,0) should return 0");
+    assert_eq!(
+        model._get_text("A2"),
+        "0",
+        "WORKDAY.INTL(0,0) should return 0"
+    );
+    assert_eq!(
+        model._get_text("A3"),
+        "13",
+        "WORKDAY(0,10) should return 13"
+    );
+    assert_eq!(
+        model._get_text("A4"),
+        "13",
+        "WORKDAY.INTL(0,10) should return 13"
+    );
+    assert_eq!(
+        model._get_text("A5"),
+        "2",
+        "WORKDAY(0.00625,1) should return 2"
+    );
+    // A6: 10 workdays from Jan 10, 2025 = Jan 24 = 45681, holiday 0 ignored
+    assert_eq!(
+        model._get_text("A6"),
+        "45681",
+        "WORKDAY with holiday 0 should ignore it"
+    );
+}
+
+#[test]
+fn test_issue_625_boolean_rejection() {
+    let mut model = new_empty_model();
+
+    // C27: WORKDAY(TRUE, FALSE) -> Excel: #VALUE!
+    model._set("A1", "=WORKDAY(TRUE, FALSE)");
+    model._set("A2", "=WORKDAY.INTL(TRUE, FALSE)");
+    // Also test individual boolean args
+    model._set("A3", "=WORKDAY(TRUE, 1)");
+    model._set("A4", "=WORKDAY(1, FALSE)");
+
+    model.evaluate();
+
+    assert_eq!(
+        model._get_text("A1"),
+        "#VALUE!",
+        "WORKDAY(TRUE,FALSE) should return #VALUE!"
+    );
+    assert_eq!(
+        model._get_text("A2"),
+        "#VALUE!",
+        "WORKDAY.INTL(TRUE,FALSE) should return #VALUE!"
+    );
+    assert_eq!(
+        model._get_text("A3"),
+        "#VALUE!",
+        "WORKDAY(TRUE,1) should return #VALUE!"
+    );
+    assert_eq!(
+        model._get_text("A4"),
+        "#VALUE!",
+        "WORKDAY(1,FALSE) should return #VALUE!"
+    );
+}
+
+#[test]
+fn test_issue_626_maximum_date() {
+    let mut model = new_empty_model();
+
+    // C8: WORKDAY(31/12/9999, 1) -> Excel: #NUM!
+    // Max date serial is 2958465
+    model._set("A1", "=WORKDAY(2958465, 1)");
+    model._set("A2", "=WORKDAY.INTL(2958465, 1)");
+    // Also test that max date itself works
+    model._set("A3", "=WORKDAY(2958465, 0)");
+
+    model.evaluate();
+
+    assert_eq!(
+        model._get_text("A1"),
+        "#NUM!",
+        "WORKDAY past max date should return #NUM!"
+    );
+    assert_eq!(
+        model._get_text("A2"),
+        "#NUM!",
+        "WORKDAY.INTL past max date should return #NUM!"
+    );
+    assert_eq!(
+        model._get_text("A3"),
+        "2958465",
+        "WORKDAY at max date with 0 days should work"
+    );
+}
+
+#[test]
+fn test_issue_629_weekend_types() {
+    let mut model = new_empty_model();
+
+    // I26: WORKDAY.INTL(DATE(2025,1,10), 10, TRUE) -> Excel: 24/01/2025
+    // TRUE = 1 = Saturday-Sunday weekend
+    model._set("A1", "=WORKDAY.INTL(DATE(2025,1,10), 10, TRUE)");
+    // I27: WORKDAY.INTL(DATE(2025,1,10), 10, 1.01) -> Excel: 24/01/2025
+    model._set("A2", "=WORKDAY.INTL(DATE(2025,1,10), 10, 1.01)");
+    // I28: WORKDAY.INTL(DATE(2025,1,10), 10, 1.9999) -> Excel: 24/01/2025
+    model._set("A3", "=WORKDAY.INTL(DATE(2025,1,10), 10, 1.9999)");
+
+    model.evaluate();
+
+    // Jan 10, 2025 + 10 workdays = Jan 24, 2025 = serial 45681
+    assert_eq!(
+        model._get_text("A1"),
+        "45681",
+        "WORKDAY.INTL with TRUE weekend should work"
+    );
+    assert_eq!(
+        model._get_text("A2"),
+        "45681",
+        "WORKDAY.INTL with 1.01 weekend should work"
+    );
+    assert_eq!(
+        model._get_text("A3"),
+        "45681",
+        "WORKDAY.INTL with 1.9999 weekend should work"
+    );
+}

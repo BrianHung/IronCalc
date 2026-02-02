@@ -688,9 +688,11 @@ impl<'a> Model<'a> {
         match self.evaluate_node_in_context(node, cell) {
             CalcResult::Number(v) => {
                 let serial = v.floor() as i64;
-                // Validate serial is in bounds
-                self.excel_date(serial, cell)?;
-                handle(serial)?;
+                // Excel ignores holiday date 0 (January 0, 1900) - skip it silently
+                if serial != 0 {
+                    self.excel_date(serial, cell)?;
+                    handle(serial)?;
+                }
             }
             CalcResult::Range { left, right } => {
                 if left.sheet != right.sheet {
@@ -709,6 +711,10 @@ impl<'a> Model<'a> {
                         }) {
                             CalcResult::Number(v) => {
                                 let serial = v.floor() as i64;
+                                // Excel ignores holiday date 0
+                                if serial == 0 {
+                                    continue;
+                                }
                                 self.excel_date(serial, cell)?;
                                 handle(serial)?;
                             }
@@ -733,6 +739,10 @@ impl<'a> Model<'a> {
                         match value {
                             ArrayNode::Number(num) => {
                                 let serial = num.floor() as i64;
+                                // Excel ignores holiday date 0
+                                if serial == 0 {
+                                    continue;
+                                }
                                 self.excel_date(serial, cell)?;
                                 handle(serial)?;
                             }
@@ -755,6 +765,9 @@ impl<'a> Model<'a> {
                 }
             }
             e @ CalcResult::Error { .. } => return Err(e),
+            CalcResult::EmptyCell | CalcResult::EmptyArg => {
+                // Empty holiday argument is valid - no holidays
+            }
             _ => {
                 return Err(CalcResult::new_error(
                     Error::VALUE,
@@ -849,6 +862,24 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// Converts an Excel serial number to a NaiveDate, with special handling for serial 0.
+    /// Excel treats serial 0 as a valid date ("January 0, 1900" which is Dec 30, 1899).
+    /// This is needed for WORKDAY/WORKDAY.INTL which accept serial 0 as a valid start date.
+    fn excel_date_for_workday(
+        &self,
+        serial: i64,
+        cell: CellReferenceIndex,
+    ) -> Result<chrono::NaiveDate, CalcResult> {
+        if serial == 0 {
+            // Serial 0 = 1900-01-01 + (0 - 2) = 1899-12-30 (Saturday in Excel's system)
+            #[allow(clippy::expect_used)]
+            let date =
+                chrono::NaiveDate::from_ymd_opt(1899, 12, 30).expect("1899-12-30 is a valid date");
+            return Ok(date);
+        }
+        self.excel_date(serial, cell)
+    }
+
     fn weekend_mask(
         &mut self,
         node: Option<&Node>,
@@ -866,14 +897,8 @@ impl<'a> Model<'a> {
 
         match self.evaluate_node_in_context(node_ref, cell) {
             CalcResult::Number(n) => {
+                // Excel truncates decimals (1.01 -> 1, 1.9999 -> 1)
                 let code = n.trunc() as i32;
-                if (n - n.trunc()).abs() > f64::EPSILON {
-                    return Err(CalcResult::new_error(
-                        Error::NUM,
-                        cell,
-                        "Invalid weekend".to_string(),
-                    ));
-                }
                 weekend = match WeekendPattern::try_from(code) {
                     Ok(pattern) => pattern.to_mask(),
                     Err(_) => {
@@ -907,11 +932,21 @@ impl<'a> Model<'a> {
                 }
                 Ok(weekend)
             }
-            CalcResult::Boolean(_) => Err(CalcResult::new_error(
-                Error::VALUE,
-                cell,
-                "Invalid weekend".to_string(),
-            )),
+            CalcResult::Boolean(b) => {
+                // Excel accepts booleans: TRUE=1 (Sat-Sun weekend), FALSE=0 (invalid but we handle it)
+                let code = if b { 1 } else { 0 };
+                weekend = match WeekendPattern::try_from(code) {
+                    Ok(pattern) => pattern.to_mask(),
+                    Err(_) => {
+                        return Err(CalcResult::new_error(
+                            Error::NUM,
+                            cell,
+                            "Invalid weekend".to_string(),
+                        ))
+                    }
+                };
+                Ok(weekend)
+            }
             e @ CalcResult::Error { .. } => Err(e),
             CalcResult::Range { .. } => Err(CalcResult::Error {
                 error: Error::VALUE,
@@ -1473,38 +1508,87 @@ impl<'a> Model<'a> {
         if !(2..=3).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
-        let start_serial = match self.get_number(&args[0], cell) {
+
+        // Excel rejects boolean arguments with #VALUE!
+        let start_serial = match self.get_number_no_bools(&args[0], cell) {
             Ok(c) => c.floor() as i64,
             Err(s) => return s,
         };
-        let mut date = match self.excel_date(start_serial, cell) {
-            Ok(d) => d,
-            Err(e) => return e,
-        };
-        let mut days = match self.get_number(&args[1], cell) {
+        let days = match self.get_number_no_bools(&args[1], cell) {
             Ok(f) => f as i32,
             Err(s) => return s,
         };
-        let weekend = [false, false, false, false, false, true, true];
+
+        // Standard weekend pattern: Saturday and Sunday
+        let weekend_mask = [false, false, false, false, false, true, true];
+
         let holiday_set = match self.get_holiday_set(args.get(2), cell) {
             Ok(h) => h,
             Err(e) => return e,
         };
+
+        self.calculate_workday(start_serial, days, &weekend_mask, &holiday_set, cell)
+    }
+
+    /// Core WORKDAY calculation logic shared by WORKDAY and WORKDAY.INTL.
+    ///
+    /// Starts from `start_serial` and moves forward/backward by `days` workdays,
+    /// skipping weekends (defined by `weekend_mask`) and holidays.
+    fn calculate_workday(
+        &self,
+        start_serial: i64,
+        mut days: i32,
+        weekend_mask: &[bool; 7],
+        holiday_set: &std::collections::HashSet<chrono::NaiveDate>,
+        cell: CellReferenceIndex,
+    ) -> CalcResult {
+        // Special case: days=0 returns the start date unchanged
+        if days == 0 {
+            // Validate the start date is in range (0 is valid in Excel)
+            if start_serial < 0 || start_serial > MAXIMUM_DATE_SERIAL_NUMBER as i64 {
+                return CalcResult::new_error(
+                    Error::NUM,
+                    cell,
+                    "Start date is out of range".to_string(),
+                );
+            }
+            return CalcResult::Number(start_serial as f64);
+        }
+
+        // Convert start serial to NaiveDate (handles serial 0 specially)
+        let mut date = match self.excel_date_for_workday(start_serial, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        // Move forward or backward through calendar, counting only workdays
         while days != 0 {
             if days > 0 {
                 date += chrono::Duration::days(1);
-                if !Self::is_weekend(date.weekday(), &weekend) && !holiday_set.contains(&date) {
+                if !Self::is_weekend(date.weekday(), weekend_mask) && !holiday_set.contains(&date) {
                     days -= 1;
                 }
             } else {
                 date -= chrono::Duration::days(1);
-                if !Self::is_weekend(date.weekday(), &weekend) && !holiday_set.contains(&date) {
+                if !Self::is_weekend(date.weekday(), weekend_mask) && !holiday_set.contains(&date) {
                     days += 1;
                 }
             }
         }
-        let serial = date.num_days_from_ce() - EXCEL_DATE_BASE;
-        CalcResult::Number(serial as f64)
+
+        // Convert result back to Excel serial number
+        let result_serial = date.num_days_from_ce() - EXCEL_DATE_BASE;
+
+        // Validate result is within Excel's valid date range [0, 2958465]
+        if !(0..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&result_serial) {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "Result date is out of range".to_string(),
+            );
+        }
+
+        CalcResult::Number(result_serial as f64)
     }
 
     fn get_holiday_set(
@@ -1539,28 +1623,24 @@ impl<'a> Model<'a> {
         if !(2..=4).contains(&args.len()) {
             return CalcResult::new_args_number_error(cell);
         }
-        let start_serial = match self.get_number(&args[0], cell) {
+
+        // Excel rejects boolean arguments with #VALUE!
+        let start_serial = match self.get_number_no_bools(&args[0], cell) {
             Ok(c) => c.floor() as i64,
             Err(s) => return s,
         };
-        let mut date = match self.excel_date(start_serial, cell) {
-            Ok(d) => d,
-            Err(e) => return e,
-        };
-        let mut days = match self.get_number(&args[1], cell) {
+        let days = match self.get_number_no_bools(&args[1], cell) {
             Ok(f) => f as i32,
             Err(s) => return s,
         };
+
+        // Parse weekend pattern (3rd argument, optional)
         let weekend_mask = match self.weekend_mask(args.get(2), cell) {
             Ok(m) => m,
             Err(e) => return e,
         };
-        let holiday_set = match self.get_holiday_set(args.get(3), cell) {
-            Ok(h) => h,
-            Err(e) => return e,
-        };
 
-        // Checks if all days are weekends
+        // All days being weekends is invalid (would cause infinite loop)
         if weekend_mask == [true; 7] {
             return CalcResult::Error {
                 error: Error::VALUE,
@@ -1569,23 +1649,12 @@ impl<'a> Model<'a> {
             };
         }
 
-        while days != 0 {
-            if days > 0 {
-                date += chrono::Duration::days(1);
-                if !Self::is_weekend(date.weekday(), &weekend_mask) && !holiday_set.contains(&date)
-                {
-                    days -= 1;
-                }
-            } else {
-                date -= chrono::Duration::days(1);
-                if !Self::is_weekend(date.weekday(), &weekend_mask) && !holiday_set.contains(&date)
-                {
-                    days += 1;
-                }
-            }
-        }
-        let serial = date.num_days_from_ce() - EXCEL_DATE_BASE;
-        CalcResult::Number(serial as f64)
+        let holiday_set = match self.get_holiday_set(args.get(3), cell) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
+
+        self.calculate_workday(start_serial, days, &weekend_mask, &holiday_set, cell)
     }
 
     pub(crate) fn fn_yearfrac(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
