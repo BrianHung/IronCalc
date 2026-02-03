@@ -113,6 +113,22 @@ fn days_between_dates(start: chrono::NaiveDate, end: chrono::NaiveDate, basis: i
     }
 }
 
+fn year_fraction(
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    basis: i32,
+) -> Result<f64, String> {
+    let days = match basis {
+        0 => days360_us(start, end) as f64 / DAYS_IN_YEAR_360 as f64,
+        1 => (end - start).num_days() as f64 / DAYS_ACTUAL as f64,
+        2 => (end - start).num_days() as f64 / DAYS_IN_YEAR_360 as f64,
+        3 => (end - start).num_days() as f64 / DAYS_ACTUAL as f64,
+        4 => days360_eu(start, end) as f64 / DAYS_IN_YEAR_360 as f64,
+        _ => return Err("Invalid basis".to_string()),
+    };
+    Ok(days)
+}
+
 fn coupon_dates(
     settlement: chrono::NaiveDate,
     maturity: chrono::NaiveDate,
@@ -569,6 +585,204 @@ impl<'a> Model<'a> {
         }
 
         CalcResult::Number(result)
+    }
+
+    // ACCRINT(issue, first_interest, settlement, rate, par, freq, [basis], [calc])
+    // ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])
+    pub(crate) fn fn_accrint(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(6..=8).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        // Parse required arguments
+        let issue = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let first = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let settlement = match self.get_number(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let par = match self.get_number(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let freq = match self.get_number(&args[5], cell) {
+            Ok(f) => f as i32,
+            Err(s) => return s,
+        };
+
+        // Parse optional arguments
+        let basis = if arg_count > 6 {
+            match self.get_number(&args[6], cell) {
+                Ok(f) => f as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+        let calc = if arg_count > 7 {
+            match self.get_number(&args[7], cell) {
+                Ok(f) => f != 0.0,
+                Err(s) => return s,
+            }
+        } else {
+            true
+        };
+
+        if !(freq == 1 || freq == 2 || freq == 4) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid frequency".to_string());
+        }
+        if !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
+        }
+        if par < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "par cannot be negative".to_string());
+        }
+        if rate < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "rate cannot be negative".to_string());
+        }
+
+        let issue_d = match convert_date_serial(issue, cell) {
+            Ok(d) => d,
+            Err(err) => return err,
+        };
+        let first_d = match from_excel_date(first as i64) {
+            Ok(d) => d,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let settle_d = match convert_date_serial(settlement, cell) {
+            Ok(d) => d,
+            Err(err) => return err,
+        };
+
+        if settle_d <= issue_d {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement must be after issue".to_string(),
+            );
+        }
+        if first_d < issue_d {
+            return CalcResult::new_error(Error::NUM, cell, "first_interest < issue".to_string());
+        }
+        // Note: settlement CAN be before first_interest - this is valid (buying before first coupon)
+
+        let months = 12 / freq;
+        let mut prev = first_d;
+        if settle_d <= first_d {
+            prev = issue_d;
+        } else {
+            while prev <= settle_d {
+                let next = prev + chrono::Months::new(months as u32);
+                if next > settle_d {
+                    break;
+                }
+                prev = next;
+            }
+        }
+        let next_coupon = prev + chrono::Months::new(months as u32);
+
+        let mut result = 0.0;
+        if calc {
+            let mut next = first_d;
+            while next < prev {
+                result += rate * par / freq as f64;
+                next = next + chrono::Months::new(months as u32);
+            }
+        }
+
+        let days_in_period = match year_fraction(prev, next_coupon, basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
+        };
+        let days_elapsed = match year_fraction(prev, settle_d, basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
+        };
+
+        result += rate * par / freq as f64
+            * if days_in_period == 0.0 {
+                0.0
+            } else {
+                days_elapsed / days_in_period
+            };
+        CalcResult::Number(result)
+    }
+
+    // ACCRINTM(issue, settlement, rate, par, [basis])
+    pub(crate) fn fn_accrintm(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        // Parse required arguments
+        let issue = match self.get_number(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let settlement = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let par = match self.get_number(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+
+        // Parse optional argument
+        let basis = if arg_count > 4 {
+            match self.get_number(&args[4], cell) {
+                Ok(f) => f as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string());
+        }
+        if par < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "par cannot be negative".to_string());
+        }
+        if rate < 0.0 {
+            return CalcResult::new_error(Error::NUM, cell, "rate cannot be negative".to_string());
+        }
+
+        let issue_d = match convert_date_serial(issue, cell) {
+            Ok(d) => d,
+            Err(err) => return err,
+        };
+        let settle_d = match convert_date_serial(settlement, cell) {
+            Ok(d) => d,
+            Err(err) => return err,
+        };
+
+        if settle_d < issue_d {
+            return CalcResult::new_error(Error::NUM, cell, "settlement < issue".to_string());
+        }
+
+        let frac = match year_fraction(issue_d, settle_d, basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "invalid basis".to_string()),
+        };
+
+        CalcResult::Number(par * rate * frac)
     }
 
     // RATE(nper, pmt, pv, [fv], [type], [guess])

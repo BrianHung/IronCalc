@@ -315,6 +315,8 @@ pub enum Function {
     Dollarde,
     Dollarfr,
     Effect,
+    Accrint,
+    Accrintm,
     Coupdaybs,
     Coupdays,
     Coupdaysnc,
@@ -1079,6 +1081,8 @@ impl Function {
             Function::Dollarde => functions.dollarde.clone(),
             Function::Dollarfr => functions.dollarfr.clone(),
             Function::Effect => functions.effect.clone(),
+            Function::Accrint => "ACCRINT".to_string(),
+            Function::Accrintm => "ACCRINTM".to_string(),
             Function::Coupdaybs => "COUPDAYBS".to_string(),
             Function::Coupdays => "COUPDAYS".to_string(),
             Function::Coupdaysnc => "COUPDAYSNC".to_string(),
@@ -1180,7 +1184,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 351> {
+    pub fn into_iter() -> IntoIter<Function, 353> {
         [
             Function::And,
             Function::False,
@@ -1350,6 +1354,8 @@ impl Function {
             Function::Rate,
             Function::Nper,
             Function::Fv,
+            Function::Accrint,
+            Function::Accrintm,
             Function::Coupdaybs,
             Function::Coupdays,
             Function::Coupdaysnc,
@@ -1812,6 +1818,8 @@ impl<'a> Model<'a> {
             Function::Rate => self.fn_rate(args, cell),
             Function::Nper => self.fn_nper(args, cell),
             Function::Fv => self.fn_fv(args, cell),
+            Function::Accrint => self.fn_accrint(args, cell),
+            Function::Accrintm => self.fn_accrintm(args, cell),
             Function::Coupdaybs => self.fn_coupdaybs(args, cell),
             Function::Coupdays => self.fn_coupdays(args, cell),
             Function::Coupdaysnc => self.fn_coupdaysnc(args, cell),

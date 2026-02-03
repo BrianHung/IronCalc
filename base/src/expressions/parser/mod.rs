@@ -789,6 +789,8 @@ impl<'a> Parser<'a> {
                     }
                     let trimmed_name = name.trim_start_matches("_xlfn.");
                     let fallback_kind = match trimmed_name.to_ascii_uppercase().as_str() {
+                        "ACCRINT" => Some(Function::Accrint),
+                        "ACCRINTM" => Some(Function::Accrintm),
                         "COUPDAYBS" => Some(Function::Coupdaybs),
                         "COUPDAYS" => Some(Function::Coupdays),
                         "COUPDAYSNC" => Some(Function::Coupdaysnc),
