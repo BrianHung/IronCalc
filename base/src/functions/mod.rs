@@ -315,6 +315,10 @@ pub enum Function {
     Dollarde,
     Dollarfr,
     Effect,
+    Price,
+    Yield,
+    Duration,
+    Mduration,
     Coupdaybs,
     Coupdays,
     Coupdaysnc,
@@ -1079,6 +1083,10 @@ impl Function {
             Function::Dollarde => functions.dollarde.clone(),
             Function::Dollarfr => functions.dollarfr.clone(),
             Function::Effect => functions.effect.clone(),
+            Function::Price => "PRICE".to_string(),
+            Function::Yield => "YIELD".to_string(),
+            Function::Duration => "DURATION".to_string(),
+            Function::Mduration => "MDURATION".to_string(),
             Function::Coupdaybs => "COUPDAYBS".to_string(),
             Function::Coupdays => "COUPDAYS".to_string(),
             Function::Coupdaysnc => "COUPDAYSNC".to_string(),
@@ -1180,7 +1188,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 351> {
+    pub fn into_iter() -> IntoIter<Function, 355> {
         [
             Function::And,
             Function::False,
@@ -1350,6 +1358,10 @@ impl Function {
             Function::Rate,
             Function::Nper,
             Function::Fv,
+            Function::Price,
+            Function::Yield,
+            Function::Duration,
+            Function::Mduration,
             Function::Coupdaybs,
             Function::Coupdays,
             Function::Coupdaysnc,
@@ -1812,6 +1824,10 @@ impl<'a> Model<'a> {
             Function::Rate => self.fn_rate(args, cell),
             Function::Nper => self.fn_nper(args, cell),
             Function::Fv => self.fn_fv(args, cell),
+            Function::Price => self.fn_price(args, cell),
+            Function::Yield => self.fn_yield(args, cell),
+            Function::Duration => self.fn_duration(args, cell),
+            Function::Mduration => self.fn_mduration(args, cell),
             Function::Coupdaybs => self.fn_coupdaybs(args, cell),
             Function::Coupdays => self.fn_coupdays(args, cell),
             Function::Coupdaysnc => self.fn_coupdaysnc(args, cell),
