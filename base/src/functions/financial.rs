@@ -1830,6 +1830,148 @@ impl<'a> Model<'a> {
         )
     }
 
+    pub(crate) fn fn_pricemat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let yld = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if rate < 0.0 || yld < 0.0 || settlement >= maturity {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid number for date".to_string());
+        }
+        let issue_to_maturity_frac = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let issue_to_settlement_frac =
+            match year_frac(issue as i64, settlement as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let settlement_to_maturity_frac =
+            match year_frac(settlement as i64, maturity as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let mut result = 1.0 + issue_to_maturity_frac * rate;
+        result /= 1.0 + settlement_to_maturity_frac * yld;
+        result -= issue_to_settlement_frac * rate;
+        result *= 100.0;
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_yieldmat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let price = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if price <= 0.0 || rate < 0.0 || settlement >= maturity || settlement < issue {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid number for date".to_string());
+        }
+        let issue_to_maturity_frac = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let issue_to_settlement_frac =
+            match year_frac(issue as i64, settlement as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let settlement_to_maturity_frac =
+            match year_frac(settlement as i64, maturity as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let mut y = 1.0 + issue_to_maturity_frac * rate;
+        y /= price / 100.0 + issue_to_settlement_frac * rate;
+        y -= 1.0;
+        y /= settlement_to_maturity_frac;
+        CalcResult::Number(y)
+    }
+
     // COUPDAYBS(settlement, maturity, frequency, [basis])
     pub(crate) fn fn_coupdaybs(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let arg_count = args.len();

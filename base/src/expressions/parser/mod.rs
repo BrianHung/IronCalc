@@ -794,6 +794,8 @@ impl<'a> Parser<'a> {
                         "DISC" => Some(Function::Disc),
                         "RECEIVED" => Some(Function::Received),
                         "INTRATE" => Some(Function::Intrate),
+                        "PRICEMAT" => Some(Function::Pricemat),
+                        "YIELDMAT" => Some(Function::Yieldmat),
                         "COUPDAYBS" => Some(Function::Coupdaybs),
                         "COUPDAYS" => Some(Function::Coupdays),
                         "COUPDAYSNC" => Some(Function::Coupdaysnc),

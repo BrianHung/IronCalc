@@ -320,6 +320,8 @@ pub enum Function {
     Disc,
     Received,
     Intrate,
+    Pricemat,
+    Yieldmat,
     Coupdaybs,
     Coupdays,
     Coupdaysnc,
@@ -1089,6 +1091,8 @@ impl Function {
             Function::Disc => "DISC".to_string(),
             Function::Received => "RECEIVED".to_string(),
             Function::Intrate => "INTRATE".to_string(),
+            Function::Pricemat => "PRICEMAT".to_string(),
+            Function::Yieldmat => "YIELDMAT".to_string(),
             Function::Coupdaybs => "COUPDAYBS".to_string(),
             Function::Coupdays => "COUPDAYS".to_string(),
             Function::Coupdaysnc => "COUPDAYSNC".to_string(),
@@ -1190,7 +1194,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 356> {
+    pub fn into_iter() -> IntoIter<Function, 358> {
         [
             Function::And,
             Function::False,
@@ -1365,6 +1369,8 @@ impl Function {
             Function::Disc,
             Function::Received,
             Function::Intrate,
+            Function::Pricemat,
+            Function::Yieldmat,
             Function::Coupdaybs,
             Function::Coupdays,
             Function::Coupdaysnc,
@@ -1832,6 +1838,8 @@ impl<'a> Model<'a> {
             Function::Disc => self.fn_disc(args, cell),
             Function::Received => self.fn_received(args, cell),
             Function::Intrate => self.fn_intrate(args, cell),
+            Function::Pricemat => self.fn_pricemat(args, cell),
+            Function::Yieldmat => self.fn_yieldmat(args, cell),
             Function::Coupdaybs => self.fn_coupdaybs(args, cell),
             Function::Coupdays => self.fn_coupdays(args, cell),
             Function::Coupdaysnc => self.fn_coupdaysnc(args, cell),

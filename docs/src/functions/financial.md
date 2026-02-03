@@ -50,7 +50,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | PPMT       | <Badge type="tip" text="Available" />          | –                  |
 | PRICE      | <Badge type="info" text="Not implemented yet" /> | –                  |
 | PRICEDISC  | <Badge type="tip" text="Available" /> | [PRICEDISC](financial/pricedisc) |
-| PRICEMAT   | <Badge type="info" text="Not implemented yet" /> | –                  |
+| PRICEMAT   | <Badge type="tip" text="Available" /> | [PRICEMAT](financial/pricemat) |
 | PV         | <Badge type="tip" text="Available" />          | [PV](financial/pv) |
 | RATE       | <Badge type="tip" text="Available" />          | –                  |
 | RECEIVED   | <Badge type="tip" text="Available" /> | [RECEIVED](financial/received) |
@@ -65,4 +65,4 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 | XNPV       | <Badge type="tip" text="Available" />          | –                  |
 | YIELD      | <Badge type="info" text="Not implemented yet" /> | –                  |
 | YIELDDISC  | <Badge type="tip" text="Available" /> | [YIELDDISC](financial/yielddisc) |
-| YIELDMAT   | <Badge type="info" text="Not implemented yet" /> | –                  |
+| YIELDMAT   | <Badge type="tip" text="Available" /> | [YIELDMAT](financial/yieldmat) |
