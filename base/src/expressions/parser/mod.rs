@@ -787,6 +787,13 @@ impl<'a> Parser<'a> {
                             args,
                         };
                     }
+                    let trimmed_name = name.trim_start_matches("_xlfn.");
+                    if trimmed_name.eq_ignore_ascii_case("FVSCHEDULE") {
+                        return Node::FunctionKind {
+                            kind: Function::Fvschedule,
+                            args,
+                        };
+                    }
                     return Node::InvalidFunctionKind { name, args };
                 }
                 let context = &self.context;
