@@ -787,6 +787,23 @@ impl<'a> Parser<'a> {
                             args,
                         };
                     }
+                    let trimmed_name = name.trim_start_matches("_xlfn.");
+                    let fallback_kind = match trimmed_name.to_ascii_uppercase().as_str() {
+                        "PRICE" => Some(Function::Price),
+                        "YIELD" => Some(Function::Yield),
+                        "DURATION" => Some(Function::Duration),
+                        "MDURATION" => Some(Function::Mduration),
+                        "COUPDAYBS" => Some(Function::Coupdaybs),
+                        "COUPDAYS" => Some(Function::Coupdays),
+                        "COUPDAYSNC" => Some(Function::Coupdaysnc),
+                        "COUPNCD" => Some(Function::Coupncd),
+                        "COUPNUM" => Some(Function::Coupnum),
+                        "COUPPCD" => Some(Function::Couppcd),
+                        _ => None,
+                    };
+                    if let Some(kind) = fallback_kind {
+                        return Node::FunctionKind { kind, args };
+                    }
                     return Node::InvalidFunctionKind { name, args };
                 }
                 let context = &self.context;
