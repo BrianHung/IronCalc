@@ -761,6 +761,11 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Nper => args_signature_scalars(arg_count, 3, 2),
         Function::Npv => args_signature_npv(arg_count),
         Function::Pduration => args_signature_scalars(arg_count, 3, 0),
+        Function::Pricedisc => args_signature_scalars(arg_count, 4, 1),
+        Function::Yielddisc => args_signature_scalars(arg_count, 4, 1),
+        Function::Disc => args_signature_scalars(arg_count, 4, 1),
+        Function::Received => args_signature_scalars(arg_count, 4, 1),
+        Function::Intrate => args_signature_scalars(arg_count, 4, 1),
         Function::Pmt => args_signature_scalars(arg_count, 3, 2),
         Function::Ppmt => args_signature_scalars(arg_count, 4, 2),
         Function::Pv => args_signature_scalars(arg_count, 3, 2),
@@ -1007,6 +1012,12 @@ fn get_function_args_signature(kind: &Function, arg_count: usize) -> Vec<Signatu
         Function::Skew => vec![Signature::Vector; arg_count],
         Function::SkewP => vec![Signature::Vector; arg_count],
         Function::Small => vec![Signature::Vector, Signature::Scalar],
+        Function::Coupdaybs => args_signature_scalars(arg_count, 3, 1),
+        Function::Coupdays => args_signature_scalars(arg_count, 3, 1),
+        Function::Coupdaysnc => args_signature_scalars(arg_count, 3, 1),
+        Function::Coupncd => args_signature_scalars(arg_count, 3, 1),
+        Function::Coupnum => args_signature_scalars(arg_count, 3, 1),
+        Function::Couppcd => args_signature_scalars(arg_count, 3, 1),
     }
 }
 
@@ -1358,5 +1369,16 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Skew => StaticResult::Scalar,
         Function::SkewP => StaticResult::Scalar,
         Function::Small => StaticResult::Scalar,
+        Function::Pricedisc => StaticResult::Scalar,
+        Function::Yielddisc => StaticResult::Scalar,
+        Function::Disc => StaticResult::Scalar,
+        Function::Received => StaticResult::Scalar,
+        Function::Intrate => StaticResult::Scalar,
+        Function::Coupdaybs => StaticResult::Scalar,
+        Function::Coupdays => StaticResult::Scalar,
+        Function::Coupdaysnc => StaticResult::Scalar,
+        Function::Coupncd => StaticResult::Scalar,
+        Function::Coupnum => StaticResult::Scalar,
+        Function::Couppcd => StaticResult::Scalar,
     }
 }
