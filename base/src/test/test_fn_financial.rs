@@ -25,6 +25,10 @@ fn fn_arguments() {
     model._set("E2", "=RATE(1,1)");
     model._set("E3", "=RATE(1,1,1,1,1,1)");
 
+    model._set("F1", "=FVSCHEDULE()");
+    model._set("F2", "=FVSCHEDULE(1)");
+    model._set("F3", "=FVSCHEDULE(1,1,1)");
+
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"#ERROR!");
@@ -46,6 +50,10 @@ fn fn_arguments() {
     assert_eq!(model._get_text("E1"), *"#ERROR!");
     assert_eq!(model._get_text("E2"), *"#ERROR!");
     assert_eq!(model._get_text("E3"), *"#ERROR!");
+
+    assert_eq!(model._get_text("F1"), *"#ERROR!");
+    assert_eq!(model._get_text("F2"), *"#ERROR!");
+    assert_eq!(model._get_text("F3"), *"#ERROR!");
 }
 
 #[test]
@@ -467,4 +475,19 @@ fn fn_db_misc() {
     model.evaluate();
 
     assert_eq!(model._get_text("B1"), "$0.00");
+}
+
+#[test]
+fn fn_fvschedule() {
+    let mut model = new_empty_model();
+    model._set("A1", "1000");
+    model._set("A2", "0.08");
+    model._set("A3", "0.09");
+    model._set("A4", "0.1");
+
+    model._set("B1", "=FVSCHEDULE(A1, A2:A4)");
+
+    model.evaluate();
+
+    assert_eq!(model._get_text("B1"), "1294.92");
 }

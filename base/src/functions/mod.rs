@@ -316,6 +316,7 @@ pub enum Function {
     Dollarfr,
     Effect,
     Fv,
+    Fvschedule,
     Ipmt,
     Irr,
     Ispmt,
@@ -1074,6 +1075,7 @@ impl Function {
             Function::Dollarfr => functions.dollarfr.clone(),
             Function::Effect => functions.effect.clone(),
             Function::Fv => functions.fv.clone(),
+            Function::Fvschedule => "FVSCHEDULE".to_string(),
             Function::Ipmt => functions.ipmt.clone(),
             Function::Irr => functions.irr.clone(),
             Function::Ispmt => functions.ispmt.clone(),
@@ -1168,7 +1170,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 345> {
+    pub fn into_iter() -> IntoIter<Function, 346> {
         [
             Function::And,
             Function::False,
@@ -1338,6 +1340,7 @@ impl Function {
             Function::Rate,
             Function::Nper,
             Function::Fv,
+            Function::Fvschedule,
             Function::Ppmt,
             Function::Ipmt,
             Function::Npv,
@@ -1794,6 +1797,7 @@ impl<'a> Model<'a> {
             Function::Rate => self.fn_rate(args, cell),
             Function::Nper => self.fn_nper(args, cell),
             Function::Fv => self.fn_fv(args, cell),
+            Function::Fvschedule => self.fn_fvschedule(args, cell),
             Function::Ppmt => self.fn_ppmt(args, cell),
             Function::Ipmt => self.fn_ipmt(args, cell),
             Function::Npv => self.fn_npv(args, cell),
