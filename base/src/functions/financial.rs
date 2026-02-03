@@ -13,6 +13,7 @@ use super::financial_util::{compute_irr, compute_npv, compute_rate, compute_xirr
 // Financial calculation constants
 const DAYS_IN_YEAR_360: i32 = 360;
 const DAYS_ACTUAL: i32 = 365;
+const DAYS_LEAP_YEAR: i32 = 366;
 const DAYS_IN_MONTH_360: i32 = 30;
 
 // See:
@@ -48,6 +49,21 @@ fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String>
 
 fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_year(date: chrono::NaiveDate, basis: i32) -> Result<i32, String> {
+    Ok(match basis {
+        0 | 2 | 4 => DAYS_IN_YEAR_360,
+        1 => {
+            if is_leap_year(date.year()) {
+                DAYS_LEAP_YEAR
+            } else {
+                DAYS_ACTUAL
+            }
+        }
+        3 => DAYS_ACTUAL,
+        _ => return Err("invalid basis".to_string()),
+    })
 }
 
 fn is_last_day_of_february(date: chrono::NaiveDate) -> bool {
@@ -101,6 +117,96 @@ fn days360_eu(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
         - d1
         - m1 * DAYS_IN_MONTH_360
         - y1 * DAYS_IN_YEAR_360
+}
+
+fn year_frac(start: i64, end: i64, basis: i32) -> Result<f64, String> {
+    let start_date = from_excel_date(start)?;
+    let end_date = from_excel_date(end)?;
+    let days = match basis {
+        0 => days360_us(start_date, end_date),
+        1..=3 => (end - start) as i32,
+        4 => days360_eu(start_date, end_date),
+        _ => return Err("invalid basis".to_string()),
+    } as f64;
+    let year_days = days_in_year(start_date, basis)? as f64;
+    Ok(days / year_days)
+}
+
+macro_rules! financial_function_with_year_frac {
+    (
+        $args:ident, $self:ident, $cell:ident,
+        param1_name: $param1_name:literal,
+        param2_name: $param2_name:literal,
+        validator: $validator:expr,
+        formula: |$settlement:ident, $maturity:ident, $param1:ident, $param2:ident, $basis:ident, $year_frac:ident| $formula:expr
+    ) => {{
+        let arg_count = $args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error($cell);
+        }
+
+        let $settlement = match $self.get_number_no_bools(&$args[0], $cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let $maturity = match $self.get_number_no_bools(&$args[1], $cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+
+        if $settlement >= $maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                $cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        if $settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || $settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, $cell, "Invalid number for date".to_string());
+        }
+        if $maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || $maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, $cell, "Invalid number for date".to_string());
+        }
+
+        let $param1 = match $self.get_number_no_bools(&$args[2], $cell) {
+            Ok(p) => p,
+            Err(err) => return err,
+        };
+        let $param2 = match $self.get_number_no_bools(&$args[3], $cell) {
+            Ok(p) => p,
+            Err(err) => return err,
+        };
+
+        let $basis = if arg_count > 4 {
+            match $self.get_number_no_bools(&$args[4], $cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if let Err(msg) = ($validator)($param1, $param2) {
+            return CalcResult::new_error(
+                Error::NUM,
+                $cell,
+                format!("{} and {}: {}", $param1_name, $param2_name, msg),
+            );
+        }
+
+        let $year_frac = match year_frac($settlement as i64, $maturity as i64, $basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, $cell, "Invalid date".to_string()),
+        };
+
+        let result = $formula;
+        CalcResult::Number(result)
+    }};
 }
 
 fn days_between_dates(start: chrono::NaiveDate, end: chrono::NaiveDate, basis: i32) -> i32 {
@@ -1630,6 +1736,98 @@ impl<'a> Model<'a> {
         let result = (100.0 - pr) * 360.0 / (pr * days);
 
         CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_pricedisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "discount rate",
+            param2_name: "redemption value",
+            validator: |discount_rate, redemption_value| {
+                if discount_rate <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, discount_rate, redemption_value, _basis, year_frac| {
+                redemption_value * (1.0 - discount_rate * year_frac)
+            }
+        )
+    }
+
+    pub(crate) fn fn_yielddisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "price",
+            param2_name: "redemption value",
+            validator: |price, redemption_value| {
+                if price <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, price, redemption_value, _basis, year_frac| {
+                (redemption_value / price - 1.0) / year_frac
+            }
+        )
+    }
+
+    pub(crate) fn fn_disc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "price",
+            param2_name: "redemption value",
+            validator: |price, redemption_value| {
+                if price <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, price, redemption_value, _basis, year_frac| {
+                (1.0 - price / redemption_value) / year_frac
+            }
+        )
+    }
+
+    // RECEIVED(settlement, maturity, investment, discount, [basis])
+    pub(crate) fn fn_received(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "investment",
+            param2_name: "discount rate",
+            validator: |investment, discount_rate| {
+                if investment <= 0.0 || discount_rate <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, investment, discount_rate, _basis, year_frac| {
+                investment / (1.0 - discount_rate * year_frac)
+            }
+        )
+    }
+
+    // INTRATE(settlement, maturity, investment, redemption, [basis])
+    pub(crate) fn fn_intrate(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "investment",
+            param2_name: "redemption value",
+            validator: |investment, redemption_value| {
+                if investment <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, investment, redemption_value, _basis, year_frac| {
+                ((redemption_value / investment) - 1.0) / year_frac
+            }
+        )
     }
 
     // COUPDAYBS(settlement, maturity, frequency, [basis])
