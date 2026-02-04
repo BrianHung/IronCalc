@@ -151,7 +151,6 @@ fn fn_accrint_excel_docs_example() {
 
     match model.get_cell_value_by_ref("Sheet1!A1") {
         Ok(CellValue::Number(v)) => {
-            println!("ACCRINT Excel example result: {}", v);
             assert!(
                 (v - 16.666666666666668).abs() < 1e-6,
                 "Expected ~16.666667, got {}",
