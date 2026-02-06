@@ -83,7 +83,11 @@ impl<'a> Model<'a> {
         };
 
         if !(0.0..=1.0).contains(&k) {
-            return CalcResult::new_error(Error::NUM, cell, "k must be between 0 and 1".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "k must be between 0 and 1".to_string(),
+            );
         }
 
         let n = values.len() as f64;
@@ -93,7 +97,7 @@ impl<'a> Model<'a> {
         let idx = (m as usize).saturating_sub(1);
 
         if idx >= values.len() - 1 {
-            return CalcResult::Number(*values.last().unwrap());
+            return CalcResult::Number(values[values.len() - 1]);
         }
 
         let result = values[idx] + g * (values[idx + 1] - values[idx]);
@@ -139,7 +143,11 @@ impl<'a> Model<'a> {
 
         let pos = k * (n + 1.0);
         if pos < 1.0 || pos > n {
-            return CalcResult::new_error(Error::NUM, cell, "k out of range for data size".to_string());
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "k out of range for data size".to_string(),
+            );
         }
 
         let m = pos.floor();
@@ -147,7 +155,7 @@ impl<'a> Model<'a> {
         let idx = (m as usize).saturating_sub(1);
 
         if idx >= values.len() - 1 {
-            return CalcResult::Number(*values.last().unwrap());
+            return CalcResult::Number(values[values.len() - 1]);
         }
 
         let result = values[idx] + g * (values[idx + 1] - values[idx]);
@@ -208,7 +216,7 @@ impl<'a> Model<'a> {
         if x < values[0] {
             return CalcResult::Number(0.0);
         }
-        if x > *values.last().unwrap() {
+        if x > values[values.len() - 1] {
             return CalcResult::Number(1.0);
         }
 
