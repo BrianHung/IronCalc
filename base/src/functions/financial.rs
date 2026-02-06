@@ -1864,7 +1864,7 @@ impl<'a> Model<'a> {
         } else {
             0.0
         };
-        if rate < 0.0 || yld < 0.0 || settlement >= maturity {
+        if rate < 0.0 || yld < 0.0 || settlement >= maturity || settlement < issue {
             return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
         }
         if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
