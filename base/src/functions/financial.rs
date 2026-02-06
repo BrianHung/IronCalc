@@ -10,13 +10,19 @@ use crate::{
 
 use super::financial_util::{compute_irr, compute_npv, compute_rate, compute_xirr, compute_xnpv};
 
+// Financial calculation constants
+const DAYS_IN_YEAR_360: i32 = 360;
+const DAYS_ACTUAL: i32 = 365;
+const DAYS_LEAP_YEAR: i32 = 366;
+const DAYS_IN_MONTH_360: i32 = 30;
+
 // See:
 // https://github.com/apache/openoffice/blob/c014b5f2b55cff8d4b0c952d5c16d62ecde09ca1/main/scaddins/source/analysis/financial.cxx
 
 fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String> {
     let end = from_excel_date(end_date)?;
     let start = from_excel_date(start_date)?;
-    if end_date - start_date < 365 {
+    if end_date - start_date < DAYS_ACTUAL as i64 {
         return Ok(true);
     }
     let end_year = end.year();
@@ -39,6 +45,223 @@ fn is_less_than_one_year(start_date: i64, end_date: i64) -> Result<bool, String>
     let start_day = start.day();
     let end_day = end.day();
     Ok(end_day <= start_day)
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_year(date: chrono::NaiveDate, basis: i32) -> Result<i32, String> {
+    Ok(match basis {
+        0 | 2 | 4 => DAYS_IN_YEAR_360,
+        1 => {
+            if is_leap_year(date.year()) {
+                DAYS_LEAP_YEAR
+            } else {
+                DAYS_ACTUAL
+            }
+        }
+        3 => DAYS_ACTUAL,
+        _ => return Err("invalid basis".to_string()),
+    })
+}
+
+fn is_last_day_of_february(date: chrono::NaiveDate) -> bool {
+    date.month() == 2 && date.day() == if is_leap_year(date.year()) { 29 } else { 28 }
+}
+
+fn days360_us(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+
+    // US (NASD) 30/360 method - implementing official specification
+
+    // Rule 1: If both date A and B fall on the last day of February, then date B will be changed to the 30th
+    if is_last_day_of_february(start) && is_last_day_of_february(end) {
+        d2 = DAYS_IN_MONTH_360;
+    }
+
+    // Rule 2: If date A falls on the 31st of a month or last day of February, then date A will be changed to the 30th
+    if d1 == 31 || is_last_day_of_february(start) {
+        d1 = DAYS_IN_MONTH_360;
+    }
+
+    // Rule 3: If date A falls on the 30th after applying rule 2 and date B falls on the 31st, then date B will be changed to the 30th
+    if d1 == DAYS_IN_MONTH_360 && d2 == 31 {
+        d2 = DAYS_IN_MONTH_360;
+    }
+
+    DAYS_IN_YEAR_360 * (y2 - y1) + DAYS_IN_MONTH_360 * (m2 - m1) + (d2 - d1)
+}
+
+fn days360_eu(start: chrono::NaiveDate, end: chrono::NaiveDate) -> i32 {
+    let mut d1 = start.day() as i32;
+    let mut d2 = end.day() as i32;
+    let m1 = start.month() as i32;
+    let m2 = end.month() as i32;
+    let y1 = start.year();
+    let y2 = end.year();
+
+    if d1 == 31 {
+        d1 = DAYS_IN_MONTH_360;
+    }
+    if d2 == 31 {
+        d2 = DAYS_IN_MONTH_360;
+    }
+
+    d2 + m2 * DAYS_IN_MONTH_360 + y2 * DAYS_IN_YEAR_360
+        - d1
+        - m1 * DAYS_IN_MONTH_360
+        - y1 * DAYS_IN_YEAR_360
+}
+
+fn year_frac(start: i64, end: i64, basis: i32) -> Result<f64, String> {
+    let start_date = from_excel_date(start)?;
+    let end_date = from_excel_date(end)?;
+    let days = match basis {
+        0 => days360_us(start_date, end_date),
+        1..=3 => (end - start) as i32,
+        4 => days360_eu(start_date, end_date),
+        _ => return Err("invalid basis".to_string()),
+    } as f64;
+    let year_days = days_in_year(start_date, basis)? as f64;
+    Ok(days / year_days)
+}
+
+macro_rules! financial_function_with_year_frac {
+    (
+        $args:ident, $self:ident, $cell:ident,
+        param1_name: $param1_name:literal,
+        param2_name: $param2_name:literal,
+        validator: $validator:expr,
+        formula: |$settlement:ident, $maturity:ident, $param1:ident, $param2:ident, $basis:ident, $year_frac:ident| $formula:expr
+    ) => {{
+        let arg_count = $args.len();
+        if !(4..=5).contains(&arg_count) {
+            return CalcResult::new_args_number_error($cell);
+        }
+
+        let $settlement = match $self.get_number_no_bools(&$args[0], $cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let $maturity = match $self.get_number_no_bools(&$args[1], $cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+
+        if $settlement >= $maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                $cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        if $settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || $settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, $cell, "Invalid number for date".to_string());
+        }
+        if $maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || $maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, $cell, "Invalid number for date".to_string());
+        }
+
+        let $param1 = match $self.get_number_no_bools(&$args[2], $cell) {
+            Ok(p) => p,
+            Err(err) => return err,
+        };
+        let $param2 = match $self.get_number_no_bools(&$args[3], $cell) {
+            Ok(p) => p,
+            Err(err) => return err,
+        };
+
+        let $basis = if arg_count > 4 {
+            match $self.get_number_no_bools(&$args[4], $cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if let Err(msg) = ($validator)($param1, $param2) {
+            return CalcResult::new_error(
+                Error::NUM,
+                $cell,
+                format!("{} and {}: {}", $param1_name, $param2_name, msg),
+            );
+        }
+
+        let $year_frac = match year_frac($settlement as i64, $maturity as i64, $basis) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, $cell, "Invalid date".to_string()),
+        };
+
+        let result = $formula;
+        CalcResult::Number(result)
+    }};
+}
+
+fn days_between_dates(start: chrono::NaiveDate, end: chrono::NaiveDate, basis: i32) -> i32 {
+    match basis {
+        0 => days360_us(start, end),
+        1 | 2 => (end - start).num_days() as i32,
+        3 => (end - start).num_days() as i32,
+        4 => days360_eu(start, end),
+        _ => (end - start).num_days() as i32,
+    }
+}
+
+fn coupon_dates(
+    settlement: chrono::NaiveDate,
+    maturity: chrono::NaiveDate,
+    freq: i32,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let months = 12 / freq;
+    let step = chrono::Months::new(months as u32);
+    let mut next_coupon_date = maturity;
+    while let Some(prev) = next_coupon_date.checked_sub_months(step) {
+        if settlement >= prev {
+            return (prev, next_coupon_date);
+        }
+        next_coupon_date = prev;
+    }
+    // Fallback if we somehow exit the loop (shouldn't happen in practice)
+    (settlement, maturity)
+}
+
+fn convert_date_serial(
+    date_serial: f64,
+    cell: CellReferenceIndex,
+) -> Result<chrono::NaiveDate, CalcResult> {
+    match from_excel_date(date_serial as i64) {
+        Ok(date) => Ok(date),
+        Err(_) => Err(CalcResult::new_error(
+            Error::NUM,
+            cell,
+            "Invalid date".to_string(),
+        )),
+    }
+}
+
+fn date_to_serial_with_validation(date: chrono::NaiveDate, cell: CellReferenceIndex) -> CalcResult {
+    match crate::formatter::dates::date_to_serial_number(date.day(), date.month(), date.year()) {
+        Ok(n) => {
+            if !(MINIMUM_DATE_SERIAL_NUMBER..=MAXIMUM_DATE_SERIAL_NUMBER).contains(&n) {
+                CalcResult::new_error(Error::NUM, cell, "date out of range".to_string())
+            } else {
+                CalcResult::Number(n as f64)
+            }
+        }
+        Err(msg) => CalcResult::new_error(Error::NUM, cell, msg),
+    }
 }
 
 fn compute_payment(
@@ -1513,6 +1736,569 @@ impl<'a> Model<'a> {
         let result = (100.0 - pr) * 360.0 / (pr * days);
 
         CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_pricedisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "discount rate",
+            param2_name: "redemption value",
+            validator: |discount_rate, redemption_value| {
+                if discount_rate <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, discount_rate, redemption_value, _basis, year_frac| {
+                redemption_value * (1.0 - discount_rate * year_frac)
+            }
+        )
+    }
+
+    pub(crate) fn fn_yielddisc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "price",
+            param2_name: "redemption value",
+            validator: |price, redemption_value| {
+                if price <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, price, redemption_value, _basis, year_frac| {
+                (redemption_value / price - 1.0) / year_frac
+            }
+        )
+    }
+
+    pub(crate) fn fn_disc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "price",
+            param2_name: "redemption value",
+            validator: |price, redemption_value| {
+                if price <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, price, redemption_value, _basis, year_frac| {
+                (1.0 - price / redemption_value) / year_frac
+            }
+        )
+    }
+
+    // RECEIVED(settlement, maturity, investment, discount, [basis])
+    pub(crate) fn fn_received(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "investment",
+            param2_name: "discount rate",
+            validator: |investment, discount_rate| {
+                if investment <= 0.0 || discount_rate <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, investment, discount_rate, _basis, year_frac| {
+                investment / (1.0 - discount_rate * year_frac)
+            }
+        )
+    }
+
+    // INTRATE(settlement, maturity, investment, redemption, [basis])
+    pub(crate) fn fn_intrate(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        financial_function_with_year_frac!(
+            args, self, cell,
+            param1_name: "investment",
+            param2_name: "redemption value",
+            validator: |investment, redemption_value| {
+                if investment <= 0.0 || redemption_value <= 0.0 {
+                    Err("values must be positive".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            formula: |_settlement, _maturity, investment, redemption_value, _basis, year_frac| {
+                ((redemption_value / investment) - 1.0) / year_frac
+            }
+        )
+    }
+
+    pub(crate) fn fn_pricemat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let yld = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if rate < 0.0 || yld < 0.0 || settlement >= maturity || settlement < issue {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid number for date".to_string());
+        }
+        let issue_to_maturity_frac = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let issue_to_settlement_frac =
+            match year_frac(issue as i64, settlement as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let settlement_to_maturity_frac =
+            match year_frac(settlement as i64, maturity as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let mut result = 1.0 + issue_to_maturity_frac * rate;
+        result /= 1.0 + settlement_to_maturity_frac * yld;
+        result -= issue_to_settlement_frac * rate;
+        result *= 100.0;
+        CalcResult::Number(result)
+    }
+
+    pub(crate) fn fn_yieldmat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(5..=6).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let issue = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let rate = match self.get_number_no_bools(&args[3], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let price = match self.get_number_no_bools(&args[4], cell) {
+            Ok(f) => f,
+            Err(s) => return s,
+        };
+        let basis = if arg_count == 6 {
+            match self.get_number_no_bools(&args[5], cell) {
+                Ok(f) => f,
+                Err(s) => return s,
+            }
+        } else {
+            0.0
+        };
+        if price <= 0.0 || rate < 0.0 || settlement >= maturity || settlement < issue {
+            return CalcResult::new_error(Error::NUM, cell, "invalid parameters".to_string());
+        }
+        if settlement < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || settlement > MAXIMUM_DATE_SERIAL_NUMBER as f64
+            || maturity < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue < MINIMUM_DATE_SERIAL_NUMBER as f64
+            || issue > MAXIMUM_DATE_SERIAL_NUMBER as f64
+        {
+            return CalcResult::new_error(Error::NUM, cell, "Invalid number for date".to_string());
+        }
+        let issue_to_maturity_frac = match year_frac(issue as i64, maturity as i64, basis as i32) {
+            Ok(f) => f,
+            Err(_) => return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string()),
+        };
+        let issue_to_settlement_frac =
+            match year_frac(issue as i64, settlement as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let settlement_to_maturity_frac =
+            match year_frac(settlement as i64, maturity as i64, basis as i32) {
+                Ok(f) => f,
+                Err(_) => {
+                    return CalcResult::new_error(Error::NUM, cell, "Invalid date".to_string())
+                }
+            };
+        let mut y = 1.0 + issue_to_maturity_frac * rate;
+        y /= price / 100.0 + issue_to_settlement_frac * rate;
+        y -= 1.0;
+        y /= settlement_to_maturity_frac;
+        CalcResult::Number(y)
+    }
+
+    // COUPDAYBS(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdaybs(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let (prev_coupon_date, _) = coupon_dates(settlement_date, maturity_date, frequency);
+        let days = days_between_dates(prev_coupon_date, settlement_date, basis);
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPDAYS(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdays(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let (prev_coupon_date, next_coupon_date) =
+            coupon_dates(settlement_date, maturity_date, frequency);
+        let days = match basis {
+            0 | 4 => DAYS_IN_YEAR_360 / frequency, // 30/360 conventions
+            _ => days_between_dates(prev_coupon_date, next_coupon_date, basis), // Actual day counts
+        };
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPDAYSNC(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupdaysnc(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let (_, next_coupon_date) = coupon_dates(settlement_date, maturity_date, frequency);
+        let days = days_between_dates(settlement_date, next_coupon_date, basis);
+        CalcResult::Number(days as f64)
+    }
+
+    // COUPNCD(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupncd(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let (_, next_coupon_date) = coupon_dates(settlement_date, maturity_date, frequency);
+        date_to_serial_with_validation(next_coupon_date, cell)
+    }
+
+    // COUPNUM(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_coupnum(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let months = 12 / frequency;
+        let step = chrono::Months::new(months as u32);
+        let mut date = maturity_date;
+        let mut count = 0;
+        while settlement_date < date {
+            count += 1;
+            date = match date.checked_sub_months(step) {
+                Some(new_date) => new_date,
+                None => break, // Safety check to avoid infinite loop
+            };
+        }
+        CalcResult::Number(count as f64)
+    }
+
+    // COUPPCD(settlement, maturity, frequency, [basis])
+    pub(crate) fn fn_couppcd(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        let arg_count = args.len();
+        if !(3..=4).contains(&arg_count) {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        let settlement = match self.get_number_no_bools(&args[0], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let maturity = match self.get_number_no_bools(&args[1], cell) {
+            Ok(f) => f.trunc() as i64,
+            Err(s) => return s,
+        };
+        let frequency = match self.get_number_no_bools(&args[2], cell) {
+            Ok(f) => f.trunc() as i32,
+            Err(s) => return s,
+        };
+        let basis = if arg_count > 3 {
+            match self.get_number_no_bools(&args[3], cell) {
+                Ok(f) => f.trunc() as i32,
+                Err(s) => return s,
+            }
+        } else {
+            0
+        };
+
+        if ![1, 2, 4].contains(&frequency) || !(0..=4).contains(&basis) {
+            return CalcResult::new_error(Error::NUM, cell, "invalid arguments".to_string());
+        }
+        if settlement >= maturity {
+            return CalcResult::new_error(
+                Error::NUM,
+                cell,
+                "settlement should be < maturity".to_string(),
+            );
+        }
+
+        let settlement_date = match convert_date_serial(settlement as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let maturity_date = match convert_date_serial(maturity as f64, cell) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+
+        let (prev_coupon_date, _) = coupon_dates(settlement_date, maturity_date, frequency);
+        date_to_serial_with_validation(prev_coupon_date, cell)
     }
 
     // DOLLARDE(fractional_dollar, fraction)
