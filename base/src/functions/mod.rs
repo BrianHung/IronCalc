@@ -244,10 +244,10 @@ pub enum Function {
     NormSdist,
     NormSInv,
     Pearson,
-    // PercentileExc,
-    // PercentileInc,
-    // PercentrankExc,
-    // PercentrankInc,
+    PercentileExc,
+    PercentileInc,
+    PercentrankExc,
+    PercentrankInc,
     // Permut,
     // Permutationa,
     Phi,
@@ -428,6 +428,14 @@ macro_rules! impl_function_lookup {
         impl Functions {
             pub fn lookup(&self, name: &str) -> Option<Function> {
                 let key = name.to_uppercase();
+                // Hardcoded lookups for functions not yet in language.json
+                match key.as_str() {
+                    "PERCENTILE.EXC" => return Some(Function::PercentileExc),
+                    "PERCENTILE.INC" => return Some(Function::PercentileInc),
+                    "PERCENTRANK.EXC" => return Some(Function::PercentrankExc),
+                    "PERCENTRANK.INC" => return Some(Function::PercentrankInc),
+                    _ => {}
+                }
                 $(
                     if self.$field == key {
                         return Some(Function::$variant);
@@ -1017,6 +1025,10 @@ impl Function {
             Function::NormSdist => functions.normsdist.clone(),
             Function::NormSInv => functions.normsinv.clone(),
             Function::Pearson => functions.pearson.clone(),
+            Function::PercentileExc => "PERCENTILE.EXC".to_string(),
+            Function::PercentileInc => "PERCENTILE.INC".to_string(),
+            Function::PercentrankExc => "PERCENTRANK.EXC".to_string(),
+            Function::PercentrankInc => "PERCENTRANK.INC".to_string(),
             Function::Phi => functions.phi.clone(),
             Function::PoissonDist => functions.poissondist.clone(),
             Function::RankAvg => functions.rankavg.clone(),
@@ -1967,6 +1979,10 @@ impl<'a> Model<'a> {
             Function::NormSdist => self.fn_norm_s_dist(args, cell),
             Function::NormSInv => self.fn_norm_s_inv(args, cell),
             Function::Pearson => self.fn_pearson(args, cell),
+            Function::PercentileExc => self.fn_percentile_exc(args, cell),
+            Function::PercentileInc => self.fn_percentile_inc(args, cell),
+            Function::PercentrankExc => self.fn_percentrank_exc(args, cell),
+            Function::PercentrankInc => self.fn_percentrank_inc(args, cell),
             Function::Phi => self.fn_phi(args, cell),
             Function::PoissonDist => self.fn_poisson_dist(args, cell),
             Function::Standardize => self.fn_standardize(args, cell),
