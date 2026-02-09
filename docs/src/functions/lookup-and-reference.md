@@ -11,7 +11,7 @@ You can track the progress in this [GitHub issue](https://github.com/ironcalc/Ir
 
 | Function     | Status                                         | Documentation |
 | ------------ | ---------------------------------------------- | ------------- |
-| ADDRESS      | <Badge type="info" text="Not implemented yet" /> | –             |
+| ADDRESS      | <Badge type="tip" text="Available" />          | –             |
 | AREAS        | <Badge type="info" text="Not implemented yet" /> | –             |
 | CHOOSE       | <Badge type="tip" text="Available" />          | –             |
 | CHOOSECOLS   | <Badge type="info" text="Not implemented yet" /> | –             |

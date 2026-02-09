@@ -3,9 +3,6 @@ use crate::{
     calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
 };
 
-#[cfg(feature = "use_regex_lite")]
-use regex_lite as regex;
-
 use super::{
     binary_search::{
         binary_search_descending_or_greater, binary_search_descending_or_smaller,
@@ -44,7 +41,6 @@ enum MatchMode {
     ExactMatch = 0,
     ExactMatchLarger = 1,
     WildcardMatch = 2,
-    RegexMatch = 3,
 }
 
 // lookup_value in array, match_mode search_mode
@@ -133,29 +129,6 @@ fn linear_search(
                 }
             }
         }
-        MatchMode::RegexMatch => {
-            let result_matches: Box<dyn Fn(&CalcResult) -> bool> =
-                if let CalcResult::String(s) = &lookup_value {
-                    if let Ok(reg) = regex::Regex::new(&s.to_lowercase()) {
-                        Box::new(move |x| result_matches_regex(x, &reg))
-                    } else {
-                        Box::new(move |_| false)
-                    }
-                } else {
-                    Box::new(move |x| compare_values(x, lookup_value) == 0)
-                };
-            for l in 0..length {
-                let index = if search_mode == SearchMode::StartAtFirstItem {
-                    l
-                } else {
-                    length - l - 1
-                };
-                let value = &array[index];
-                if result_matches(value) {
-                    return Some(index);
-                }
-            }
-        }
     }
     None
 }
@@ -213,13 +186,45 @@ impl<'a> Model<'a> {
                 message: "Not found".to_string(),
             }
         };
-        let match_mode = match self.parse_match_mode(args, 4, cell, false) {
-            Ok(mode) => mode,
-            Err(error) => return error,
+        let match_mode = if args.len() >= 5 {
+            match self.get_number(&args[4], cell) {
+                Ok(c) => match c.floor() as i32 {
+                    -1 => MatchMode::ExactMatchSmaller,
+                    0 => MatchMode::ExactMatch,
+                    1 => MatchMode::ExactMatchLarger,
+                    2 => MatchMode::WildcardMatch,
+                    _ => {
+                        return CalcResult::Error {
+                            error: Error::VALUE,
+                            origin: cell,
+                            message: "Unexpected number".to_string(),
+                        };
+                    }
+                },
+                Err(s) => return s,
+            }
+        } else {
+            MatchMode::ExactMatch
         };
-        let search_mode = match self.parse_search_mode(args, 5, cell) {
-            Ok(mode) => mode,
-            Err(error) => return error,
+        let search_mode = if args.len() == 6 {
+            match self.get_number(&args[5], cell) {
+                Ok(c) => match c.floor() as i32 {
+                    1 => SearchMode::StartAtFirstItem,
+                    -1 => SearchMode::StartAtLastItem,
+                    -2 => SearchMode::BinarySearchDescending,
+                    2 => SearchMode::BinarySearchAscending,
+                    _ => {
+                        return CalcResult::Error {
+                            error: Error::ERROR,
+                            origin: cell,
+                            message: "Unexpected number".to_string(),
+                        };
+                    }
+                },
+                Err(s) => return s,
+            }
+        } else {
+            SearchMode::StartAtFirstItem
         };
         // lookup_array
         match self.evaluate_node_in_context(&args[1], cell) {
@@ -359,13 +364,45 @@ impl<'a> Model<'a> {
         if lookup_value.is_error() {
             return lookup_value;
         }
-        let match_mode = match self.parse_match_mode(args, 2, cell, true) {
-            Ok(mode) => mode,
-            Err(error) => return error,
+        let match_mode = if args.len() >= 3 {
+            match self.get_number(&args[2], cell) {
+                Ok(c) => match c.floor() as i32 {
+                    -1 => MatchMode::ExactMatchSmaller,
+                    0 => MatchMode::ExactMatch,
+                    1 => MatchMode::ExactMatchLarger,
+                    2 => MatchMode::WildcardMatch,
+                    _ => {
+                        return CalcResult::Error {
+                            error: Error::VALUE,
+                            origin: cell,
+                            message: "Unexpected number".to_string(),
+                        };
+                    }
+                },
+                Err(s) => return s,
+            }
+        } else {
+            MatchMode::ExactMatch
         };
-        let search_mode = match self.parse_search_mode(args, 3, cell) {
-            Ok(mode) => mode,
-            Err(error) => return error,
+        let search_mode = if args.len() == 4 {
+            match self.get_number(&args[3], cell) {
+                Ok(c) => match c.floor() as i32 {
+                    1 => SearchMode::StartAtFirstItem,
+                    -1 => SearchMode::StartAtLastItem,
+                    -2 => SearchMode::BinarySearchDescending,
+                    2 => SearchMode::BinarySearchAscending,
+                    _ => {
+                        return CalcResult::Error {
+                            error: Error::ERROR,
+                            origin: cell,
+                            message: "Unexpected number".to_string(),
+                        };
+                    }
+                },
+                Err(s) => return s,
+            }
+        } else {
+            SearchMode::StartAtFirstItem
         };
         match self.evaluate_node_in_context(&args[1], cell) {
             CalcResult::Range { left, right } => {
@@ -415,7 +452,7 @@ impl<'a> Model<'a> {
                                     binary_search_descending_or_smaller(&lookup_value, &array)
                                 }
                             }
-                            MatchMode::WildcardMatch | MatchMode::RegexMatch => {
+                            MatchMode::WildcardMatch => {
                                 return CalcResult::Error {
                                     error: Error::VALUE,
                                     origin: cell,

@@ -597,9 +597,9 @@ impl<'a> Model<'a> {
         if args.len() != 4 {
             return CalcResult::new_args_number_error(cell);
         }
-        let old_text = match self.get_string(&args[0], cell) {
+        let old_text = match self.calc_result_to_string(&args[0], cell) {
             Ok(s) => s,
-            Err(e) => return e,
+            Err(error) => return error,
         };
         let start_num = match self.get_number(&args[1], cell) {
             Ok(f) => f,
@@ -609,9 +609,9 @@ impl<'a> Model<'a> {
             Ok(f) => f,
             Err(e) => return e,
         };
-        let new_text = match self.get_string(&args[3], cell) {
+        let new_text = match self.calc_result_to_string(&args[3], cell) {
             Ok(s) => s,
-            Err(e) => return e,
+            Err(error) => return error,
         };
         if start_num < 1.0 || num_chars < 0.0 {
             return CalcResult::Error {

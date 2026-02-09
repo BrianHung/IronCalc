@@ -27,12 +27,12 @@ fn test_fn_xmatch_match_modes() {
     model._set("C2", "banana");
     model._set("C3", "apricot");
     model._set("B3", "=XMATCH(\"ap*\", C1:C3, 2)"); // Wildcard
-    model._set("B4", "=XMATCH(\"^[a-c]\", C1:C3, 3)"); // Regex
+    model._set("B4", "=XMATCH(\"^[a-c]\", C1:C3, 3)"); // Invalid match_mode
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"2"); // Found 20 (next smaller than 25)
     assert_eq!(model._get_text("B2"), *"2"); // Found 20 (next larger than 15)
     assert_eq!(model._get_text("B3"), *"1"); // Found "apple"
-    assert_eq!(model._get_text("B4"), *"1"); // Found "apple"
+    assert_eq!(model._get_text("B4"), *"#VALUE!");
 }
 
 #[test]
@@ -124,13 +124,13 @@ fn test_fn_xmatch_edge_cases() {
     model._set("C3", "40");
     model._set("B2", "=XMATCH(10, C1:C3, -1)"); // No smaller
     model._set("B3", "=XMATCH(50, C1:C3, 1)"); // No larger
-                                               // Invalid regex pattern
+    // Invalid match_mode
     model._set("B4", "=XMATCH(\"[\", A1:A1, 3)");
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"1"); // Case-insensitive
     assert_eq!(model._get_text("B2"), *"#N/A"); // No smaller value
     assert_eq!(model._get_text("B3"), *"#N/A"); // No larger value
-    assert_eq!(model._get_text("B4"), *"#N/A"); // Invalid regex
+    assert_eq!(model._get_text("B4"), *"#VALUE!"); // Invalid match_mode
 }
 
 #[test]
