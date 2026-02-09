@@ -1056,7 +1056,7 @@ fn static_analysis_on_function(kind: &Function, args: &[Node]) -> StaticResult {
         Function::Sum => StaticResult::Scalar,
         Function::Sumif => not_implemented(args),
         Function::Sumifs => not_implemented(args),
-        Function::Sumproduct => not_implemented(args),
+        Function::Sumproduct => scalar_arguments(args),
         Function::Tan => scalar_arguments(args),
         Function::Tanh => scalar_arguments(args),
         Function::ErrorType => not_implemented(args),

@@ -77,6 +77,7 @@ pub enum Function {
     Sum,
     Sumif,
     Sumifs,
+    Sumproduct,
     Sumx2my2,
     Sumx2py2,
     Sumxmy2,
@@ -870,6 +871,7 @@ impl Function {
             Function::Sum => functions.sum.clone(),
             Function::Sumif => functions.sumif.clone(),
             Function::Sumifs => functions.sumifs.clone(),
+            Function::Sumproduct => "SUMPRODUCT".to_string(),
             Function::Sumx2my2 => functions.sumx2my2.clone(),
             Function::Sumx2py2 => functions.sumx2py2.clone(),
             Function::Sumxmy2 => functions.sumxmy2.clone(),
@@ -1173,7 +1175,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 345> {
+    pub fn into_iter() -> IntoIter<Function, 346> {
         [
             Function::And,
             Function::False,
@@ -1250,6 +1252,7 @@ impl Function {
             Function::Sum,
             Function::Sumif,
             Function::Sumifs,
+            Function::Sumproduct,
             Function::Sumx2my2,
             Function::Sumx2py2,
             Function::Sumxmy2,
@@ -1709,6 +1712,7 @@ impl<'a> Model<'a> {
             Function::Sum => self.fn_sum(args, cell),
             Function::Sumif => self.fn_sumif(args, cell),
             Function::Sumifs => self.fn_sumifs(args, cell),
+            Function::Sumproduct => self.fn_sumproduct(args, cell),
             Function::Choose => self.fn_choose(args, cell),
             Function::Column => self.fn_column(args, cell),
             Function::Columns => self.fn_columns(args, cell),
