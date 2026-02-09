@@ -807,6 +807,112 @@ impl<'a> Model<'a> {
         CalcResult::Number(result)
     }
 
+    pub(crate) fn fn_sumproduct(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.is_empty() {
+            return CalcResult::new_args_number_error(cell);
+        }
+
+        enum Arg {
+            Scalar(f64),
+            Array(Vec<Vec<f64>>),
+        }
+
+        let mut processed: Vec<Arg> = Vec::new();
+        let mut rows: usize = 1;
+        let mut cols: usize = 1;
+        let mut have_matrix = false;
+
+        for arg in args {
+            match self.get_number_or_array(arg, cell) {
+                Ok(NumberOrArray::Number(n)) => processed.push(Arg::Scalar(n)),
+                Ok(NumberOrArray::Array(a)) => {
+                    let r = a.len();
+                    let c = a.first().map(|row| row.len()).unwrap_or(0);
+
+                    if r == 0 || c == 0 {
+                        return CalcResult::new_error(
+                            Error::VALUE,
+                            cell,
+                            "Empty arrays are not supported in SUMPRODUCT".to_string(),
+                        );
+                    }
+
+                    let mut arr = Vec::with_capacity(r);
+                    for row in a {
+                        let mut row_vec = Vec::with_capacity(row.len());
+                        for value in row {
+                            match value {
+                                ArrayNode::Number(n) => row_vec.push(n),
+                                ArrayNode::Boolean(b) => row_vec.push(if b { 1.0 } else { 0.0 }),
+                                ArrayNode::String(s) => match s.parse::<f64>() {
+                                    Ok(f) => row_vec.push(f),
+                                    Err(_) => row_vec.push(0.0),
+                                },
+                                ArrayNode::Error(e) => {
+                                    return CalcResult::Error {
+                                        error: e,
+                                        origin: cell,
+                                        message: "Error in array".to_string(),
+                                    };
+                                }
+                            }
+                        }
+                        arr.push(row_vec);
+                    }
+
+                    if !have_matrix {
+                        rows = r;
+                        cols = c;
+                        have_matrix = true;
+                    } else if r != rows || c != cols {
+                        return CalcResult::new_error(
+                            Error::VALUE,
+                            cell,
+                            "Array dimensions do not match".to_string(),
+                        );
+                    }
+                    processed.push(Arg::Array(arr));
+                }
+                Err(e) => return e,
+            }
+        }
+
+        if !have_matrix {
+            let mut prod = 1.0;
+            for p in processed {
+                match p {
+                    Arg::Scalar(n) => prod *= n,
+                    Arg::Array(_) => unreachable!(),
+                }
+            }
+            return CalcResult::Number(prod);
+        }
+
+        let mut total = 0.0;
+        for i in 0..rows {
+            for j in 0..cols {
+                let mut prod = 1.0;
+                for p in processed.iter() {
+                    match p {
+                        Arg::Scalar(n) => prod *= *n,
+                        Arg::Array(a) => {
+                            if i >= a.len() || j >= a[i].len() {
+                                return CalcResult::new_error(
+                                    Error::VALUE,
+                                    cell,
+                                    "Array index out of bounds".to_string(),
+                                );
+                            }
+                            prod *= a[i][j];
+                        }
+                    }
+                }
+                total += prod;
+            }
+        }
+        CalcResult::Number(total)
+    }
+
     /// SUMIF(criteria_range, criteria, [sum_range])
     /// if sum_rage is missing then criteria_range will be used
     pub(crate) fn fn_sumif(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {

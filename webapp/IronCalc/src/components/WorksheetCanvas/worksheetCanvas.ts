@@ -709,6 +709,92 @@ export default class WorksheetCanvas {
     this.cells.push(textProperties);
   }
 
+  /// Draws a single line from (x1,y1) to (x2,y2) using current stroke style/width.
+  private drawBorderLine(
+    context: CanvasRenderingContext2D,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+  ): void {
+    context.beginPath();
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    context.stroke();
+  }
+
+  /// Helper function to draw a border with different styles
+  private drawBorder(
+    context: CanvasRenderingContext2D,
+    style: string,
+    color: string,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    isVertical: boolean,
+  ): void {
+    context.save();
+    context.strokeStyle = color;
+
+    switch (style) {
+      case "thin":
+        context.lineWidth = 1;
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        break;
+      case "medium":
+        context.lineWidth = 2;
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        break;
+      case "thick":
+        context.lineWidth = 3;
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        break;
+      case "double":
+        // Draw two parallel lines
+        context.lineWidth = 1;
+        if (isVertical) {
+          this.drawBorderLine(context, x1 - 1, y1, x1 - 1, y2);
+          this.drawBorderLine(context, x1 + 1, y1, x1 + 1, y2);
+        } else {
+          this.drawBorderLine(context, x1, y1 - 1, x2, y1 - 1);
+          this.drawBorderLine(context, x1, y1 + 1, x2, y1 + 1);
+        }
+        break;
+      case "dotted":
+        context.lineWidth = 1;
+        context.setLineDash([1, 2]);
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        context.setLineDash([]);
+        break;
+      case "mediumdashed":
+        context.lineWidth = 2;
+        context.setLineDash([4, 2]);
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        context.setLineDash([]);
+        break;
+      case "slantdashdot":
+        context.lineWidth = 1;
+        context.setLineDash([4, 2, 1, 2]);
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        context.setLineDash([]);
+        break;
+      case "mediumdashdot":
+        context.lineWidth = 2;
+        context.setLineDash([4, 2, 1, 2]);
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        context.setLineDash([]);
+        break;
+      case "mediumdashdotdot":
+        context.lineWidth = 2;
+        context.setLineDash([4, 2, 1, 2, 1, 2]);
+        this.drawBorderLine(context, x1, y1, x2, y2);
+        context.setLineDash([]);
+        break;
+    }
+    context.restore();
+  }
+
   /// Renders the cell style: colors, borders, etc. But not the text.
   private renderCellStyle(
     row: number,
@@ -746,18 +832,10 @@ export default class WorksheetCanvas {
     // we skip don't draw a left border if it is marked as a "spill cell"
     if (this.spills.get(`${row}-${column}`) !== 1) {
       let borderLeftColor = cellGridColor;
-      let borderLeftWidth = 1;
+      let borderLeftStyle = "thin";
       if (border.left) {
         borderLeftColor = border.left.color;
-        switch (border.left.style) {
-          case "thin":
-            break;
-          case "medium":
-            borderLeftWidth = 2;
-            break;
-          case "thick":
-            borderLeftWidth = 3;
-        }
+        borderLeftStyle = border.left.style;
       } else {
         const leftStyle = this.model.getCellStyle(
           selectedSheet,
@@ -766,15 +844,7 @@ export default class WorksheetCanvas {
         );
         if (leftStyle.border.right) {
           borderLeftColor = leftStyle.border.right.color;
-          switch (leftStyle.border.right.style) {
-            case "thin":
-              break;
-            case "medium":
-              borderLeftWidth = 2;
-              break;
-            case "thick":
-              borderLeftWidth = 3;
-          }
+          borderLeftStyle = leftStyle.border.right.style;
         } else if (style.fill.fg_color) {
           borderLeftColor = style.fill.fg_color;
         } else if (leftStyle.fill.fg_color) {
@@ -782,52 +852,44 @@ export default class WorksheetCanvas {
         }
       }
 
-      context.beginPath();
-      context.strokeStyle = borderLeftColor;
-      context.lineWidth = borderLeftWidth;
-      context.moveTo(x, y);
-      context.lineTo(x, y + height);
-      context.stroke();
+      this.drawBorder(
+        context,
+        borderLeftStyle,
+        borderLeftColor,
+        x,
+        y,
+        x,
+        y + height,
+        true,
+      );
     }
 
     let borderTopColor = cellGridColor;
-    let borderTopWidth = 1;
+    let borderTopStyle = "thin";
     if (border.top) {
       borderTopColor = border.top.color;
-      switch (border.top.style) {
-        case "thin":
-          break;
-        case "medium":
-          borderTopWidth = 2;
-          break;
-        case "thick":
-          borderTopWidth = 3;
-      }
+      borderTopStyle = border.top.style;
     } else {
       const topStyle = this.model.getCellStyle(selectedSheet, row - 1, column);
       if (topStyle.border.bottom) {
         borderTopColor = topStyle.border.bottom.color;
-        switch (topStyle.border.bottom.style) {
-          case "thin":
-            break;
-          case "medium":
-            borderTopWidth = 2;
-            break;
-          case "thick":
-            borderTopWidth = 3;
-        }
+        borderTopStyle = topStyle.border.bottom.style;
       } else if (style.fill.fg_color) {
         borderTopColor = style.fill.fg_color;
       } else if (topStyle.fill.fg_color) {
         borderTopColor = topStyle.fill.fg_color;
       }
     }
-    context.beginPath();
-    context.strokeStyle = borderTopColor;
-    context.lineWidth = borderTopWidth;
-    context.moveTo(x, y);
-    context.lineTo(x + width, y);
-    context.stroke();
+    this.drawBorder(
+      context,
+      borderTopStyle,
+      borderTopColor,
+      x,
+      y,
+      x + width,
+      y,
+      false,
+    );
   }
 
   /// Renders the text in the cell.
