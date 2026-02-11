@@ -5,7 +5,10 @@ use crate::{
     utils::ParsedReference,
 };
 
-use super::util::{compare_values, from_wildcard_to_regex, result_matches_regex, values_are_equal};
+use super::util::{
+    compare_values, create_lookup_matcher, from_wildcard_to_regex, result_matches_regex,
+    validate_vector_range, values_are_equal,
+};
 
 impl<'a> Model<'a> {
     pub(crate) fn fn_index(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -198,24 +201,21 @@ impl<'a> Model<'a> {
                     }
                     0 => {
                         // We apply linear search
-                        let is_row_vector;
-                        if left.row == right.row {
-                            is_row_vector = false;
-                        } else if left.column == right.column {
-                            is_row_vector = true;
-                        } else {
-                            // second argument must be a vector
-                            return CalcResult::Error {
-                                error: Error::ERROR,
-                                origin: cell,
-                                message: "Argument must be a vector".to_string(),
-                            };
-                        }
+                        let is_row_vector = match validate_vector_range(
+                            &left,
+                            &right,
+                            cell,
+                            "Argument must be a vector",
+                        ) {
+                            Ok(is_row) => is_row,
+                            Err(error) => return error,
+                        };
                         let n = if is_row_vector {
                             right.row - left.row
                         } else {
                             right.column - left.column
                         } + 1;
+                        // For MATCH with match_type 0, we need to check for wildcard patterns in strings
                         let result_matches: Box<dyn Fn(&CalcResult) -> bool> =
                             if let CalcResult::String(s) = &target {
                                 if let Ok(reg) = from_wildcard_to_regex(&s.to_lowercase(), true) {
@@ -226,14 +226,14 @@ impl<'a> Model<'a> {
                             } else {
                                 Box::new(move |x| values_are_equal(x, &target))
                             };
-                        for l in 0..n {
+                        for idx in 0..n {
                             let row;
                             let column;
                             if is_row_vector {
-                                row = left.row + l;
+                                row = left.row + idx;
                                 column = left.column;
                             } else {
-                                column = left.column + l;
+                                column = left.column + idx;
                                 row = left.row;
                             }
                             let value = self.evaluate_cell(CellReferenceIndex {
@@ -242,7 +242,7 @@ impl<'a> Model<'a> {
                                 column,
                             });
                             if result_matches(&value) {
-                                return CalcResult::Number(l as f64 + 1.0);
+                                return CalcResult::Number(idx as f64 + 1.0);
                             }
                         }
                         CalcResult::Error {
@@ -253,21 +253,17 @@ impl<'a> Model<'a> {
                     }
                     _ => {
                         // l is the number of elements less than target in the vector
-                        let is_row_vector;
-                        if left.row == right.row {
-                            is_row_vector = false;
-                        } else if left.column == right.column {
-                            is_row_vector = true;
-                        } else {
-                            // second argument must be a vector
-                            return CalcResult::Error {
-                                error: Error::ERROR,
-                                origin: cell,
-                                message: "Argument must be a vector".to_string(),
-                            };
-                        }
-                        let l = self.binary_search(&target, &left, &right, is_row_vector);
-                        if l == -2 {
+                        let is_row_vector = match validate_vector_range(
+                            &left,
+                            &right,
+                            cell,
+                            "Argument must be a vector",
+                        ) {
+                            Ok(is_row) => is_row,
+                            Err(error) => return error,
+                        };
+                        let position = self.binary_search(&target, &left, &right, is_row_vector);
+                        if position == -2 {
                             return CalcResult::Error {
                                 error: Error::NA,
                                 origin: cell,
@@ -275,7 +271,7 @@ impl<'a> Model<'a> {
                             };
                         }
 
-                        CalcResult::Number(l as f64 + 1.0)
+                        CalcResult::Number(position as f64 + 1.0)
                     }
                 }
             }
@@ -317,8 +313,8 @@ impl<'a> Model<'a> {
             CalcResult::Range { left, right } => {
                 if is_sorted {
                     // This assumes the values in row are in order
-                    let l = self.binary_search(&lookup_value, &left, &right, false);
-                    if l == -2 {
+                    let position = self.binary_search(&lookup_value, &left, &right, false);
+                    if position == -2 {
                         return CalcResult::Error {
                             error: Error::NA,
                             origin: cell,
@@ -326,7 +322,7 @@ impl<'a> Model<'a> {
                         };
                     }
                     let row = left.row + row_index - 1;
-                    let column = left.column + l;
+                    let column = left.column + position;
                     if row > right.row {
                         return CalcResult::Error {
                             error: Error::REF,
@@ -350,27 +346,18 @@ impl<'a> Model<'a> {
                             message: "Invalid reference".to_string(),
                         };
                     }
-                    let result_matches: Box<dyn Fn(&CalcResult) -> bool> =
-                        if let CalcResult::String(s) = &lookup_value {
-                            if let Ok(reg) = from_wildcard_to_regex(&s.to_lowercase(), true) {
-                                Box::new(move |x| result_matches_regex(x, &reg))
-                            } else {
-                                Box::new(move |_| false)
-                            }
-                        } else {
-                            Box::new(move |x| compare_values(x, &lookup_value) == 0)
-                        };
-                    for l in 0..n {
+                    let result_matches = create_lookup_matcher(&lookup_value);
+                    for idx in 0..n {
                         let value = self.evaluate_cell(CellReferenceIndex {
                             sheet: left.sheet,
                             row: left.row,
-                            column: left.column + l,
+                            column: left.column + idx,
                         });
                         if result_matches(&value) {
                             return self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
-                                column: left.column + l,
+                                column: left.column + idx,
                             });
                         }
                     }
@@ -424,15 +411,15 @@ impl<'a> Model<'a> {
             CalcResult::Range { left, right } => {
                 if is_sorted {
                     // This assumes the values in column are in order
-                    let l = self.binary_search(&lookup_value, &left, &right, true);
-                    if l == -2 {
+                    let position = self.binary_search(&lookup_value, &left, &right, true);
+                    if position == -2 {
                         return CalcResult::Error {
                             error: Error::NA,
                             origin: cell,
                             message: "Not found".to_string(),
                         };
                     }
-                    let row = left.row + l;
+                    let row = left.row + position;
                     let column = left.column + column_index - 1;
                     if column > right.column {
                         return CalcResult::Error {
@@ -457,26 +444,17 @@ impl<'a> Model<'a> {
                             message: "Invalid reference".to_string(),
                         };
                     }
-                    let result_matches: Box<dyn Fn(&CalcResult) -> bool> =
-                        if let CalcResult::String(s) = &lookup_value {
-                            if let Ok(reg) = from_wildcard_to_regex(&s.to_lowercase(), true) {
-                                Box::new(move |x| result_matches_regex(x, &reg))
-                            } else {
-                                Box::new(move |_| false)
-                            }
-                        } else {
-                            Box::new(move |x| compare_values(x, &lookup_value) == 0)
-                        };
-                    for l in 0..n {
+                    let result_matches = create_lookup_matcher(&lookup_value);
+                    for idx in 0..n {
                         let value = self.evaluate_cell(CellReferenceIndex {
                             sheet: left.sheet,
-                            row: left.row + l,
+                            row: left.row + idx,
                             column: left.column,
                         });
                         if result_matches(&value) {
                             return self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
-                                row: left.row + l,
+                                row: left.row + idx,
                                 column,
                             });
                         }
@@ -534,8 +512,8 @@ impl<'a> Model<'a> {
                         message: "Second argument must be a vector".to_string(),
                     };
                 }
-                let l = self.binary_search(&target, &left, &right, is_row_vector);
-                if l == -2 {
+                let position = self.binary_search(&target, &left, &right, is_row_vector);
+                if position == -2 {
                     return CalcResult::Error {
                         error: Error::NA,
                         origin: cell,
@@ -547,17 +525,17 @@ impl<'a> Model<'a> {
                     let target_range = self.evaluate_node_in_context(&args[2], cell);
                     match target_range {
                         CalcResult::Range {
-                            left: l1,
-                            right: _r1,
+                            left: result_left,
+                            right: _result_right,
                         } => {
                             let row;
                             let column;
                             if is_row_vector {
-                                row = l1.row + l;
-                                column = l1.column;
+                                row = result_left.row + position;
+                                column = result_left.column;
                             } else {
-                                column = l1.column + l;
-                                row = l1.row;
+                                column = result_left.column + position;
+                                row = result_left.row;
                             }
                             self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
@@ -576,10 +554,10 @@ impl<'a> Model<'a> {
                     let row;
                     let column;
                     if is_row_vector {
-                        row = left.row + l;
+                        row = left.row + position;
                         column = left.column;
                     } else {
-                        column = left.column + l;
+                        column = left.column + position;
                         row = left.row;
                     }
                     self.evaluate_cell(CellReferenceIndex {
@@ -725,13 +703,109 @@ impl<'a> Model<'a> {
         }
     }
 
+    // ADDRESS(row_num, col_num, [abs_num], [a1], [sheet])
+    // Returns a reference as text to a single cell
+    pub(crate) fn fn_address(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() < 2 || args.len() > 5 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let row = match self.get_number(&args[0], cell) {
+            Ok(r) => r as i32,
+            Err(e) => return e,
+        };
+        let column = match self.get_number(&args[1], cell) {
+            Ok(c) => c as i32,
+            Err(e) => return e,
+        };
+        if !(1..=LAST_ROW).contains(&row) || !(1..=LAST_COLUMN).contains(&column) {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid row or column".to_string(),
+            };
+        }
+        let abs_num = if args.len() >= 3 {
+            match self.get_number(&args[2], cell) {
+                Ok(v) => v as i32,
+                Err(e) => return e,
+            }
+        } else {
+            1
+        };
+        if !(1..=4).contains(&abs_num) {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid abs_num".to_string(),
+            };
+        }
+        let a1 = if args.len() >= 4 {
+            match self.get_boolean(&args[3], cell) {
+                Ok(v) => v,
+                Err(e) => return e,
+            }
+        } else {
+            true
+        };
+        let sheet = if args.len() == 5 {
+            match self.get_string(&args[4], cell) {
+                Ok(s) => Some(s),
+                Err(e) => return e,
+            }
+        } else {
+            None
+        };
+
+        let result = if a1 {
+            let col = match crate::expressions::utils::number_to_column(column) {
+                Some(c) => c,
+                None => {
+                    return CalcResult::Error {
+                        error: Error::VALUE,
+                        origin: cell,
+                        message: "Invalid column number".to_string(),
+                    };
+                }
+            };
+            let col_str = match abs_num {
+                1 | 3 => format!("${col}"),
+                _ => col,
+            };
+            let row_str = match abs_num {
+                1 | 2 => format!("${row}"),
+                _ => format!("{row}"),
+            };
+            let addr = format!("{col_str}{row_str}");
+            match sheet {
+                Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
+                None => addr,
+            }
+        } else {
+            let row_str = match abs_num {
+                1 | 2 => format!("R{row}"),
+                _ => format!("R[{row}]"),
+            };
+            let col_str = match abs_num {
+                1 | 3 => format!("C{column}"),
+                _ => format!("C[{column}]"),
+            };
+            let addr = format!("{row_str}{col_str}");
+            match sheet {
+                Some(s) => format!("{}!{}", crate::expressions::utils::quote_name(&s), addr),
+                None => addr,
+            }
+        };
+
+        CalcResult::String(result)
+    }
+
     // OFFSET(reference, rows, cols, [height], [width])
     // Returns a reference to a range that is a specified number of rows and columns from a cell or range of cells.
     // The reference that is returned can be a single cell or a range of cells.
     // You can specify the number of rows and the number of columns to be returned.
     pub(crate) fn fn_offset(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
-        let l = args.len();
-        if !(3..=5).contains(&l) {
+        let arg_count = args.len();
+        if !(3..=5).contains(&arg_count) {
             return CalcResult::new_args_number_error(cell);
         }
         let reference = match self.get_reference(&args[0], cell) {
@@ -762,7 +836,7 @@ impl<'a> Model<'a> {
         let column_start = reference.left.column + cols;
         let width;
         let height;
-        if l == 4 {
+        if arg_count == 4 {
             height = match self.get_number(&args[3], cell) {
                 Ok(c) => {
                     if c < 1.0 {
@@ -774,7 +848,7 @@ impl<'a> Model<'a> {
                 Err(s) => return s,
             };
             width = reference.right.column - reference.left.column;
-        } else if l == 5 {
+        } else if arg_count == 5 {
             height = match self.get_number(&args[3], cell) {
                 Ok(c) => {
                     if c < 1.0 {

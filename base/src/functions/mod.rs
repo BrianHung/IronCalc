@@ -145,6 +145,7 @@ pub enum Function {
     Info,
 
     // Lookup and reference
+    Address,
     Hlookup,
     Index,
     Indirect,
@@ -155,6 +156,7 @@ pub enum Function {
     Rows,
     Vlookup,
     Xlookup,
+    Xmatch,
 
     // Text
     Concat,
@@ -165,6 +167,8 @@ pub enum Function {
     Len,
     Lower,
     Mid,
+    Proper,
+    Replace,
     Rept,
     Right,
     Search,
@@ -428,6 +432,14 @@ macro_rules! impl_function_lookup {
         impl Functions {
             pub fn lookup(&self, name: &str) -> Option<Function> {
                 let key = name.to_uppercase();
+                // New functions without localization support
+                match key.as_str() {
+                    "ADDRESS" => return Some(Function::Address),
+                    "XMATCH" => return Some(Function::Xmatch),
+                    "PROPER" => return Some(Function::Proper),
+                    "REPLACE" => return Some(Function::Replace),
+                    _ => {}
+                }
                 $(
                     if self.$field == key {
                         return Some(Function::$variant);
@@ -938,6 +950,8 @@ impl Function {
             Function::Rows => functions.rows.clone(),
             Function::Vlookup => functions.vlookup.clone(),
             Function::Xlookup => functions.xlookup.clone(),
+            Function::Xmatch => "XMATCH".to_string(),
+            Function::Address => "ADDRESS".to_string(),
             Function::Concat => functions.concat.clone(),
             Function::Concatenate => functions.concatenate.clone(),
             Function::Exact => functions.exact.clone(),
@@ -946,6 +960,8 @@ impl Function {
             Function::Len => functions.len.clone(),
             Function::Lower => functions.lower.clone(),
             Function::Mid => functions.mid.clone(),
+            Function::Proper => "PROPER".to_string(),
+            Function::Replace => "REPLACE".to_string(),
             Function::Rept => functions.rept.clone(),
             Function::Right => functions.right.clone(),
             Function::Search => functions.search.clone(),
@@ -1168,7 +1184,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 345> {
+    pub fn into_iter() -> IntoIter<Function, 349> {
         [
             Function::And,
             Function::False,
@@ -1253,6 +1269,7 @@ impl Function {
             Function::Columns,
             Function::Index,
             Function::Indirect,
+            Function::Address,
             Function::Hlookup,
             Function::Lookup,
             Function::Match,
@@ -1261,6 +1278,7 @@ impl Function {
             Function::Rows,
             Function::Vlookup,
             Function::Xlookup,
+            Function::Xmatch,
             Function::Concatenate,
             Function::Exact,
             Function::Value,
@@ -1272,6 +1290,8 @@ impl Function {
             Function::Len,
             Function::Lower,
             Function::Mid,
+            Function::Proper,
+            Function::Replace,
             Function::Right,
             Function::Search,
             Function::Text,
@@ -1531,6 +1551,7 @@ impl Function {
             Function::Minifs => "_xlfn.MINIFS".to_string(),
             Function::Switch => "_xlfn.SWITCH".to_string(),
             Function::Xlookup => "_xlfn.XLOOKUP".to_string(),
+            Function::Xmatch => "_xlfn.XMATCH".to_string(),
             Function::Xor => "_xlfn.XOR".to_string(),
             Function::Textbefore => "_xlfn.TEXTBEFORE".to_string(),
             Function::Textafter => "_xlfn.TEXTAFTER".to_string(),
@@ -1709,6 +1730,7 @@ impl<'a> Model<'a> {
             Function::Columns => self.fn_columns(args, cell),
             Function::Index => self.fn_index(args, cell),
             Function::Indirect => self.fn_indirect(args, cell),
+            Function::Address => self.fn_address(args, cell),
             Function::Hlookup => self.fn_hlookup(args, cell),
             Function::Lookup => self.fn_lookup(args, cell),
             Function::Match => self.fn_match(args, cell),
@@ -1717,6 +1739,7 @@ impl<'a> Model<'a> {
             Function::Rows => self.fn_rows(args, cell),
             Function::Vlookup => self.fn_vlookup(args, cell),
             Function::Xlookup => self.fn_xlookup(args, cell),
+            Function::Xmatch => self.fn_xmatch(args, cell),
             Function::Concatenate => self.fn_concatenate(args, cell),
             Function::Exact => self.fn_exact(args, cell),
             Function::Value => self.fn_value(args, cell),
@@ -1728,6 +1751,8 @@ impl<'a> Model<'a> {
             Function::Len => self.fn_len(args, cell),
             Function::Lower => self.fn_lower(args, cell),
             Function::Mid => self.fn_mid(args, cell),
+            Function::Proper => self.fn_proper(args, cell),
+            Function::Replace => self.fn_replace(args, cell),
             Function::Right => self.fn_right(args, cell),
             Function::Search => self.fn_search(args, cell),
             Function::Text => self.fn_text(args, cell),

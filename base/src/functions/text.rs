@@ -279,33 +279,9 @@ impl<'a> Model<'a> {
     // LEN, LEFT, RIGHT, MID, LOWER, UPPER, TRIM
     pub(crate) fn fn_len(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.evaluate_node_in_context(&args[0], cell) {
-                CalcResult::Number(v) => format!("{v}"),
-                CalcResult::String(v) => v,
-                CalcResult::Boolean(b) => {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::Range { .. } => {
-                    // Implicit Intersection not implemented
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Implicit Intersection not implemented".to_string(),
-                    };
-                }
-                CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
-                    }
-                }
+            let s = match self.get_string(&args[0], cell) {
+                Ok(s) => s,
+                Err(error) => return error,
             };
             return CalcResult::Number(s.chars().count() as f64);
         }
@@ -314,33 +290,9 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_trim(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.evaluate_node_in_context(&args[0], cell) {
-                CalcResult::Number(v) => format!("{v}"),
-                CalcResult::String(v) => v,
-                CalcResult::Boolean(b) => {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::Range { .. } => {
-                    // Implicit Intersection not implemented
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Implicit Intersection not implemented".to_string(),
-                    };
-                }
-                CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
-                    }
-                }
+            let s = match self.get_string(&args[0], cell) {
+                Ok(s) => s,
+                Err(error) => return error,
             };
             return CalcResult::String(s.trim().to_owned());
         }
@@ -349,74 +301,59 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_lower(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.evaluate_node_in_context(&args[0], cell) {
-                CalcResult::Number(v) => format!("{v}"),
-                CalcResult::String(v) => v,
-                CalcResult::Boolean(b) => {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::Range { .. } => {
-                    // Implicit Intersection not implemented
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Implicit Intersection not implemented".to_string(),
-                    };
-                }
-                CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
-                    }
-                }
+            let s = match self.get_string(&args[0], cell) {
+                Ok(s) => s,
+                Err(error) => return error,
             };
             return CalcResult::String(s.to_lowercase());
         }
         CalcResult::new_args_number_error(cell)
     }
 
+    pub(crate) fn fn_proper(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() == 1 {
+            let text = match self.get_string(&args[0], cell) {
+                Ok(s) => s,
+                Err(error) => return error,
+            };
+            let mut result = String::new();
+            let mut start_word = true;
+            for ch in text.chars() {
+                if ch.is_alphabetic() {
+                    if start_word {
+                        for c in ch.to_uppercase() {
+                            result.push(c);
+                        }
+                    } else {
+                        for c in ch.to_lowercase() {
+                            result.push(c);
+                        }
+                    }
+                    start_word = false;
+                } else {
+                    result.push(ch);
+                    start_word = true;
+                }
+            }
+            return CalcResult::String(result);
+        }
+        CalcResult::new_args_number_error(cell)
+    }
+
     pub(crate) fn fn_unicode(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.evaluate_node_in_context(&args[0], cell) {
-                CalcResult::Number(v) => format!("{v}"),
-                CalcResult::String(v) => v,
-                CalcResult::Boolean(b) => {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
+            let s = match self.get_string(&args[0], cell) {
+                Ok(s) => {
+                    if s.is_empty() {
+                        return CalcResult::Error {
+                            error: Error::VALUE,
+                            origin: cell,
+                            message: "Empty cell".to_string(),
+                        };
                     }
+                    s
                 }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::Range { .. } => {
-                    // Implicit Intersection not implemented
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Implicit Intersection not implemented".to_string(),
-                    };
-                }
-                CalcResult::EmptyCell | CalcResult::EmptyArg => {
-                    return CalcResult::Error {
-                        error: Error::VALUE,
-                        origin: cell,
-                        message: "Empty cell".to_string(),
-                    }
-                }
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
-                    }
-                }
+                Err(error) => return error,
             };
 
             match s.chars().next() {
@@ -438,33 +375,9 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_upper(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.evaluate_node_in_context(&args[0], cell) {
-                CalcResult::Number(v) => format!("{v}"),
-                CalcResult::String(v) => v,
-                CalcResult::Boolean(b) => {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
-                    }
-                }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::Range { .. } => {
-                    // Implicit Intersection not implemented
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Implicit Intersection not implemented".to_string(),
-                    };
-                }
-                CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
-                    }
-                }
+            let s = match self.get_string(&args[0], cell) {
+                Ok(s) => s,
+                Err(error) => return error,
             };
             return CalcResult::String(s.to_uppercase());
         }
@@ -475,33 +388,9 @@ impl<'a> Model<'a> {
         if args.len() > 2 || args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.evaluate_node_in_context(&args[0], cell) {
-            CalcResult::Number(v) => format!("{v}"),
-            CalcResult::String(v) => v,
-            CalcResult::Boolean(b) => {
-                if b {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            }
-            error @ CalcResult::Error { .. } => return error,
-            CalcResult::Range { .. } => {
-                // Implicit Intersection not implemented
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Implicit Intersection not implemented".to_string(),
-                };
-            }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-            CalcResult::Array(_) => {
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Arrays not supported yet".to_string(),
-                }
-            }
+        let s = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(error) => return error,
         };
         let num_chars = if args.len() == 2 {
             match self.evaluate_node_in_context(&args[1], cell) {
@@ -557,33 +446,9 @@ impl<'a> Model<'a> {
         if args.len() > 2 || args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.evaluate_node_in_context(&args[0], cell) {
-            CalcResult::Number(v) => format!("{v}"),
-            CalcResult::String(v) => v,
-            CalcResult::Boolean(b) => {
-                if b {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            }
-            error @ CalcResult::Error { .. } => return error,
-            CalcResult::Range { .. } => {
-                // Implicit Intersection not implemented
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Implicit Intersection not implemented".to_string(),
-                };
-            }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-            CalcResult::Array(_) => {
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Arrays not supported yet".to_string(),
-                }
-            }
+        let s = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(error) => return error,
         };
         let num_chars = if args.len() == 2 {
             match self.evaluate_node_in_context(&args[1], cell) {
@@ -639,33 +504,9 @@ impl<'a> Model<'a> {
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.evaluate_node_in_context(&args[0], cell) {
-            CalcResult::Number(v) => format!("{v}"),
-            CalcResult::String(v) => v,
-            CalcResult::Boolean(b) => {
-                if b {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            }
-            error @ CalcResult::Error { .. } => return error,
-            CalcResult::Range { .. } => {
-                // Implicit Intersection not implemented
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Implicit Intersection not implemented".to_string(),
-                };
-            }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => "".to_string(),
-            CalcResult::Array(_) => {
-                return CalcResult::Error {
-                    error: Error::NIMPL,
-                    origin: cell,
-                    message: "Arrays not supported yet".to_string(),
-                }
-            }
+        let s = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(error) => return error,
         };
         let start_num = match self.evaluate_node_in_context(&args[1], cell) {
             CalcResult::Number(v) => {
@@ -749,6 +590,54 @@ impl<'a> Model<'a> {
                 count += 1;
             }
         }
+        CalcResult::String(result)
+    }
+
+    pub(crate) fn fn_replace(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
+        if args.len() != 4 {
+            return CalcResult::new_args_number_error(cell);
+        }
+        let old_text = match self.get_string(&args[0], cell) {
+            Ok(s) => s,
+            Err(error) => return error,
+        };
+        let start_num = match self.get_number(&args[1], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let num_chars = match self.get_number(&args[2], cell) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        let new_text = match self.get_string(&args[3], cell) {
+            Ok(s) => s,
+            Err(error) => return error,
+        };
+        if start_num < 1.0 || num_chars < 0.0 {
+            return CalcResult::Error {
+                error: Error::VALUE,
+                origin: cell,
+                message: "Invalid value".to_string(),
+            };
+        }
+        let start_index = start_num.floor() as usize - 1;
+        let num = num_chars.floor() as usize;
+        fn byte_index_from_char(s: &str, idx: usize) -> usize {
+            for (count, (b, _)) in s.char_indices().enumerate() {
+                if count == idx {
+                    return b;
+                }
+            }
+            s.len()
+        }
+        let start_byte = byte_index_from_char(&old_text, start_index);
+        let end_byte = byte_index_from_char(&old_text, start_index.saturating_add(num));
+        let result = format!(
+            "{}{}{}",
+            &old_text[..start_byte],
+            new_text,
+            &old_text[end_byte..]
+        );
         CalcResult::String(result)
     }
 

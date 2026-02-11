@@ -1,6 +1,10 @@
 #[cfg(feature = "use_regex_lite")]
 use regex_lite as regex;
 
+use crate::constants::{LAST_COLUMN, LAST_ROW};
+use crate::expressions::token::Error;
+use crate::expressions::types::CellReferenceIndex;
+use crate::model::Model;
 use crate::{
     calc_result::CalcResult, expressions::token::is_english_error_string,
     number_format::to_excel_precision,
@@ -26,6 +30,42 @@ pub(crate) fn values_are_equal(left: &CalcResult, right: &CalcResult) -> bool {
         (CalcResult::EmptyCell, CalcResult::EmptyCell) => true,
         // NOTE: Errors and Ranges are not covered
         (_, _) => false,
+    }
+}
+
+/// Validates that the range is a vector (single row or single column).
+/// Returns Ok(true) for row vector, Ok(false) for column vector, Err on invalid range.
+pub(crate) fn validate_vector_range(
+    left: &CellReferenceIndex,
+    right: &CellReferenceIndex,
+    cell: CellReferenceIndex,
+    message: &str,
+) -> Result<bool, CalcResult> {
+    if left.row == right.row {
+        Ok(false) // column vector
+    } else if left.column == right.column {
+        Ok(true) // row vector
+    } else {
+        Err(CalcResult::new_error(
+            Error::VALUE,
+            cell,
+            message.to_string(),
+        ))
+    }
+}
+
+/// Returns a matcher function for lookup (exact or wildcard on strings).
+pub(crate) fn create_lookup_matcher(
+    lookup_value: &CalcResult,
+) -> Box<dyn Fn(&CalcResult) -> bool + '_> {
+    if let CalcResult::String(s) = lookup_value {
+        if let Ok(reg) = from_wildcard_to_regex(&s.to_lowercase(), true) {
+            Box::new(move |x| result_matches_regex(x, &reg))
+        } else {
+            Box::new(move |_| false)
+        }
+    } else {
+        Box::new(move |x| values_are_equal(x, lookup_value))
     }
 }
 
@@ -402,4 +442,54 @@ pub(crate) fn build_criteria<'a>(value: &'a CalcResult) -> Box<dyn Fn(&CalcResul
         CalcResult::Array(_) => Box::new(move |_x| false),
         CalcResult::EmptyCell | CalcResult::EmptyArg => Box::new(result_is_equal_to_empty),
     }
+}
+
+/// Adjust range bounds when they span entire rows/columns to actual worksheet dimensions
+pub(crate) fn adjust_range_to_worksheet_bounds(
+    model: &Model,
+    left: CellReferenceIndex,
+    right: CellReferenceIndex,
+    cell: CellReferenceIndex,
+) -> Result<(CellReferenceIndex, CellReferenceIndex), CalcResult> {
+    let mut end_row = right.row;
+    let start_row = left.row;
+    let mut end_col = right.column;
+    let start_col = left.column;
+
+    if start_row == 1 && end_row == LAST_ROW {
+        end_row = match model.workbook.worksheet(left.sheet) {
+            Ok(worksheet) => worksheet.dimension().max_row,
+            Err(_) => {
+                return Err(CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                ));
+            }
+        };
+    }
+    if start_col == 1 && end_col == LAST_COLUMN {
+        end_col = match model.workbook.worksheet(left.sheet) {
+            Ok(worksheet) => worksheet.dimension().max_column,
+            Err(_) => {
+                return Err(CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                ));
+            }
+        };
+    }
+
+    let adjusted_left = CellReferenceIndex {
+        sheet: left.sheet,
+        column: start_col,
+        row: start_row,
+    };
+    let adjusted_right = CellReferenceIndex {
+        sheet: left.sheet,
+        column: end_col,
+        row: end_row,
+    };
+    Ok((adjusted_left, adjusted_right))
 }
