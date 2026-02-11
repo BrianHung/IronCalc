@@ -1184,7 +1184,7 @@ impl Function {
             Function::Steyx => functions.steyx.clone(),
         }
     }
-    pub fn into_iter() -> IntoIter<Function, 345> {
+    pub fn into_iter() -> IntoIter<Function, 349> {
         [
             Function::And,
             Function::False,
@@ -1739,6 +1739,7 @@ impl<'a> Model<'a> {
             Function::Rows => self.fn_rows(args, cell),
             Function::Vlookup => self.fn_vlookup(args, cell),
             Function::Xlookup => self.fn_xlookup(args, cell),
+            Function::Xmatch => self.fn_xmatch(args, cell),
             Function::Concatenate => self.fn_concatenate(args, cell),
             Function::Exact => self.fn_exact(args, cell),
             Function::Value => self.fn_value(args, cell),

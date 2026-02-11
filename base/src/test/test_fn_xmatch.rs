@@ -124,7 +124,7 @@ fn test_fn_xmatch_edge_cases() {
     model._set("C3", "40");
     model._set("B2", "=XMATCH(10, C1:C3, -1)"); // No smaller
     model._set("B3", "=XMATCH(50, C1:C3, 1)"); // No larger
-    // Invalid match_mode
+                                               // Invalid match_mode
     model._set("B4", "=XMATCH(\"[\", A1:A1, 3)");
     model.evaluate();
     assert_eq!(model._get_text("B1"), *"1"); // Case-insensitive

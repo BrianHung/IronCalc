@@ -279,7 +279,7 @@ impl<'a> Model<'a> {
     // LEN, LEFT, RIGHT, MID, LOWER, UPPER, TRIM
     pub(crate) fn fn_len(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.calc_result_to_string(&args[0], cell) {
+            let s = match self.get_string(&args[0], cell) {
                 Ok(s) => s,
                 Err(error) => return error,
             };
@@ -290,7 +290,7 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_trim(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.calc_result_to_string(&args[0], cell) {
+            let s = match self.get_string(&args[0], cell) {
                 Ok(s) => s,
                 Err(error) => return error,
             };
@@ -301,7 +301,7 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_lower(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.calc_result_to_string(&args[0], cell) {
+            let s = match self.get_string(&args[0], cell) {
                 Ok(s) => s,
                 Err(error) => return error,
             };
@@ -312,7 +312,7 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_proper(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let text = match self.calc_result_to_string(&args[0], cell) {
+            let text = match self.get_string(&args[0], cell) {
                 Ok(s) => s,
                 Err(error) => return error,
             };
@@ -342,7 +342,7 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_unicode(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.calc_result_to_string(&args[0], cell) {
+            let s = match self.get_string(&args[0], cell) {
                 Ok(s) => {
                     if s.is_empty() {
                         return CalcResult::Error {
@@ -375,7 +375,7 @@ impl<'a> Model<'a> {
 
     pub(crate) fn fn_upper(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
-            let s = match self.calc_result_to_string(&args[0], cell) {
+            let s = match self.get_string(&args[0], cell) {
                 Ok(s) => s,
                 Err(error) => return error,
             };
@@ -388,7 +388,7 @@ impl<'a> Model<'a> {
         if args.len() > 2 || args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.calc_result_to_string(&args[0], cell) {
+        let s = match self.get_string(&args[0], cell) {
             Ok(s) => s,
             Err(error) => return error,
         };
@@ -446,7 +446,7 @@ impl<'a> Model<'a> {
         if args.len() > 2 || args.is_empty() {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.calc_result_to_string(&args[0], cell) {
+        let s = match self.get_string(&args[0], cell) {
             Ok(s) => s,
             Err(error) => return error,
         };
@@ -504,7 +504,7 @@ impl<'a> Model<'a> {
         if args.len() != 3 {
             return CalcResult::new_args_number_error(cell);
         }
-        let s = match self.calc_result_to_string(&args[0], cell) {
+        let s = match self.get_string(&args[0], cell) {
             Ok(s) => s,
             Err(error) => return error,
         };
@@ -597,7 +597,7 @@ impl<'a> Model<'a> {
         if args.len() != 4 {
             return CalcResult::new_args_number_error(cell);
         }
-        let old_text = match self.calc_result_to_string(&args[0], cell) {
+        let old_text = match self.get_string(&args[0], cell) {
             Ok(s) => s,
             Err(error) => return error,
         };
@@ -609,7 +609,7 @@ impl<'a> Model<'a> {
             Ok(f) => f,
             Err(e) => return e,
         };
-        let new_text = match self.calc_result_to_string(&args[3], cell) {
+        let new_text = match self.get_string(&args[3], cell) {
             Ok(s) => s,
             Err(error) => return error,
         };
