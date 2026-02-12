@@ -17,7 +17,7 @@ fn combina_comprehensive() {
     model.evaluate();
 
     assert_eq!(model._get_text("A1"), *"1");
-    assert_eq!(model._get_text("A2"), *"0");
+    assert_eq!(model._get_text("A2"), *"#NUM!");
     assert_eq!(model._get_text("A3"), *"20");
     assert_eq!(model._get_text("A4"), *"3");
     assert_eq!(model._get_text("A5"), *"10");

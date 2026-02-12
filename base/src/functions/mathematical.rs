@@ -1663,11 +1663,20 @@ impl<'a> Model<'a> {
                 message: "Arguments must be non-negative integers".to_string(),
             };
         }
+        // Avoid huge loops and overflow: Excel returns #NUM! for very large n or k
+        const MAX_N: f64 = 1e15;
+        const MAX_K: f64 = 1e6;
+        if n > MAX_N || k > MAX_K {
+            return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+        }
         let k = k as usize;
         let mut result = 1.0;
         for i in 0..k {
             let t = i as f64;
             result *= (n + t) / (t + 1.0);
+            if result.is_infinite() {
+                return CalcResult::new_error(Error::NUM, cell, "overflow".to_string());
+            }
         }
         CalcResult::Number(result)
     }
