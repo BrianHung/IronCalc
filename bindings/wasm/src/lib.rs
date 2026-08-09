@@ -184,6 +184,19 @@ impl Model {
         self.model.apply_external_diffs(diffs).map_err(to_js_error)
     }
 
+    /// Enables or disables recording the cells whose value changes on evaluation.
+    #[wasm_bindgen(js_name = "setTrackChanges")]
+    pub fn set_track_changes(&mut self, track: bool) {
+        self.model.set_track_changes(track);
+    }
+
+    /// Returns the cells changed since the last call and clears the buffer.
+    #[wasm_bindgen(js_name = "takeChangedCells", unchecked_return_type = "ChangedCell[]")]
+    pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
+        serde_wasm_bindgen::to_value(&self.model.take_changed_cells())
+            .map_err(|e| to_js_error(e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = "getCellContent")]
     pub fn get_cell_content(&self, sheet: u32, row: i32, column: i32) -> Result<String, JsError> {
         self.model

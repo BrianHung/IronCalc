@@ -251,3 +251,20 @@ test('Cell link label and style are one undo step', () => {
     assert.strictEqual(model.getCellStyle(0, 2, 2).style.font.u, true);
     assert.strictEqual(model.getCellLink(0, 2, 2).target, "https://www.ironcalc.com/");
 });
+
+test("takeChangedCells returns only the delta", () => {
+    const model = new Model("Workbook1", "en", "UTC", "en");
+    model.setTrackChanges(true);
+    model.setUserInput(0, 1, 1, "5");        // A1 = 5
+    model.setUserInput(0, 1, 2, "=A1*2");    // B1 = 10
+    model.setUserInput(0, 1, 3, "99");       // C1 = 99
+    model.takeChangedCells();                // drain
+
+    model.setUserInput(0, 1, 1, "6");        // A1 = 6  -> A1 and B1 change, C1 does not
+    const delta = model.takeChangedCells();  // ordered by position
+    const seen = delta.map((c) => `${c.row},${c.column}=${c.value}`);
+    assert.deepEqual(seen, ["1,1=6", "1,2=12"]);
+
+    model.setUserInput(0, 1, 1, "6");        // same value -> no change
+    assert.deepEqual(model.takeChangedCells(), []);
+});

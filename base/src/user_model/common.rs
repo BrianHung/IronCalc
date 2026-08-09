@@ -214,6 +214,26 @@ pub struct UserModel<'a> {
     history: History,
     send_queue: Vec<QueueDiffs>,
     pause_evaluation: bool,
+    track_changes: bool,
+    /// Displayed values as of the last evaluation, used to diff the next one.
+    baseline: HashMap<(u32, i32, i32), String>,
+    /// Cells changed since the last `take_changed_cells`, keyed by position.
+    changed: HashMap<(u32, i32, i32), String>,
+}
+
+/// A cell whose displayed value changed after an evaluation, together with the
+/// new value. Produced by [`UserModel::take_changed_cells`] when change tracking
+/// is enabled.
+#[derive(Clone, Serialize)]
+pub struct ChangedCell {
+    /// Sheet index (0-indexed)
+    pub sheet: u32,
+    /// Row index
+    pub row: i32,
+    /// Column index
+    pub column: i32,
+    /// The new displayed value, empty when the cell was cleared
+    pub value: String,
 }
 
 /// Given the index of the currently selected sheet, returns the index that same
@@ -251,6 +271,9 @@ impl<'a> UserModel<'a> {
             history: History::default(),
             send_queue: vec![],
             pause_evaluation: false,
+            track_changes: false,
+            baseline: HashMap::new(),
+            changed: HashMap::new(),
         }
     }
 
@@ -270,6 +293,9 @@ impl<'a> UserModel<'a> {
             history: History::default(),
             send_queue: vec![],
             pause_evaluation: false,
+            track_changes: false,
+            baseline: HashMap::new(),
+            changed: HashMap::new(),
         })
     }
 
@@ -284,6 +310,9 @@ impl<'a> UserModel<'a> {
             history: History::default(),
             send_queue: vec![],
             pause_evaluation: false,
+            track_changes: false,
+            baseline: HashMap::new(),
+            changed: HashMap::new(),
         })
     }
 
@@ -376,13 +405,77 @@ impl<'a> UserModel<'a> {
         self.pause_evaluation = false;
     }
 
-    /// Forces an evaluation of the model
+    /// Forces an evaluation of the model, recording the changed cells against
+    /// the baseline snapshot when tracking is enabled.
     ///
     /// See also:
     /// * [Model::evaluate]
     /// * [UserModel::pause_evaluation]
     pub fn evaluate(&mut self) {
-        self.model.evaluate()
+        if !self.track_changes {
+            self.model.evaluate();
+            return;
+        }
+        self.model.evaluate();
+        let after = self.value_snapshot();
+        // Changed or newly populated cells.
+        for (position, value) in &after {
+            if self.baseline.get(position) != Some(value) {
+                self.changed.insert(*position, value.clone());
+            }
+        }
+        // Cells cleared since the baseline report an empty value.
+        for position in self.baseline.keys() {
+            if !after.contains_key(position) {
+                self.changed.insert(*position, String::new());
+            }
+        }
+        self.baseline = after;
+    }
+
+    /// Enables or disables change tracking. When enabled, edits record the cells
+    /// whose displayed value changed (including formula cascades), which can be
+    /// drained with [`UserModel::take_changed_cells`]. Disabled by default so
+    /// there is no cost for consumers that do not need it.
+    pub fn set_track_changes(&mut self, track: bool) {
+        self.track_changes = track;
+        self.changed.clear();
+        self.baseline = if track {
+            self.value_snapshot()
+        } else {
+            HashMap::new()
+        };
+    }
+
+    /// Returns the cells whose displayed value changed since the last call,
+    /// ordered by sheet, row then column, and clears the buffer. Empty unless
+    /// change tracking was enabled with [`UserModel::set_track_changes`].
+    pub fn take_changed_cells(&mut self) -> Vec<ChangedCell> {
+        let mut changed: Vec<ChangedCell> = std::mem::take(&mut self.changed)
+            .into_iter()
+            .map(|((sheet, row, column), value)| ChangedCell {
+                sheet,
+                row,
+                column,
+                value,
+            })
+            .collect();
+        changed.sort_unstable_by_key(|c| (c.sheet, c.row, c.column));
+        changed
+    }
+
+    /// Snapshot of every populated cell's displayed value, keyed by position.
+    fn value_snapshot(&self) -> HashMap<(u32, i32, i32), String> {
+        self.model
+            .get_all_cells()
+            .into_iter()
+            .filter_map(|c| {
+                self.model
+                    .get_formatted_cell_value(c.index, c.row, c.column)
+                    .ok()
+                    .map(|value| ((c.index, c.row, c.column), value))
+            })
+            .collect()
     }
 
     /// Returns the list of pending diffs and removes them from the queue
@@ -2299,7 +2392,7 @@ impl<'a> UserModel<'a> {
 
     pub(super) fn evaluate_if_not_paused(&mut self) {
         if !self.pause_evaluation {
-            self.model.evaluate();
+            self.evaluate();
         }
     }
 }

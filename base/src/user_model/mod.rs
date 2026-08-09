@@ -13,6 +13,7 @@ mod sequence_detector;
 mod ui;
 mod undo_redo;
 
+pub use common::ChangedCell;
 pub use common::UserModel;
 
 #[cfg(test)]

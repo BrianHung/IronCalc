@@ -134,6 +134,14 @@ export type CellArrayStructure =
   | { ArrayAnchor: [number, number] }
   | { ArrayChild: [number, number, number, number] };
 
+/** A cell whose displayed value changed after an evaluation. */
+export interface ChangedCell {
+  sheet: number;
+  row: number;
+  column: number;
+  value: string;
+}
+
 export interface WorksheetProperties {
   name: string;
   /** Tab color. Absent when Color::None. */
