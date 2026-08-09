@@ -1,7 +1,9 @@
 #![deny(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
+
+use crate::dependency_graph::{DependencyGraph, Position, RecalcMode};
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -225,6 +227,17 @@ pub struct Model<'a> {
     pub(crate) cf_cache: HashMap<(u32, i32, i32), Vec<CfCellResult>>,
     /// Dynamic links: links created by formulas like HYPERLINK
     pub(crate) links: HashMap<(u32, i32, i32), Link>,
+    /// Forward dependency graph + dirty set backing incremental evaluation.
+    pub(crate) graph: DependencyGraph,
+    /// Which recalculation strategy `evaluate` uses (`Full` by default).
+    pub(crate) recalc: RecalcMode,
+    /// When `Some`, `evaluate_cell` only recomputes cells in this set and returns
+    /// the stored value for any cell outside it. Drives the incremental pass.
+    pub(crate) recompute_scope: Option<HashSet<Position>>,
+    /// Whether the workbook contains any array/spill cells, computed on each full
+    /// pass. Incremental evaluation does not model spilling, so it falls back to
+    /// full while any are present.
+    pub(crate) has_arrays: bool,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -582,6 +595,13 @@ impl<'a> Model<'a> {
                     .entry(cell)
                     .or_default()
                     .push(CellOrRange::Cell((*sheet_index, row1, column1)));
+                // A full pass records the forward edges the graph walks later.
+                if self.recompute_scope.is_none() {
+                    self.graph.add_cell_edge(
+                        (*sheet_index, row1, column1),
+                        (cell.sheet, cell.row, cell.column),
+                    );
+                }
                 self.evaluate_cell(CellReferenceIndex {
                     sheet: *sheet_index,
                     row: row1,
@@ -637,6 +657,12 @@ impl<'a> Model<'a> {
                         r1.max(r2),
                         c1.max(c2),
                     )));
+                if self.recompute_scope.is_none() {
+                    self.graph.add_range_edge(
+                        (*sheet_index, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)),
+                        (cell.sheet, cell.row, cell.column),
+                    );
+                }
                 CalcResult::Range {
                     left: CellReferenceIndex {
                         sheet: *sheet_index,
@@ -1409,6 +1435,25 @@ impl<'a> Model<'a> {
     // Evaluates a cell and returns the value in the cell
     // FIXME: CalcResult cannot be Array or Range, should we have a different type?
     pub(crate) fn evaluate_cell(&mut self, cell_reference: CellReferenceIndex) -> CalcResult {
+        // Incremental pass: a cell outside the affected set did not change, so
+        // return its stored value instead of recomputing it (and its precedents).
+        if let Some(scope) = &self.recompute_scope {
+            let position = (
+                cell_reference.sheet,
+                cell_reference.row,
+                cell_reference.column,
+            );
+            if !scope.contains(&position) {
+                return match self.fetch_cell(cell_reference) {
+                    Some(cell) => {
+                        let cell = cell.clone();
+                        self.get_cell_value(&cell, cell_reference)
+                    }
+                    None => CalcResult::EmptyCell,
+                };
+            }
+        }
+
         let original_cell = match self.fetch_cell(cell_reference) {
             Some(c) => c.clone(),
             None => return CalcResult::EmptyCell,
@@ -1722,6 +1767,10 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            graph: DependencyGraph::default(),
+            recalc: RecalcMode::from_env(),
+            recompute_scope: None,
+            has_arrays: false,
         };
 
         model.parse_formulas();
@@ -2374,6 +2423,14 @@ impl<'a> Model<'a> {
         column: i32,
         value: String,
     ) -> Result<(), String> {
+        // A plain value edit keeps the graph valid and opts into incremental;
+        // a formula, clear, or quote-prefixed literal forces a full recompute.
+        if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') {
+            self.graph.mark_dirty((sheet, row, column));
+        } else {
+            self.graph.force_full();
+        }
+
         // first we make sure we can write in the cell and clear the spills.
         self.prepare_cell_for_user_input(sheet, row, column)?;
         if value.is_empty() {
@@ -2934,6 +2991,7 @@ impl<'a> Model<'a> {
     /// and stores them in `self.spill_cells`.
     fn collect_spill_cells(&mut self) {
         let mut spill_cells = Vec::new();
+        let mut has_arrays = false;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
             sorted_rows.sort_unstable();
@@ -2942,6 +3000,14 @@ impl<'a> Model<'a> {
                 let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
                 sorted_cols.sort_unstable();
                 for col in &sorted_cols {
+                    // Any array (CSE or dynamic) or spilled cell disqualifies the
+                    // workbook from the incremental path, which does not spill.
+                    if matches!(
+                        &row_data[col],
+                        Cell::ArrayFormula { .. } | Cell::SpillCell { .. }
+                    ) {
+                        has_arrays = true;
+                    }
                     if matches!(
                         &row_data[col],
                         Cell::ArrayFormula {
@@ -2959,6 +3025,7 @@ impl<'a> Model<'a> {
             }
         }
         self.spill_cells = spill_cells;
+        self.has_arrays = has_arrays;
     }
 
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
@@ -3023,17 +3090,102 @@ impl<'a> Model<'a> {
         false
     }
 
-    /// Evaluates the model using a two-phase algorithm that correctly handles dynamic arrays.
-    ///
-    /// Phase 1 evaluates all spill-capable cells first (in dependency order), so their spill
-    /// areas are populated before any other cell reads from them.  When a spill cell writes
-    /// into a position that an earlier spill cell depends on, the two cells are reordered and
-    /// the phase restarts.  A restart bound of N*N prevents infinite loops caused by circular
-    /// dependencies between spill cells.
-    ///
-    /// Phase 2 evaluates every remaining cell in natural order.  Because all spill areas have
-    /// already been written, regular cells always read the correct spill values.
+    /// Recomputes the workbook using the configured [`RecalcMode`] (`Full` by
+    /// default).
     pub fn evaluate(&mut self) {
+        match self.recalc {
+            RecalcMode::Full => self.evaluate_full(),
+            RecalcMode::Incremental => self.evaluate_selective(),
+            RecalcMode::Verify => {
+                // Only the incremental path is worth comparing. A full fallback
+                // has nothing to check, and running full twice would re-roll
+                // volatile functions and re-spill arrays into false differences.
+                if self.graph.should_recompute_full() {
+                    self.evaluate_full();
+                } else {
+                    self.evaluate_selective();
+                    let incremental = self.snapshot_values();
+                    self.evaluate_full();
+                    let full = self.snapshot_values();
+                    assert_eq!(
+                        incremental, full,
+                        "incremental recalc diverged from full recompute"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Sets the recalculation strategy. See [`RecalcMode`]. The graph reflects
+    /// the last full pass, so switching modes forces one full recompute first.
+    pub fn set_recalc_mode(&mut self, mode: RecalcMode) {
+        self.recalc = mode;
+        self.graph.force_full();
+    }
+
+    /// Forces the next evaluation to be a full recompute. Callers use this after
+    /// a change the incremental graph does not model (a structural edit).
+    pub(crate) fn force_full_recompute(&mut self) {
+        self.graph.force_full();
+    }
+
+    /// Snapshot of every populated cell's value, keyed by position. Used by
+    /// `RecalcMode::Verify` to diff the incremental result against the full one.
+    fn snapshot_values(&self) -> HashMap<Position, crate::cell::CellValue> {
+        self.get_all_cells()
+            .into_iter()
+            .filter_map(|c| {
+                self.get_cell_value_by_index(c.index, c.row, c.column)
+                    .ok()
+                    .map(|value| ((c.index, c.row, c.column), value))
+            })
+            .collect()
+    }
+
+    /// Incremental recompute: only the cells reachable from the dirty set are
+    /// re-evaluated (`evaluate_cell` returns the stored value for the rest).
+    /// Falls back to a full recompute whenever the graph can't be trusted.
+    fn evaluate_selective(&mut self) {
+        if self.graph.should_recompute_full() {
+            self.evaluate_full();
+            return;
+        }
+        // Array and spill formulas need the full pass two-phase ordering and can
+        // write cells the graph does not model, so any workbook with them falls
+        // back to full.
+        if self.has_arrays {
+            self.evaluate_full();
+            return;
+        }
+        let affected = self.graph.take_affected();
+        // Recompute in the same (sheet, row, column) order the full pass uses, so
+        // a chain is walked precedent-first and `evaluate_cell`'s recursion stays
+        // shallow instead of descending the whole chain from an arbitrary start.
+        let mut to_recompute: Vec<Position> = affected.iter().copied().collect();
+        to_recompute.sort_unstable();
+        // Force recomputation of the affected cells only; unaffected cells keep
+        // their `Evaluated` status and their stored values.
+        for position in &to_recompute {
+            self.cells.remove(position);
+        }
+        self.recompute_scope = Some(affected);
+        for &(sheet, row, column) in &to_recompute {
+            self.evaluate_cell(CellReferenceIndex { sheet, row, column });
+        }
+        self.recompute_scope = None;
+        self.graph.after_incremental();
+        self.evaluate_conditional_formatting();
+    }
+
+    /// Recomputes every cell with the two-phase algorithm that handles dynamic
+    /// arrays.
+    ///
+    /// Phase 1 evaluates spill-capable cells first, in dependency order, so their
+    /// spill areas are populated before other cells read them. When a spill cell
+    /// writes into a position an earlier spill cell depends on, the two are
+    /// reordered and the phase restarts; an N*N bound prevents infinite loops on
+    /// circular spill dependencies. Phase 2 evaluates the remaining cells.
+    fn evaluate_full(&mut self) {
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3046,6 +3198,7 @@ impl<'a> Model<'a> {
             retry = false;
             self.cells.clear();
             self.support.clear();
+            self.graph.clear_edges();
             // dynamic links (HYPERLINK) are rebuilt on every evaluation
             self.links.clear();
             self.clear_variable_stack();
@@ -3088,6 +3241,7 @@ impl<'a> Model<'a> {
             });
         }
         self.evaluate_conditional_formatting();
+        self.graph.after_full();
     }
 
     /// Removes the content of every cell in the range but leaves the style.

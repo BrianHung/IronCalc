@@ -697,6 +697,10 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            graph: crate::dependency_graph::DependencyGraph::default(),
+            recalc: crate::RecalcMode::from_env(),
+            recompute_scope: None,
+            has_arrays: false,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

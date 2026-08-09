@@ -51,6 +51,7 @@ mod cast;
 mod conditional_formatting;
 mod constants;
 mod cut_paste;
+mod dependency_graph;
 mod functions;
 mod implicit_intersection;
 pub mod links;
@@ -68,6 +69,7 @@ mod test;
 #[cfg(any(test, feature = "mock_time"))]
 pub mod mock_time;
 
+pub use dependency_graph::RecalcMode;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
 pub use model::FmtSettings;
