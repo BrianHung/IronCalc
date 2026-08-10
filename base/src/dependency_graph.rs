@@ -138,9 +138,11 @@ fn shift_area(sheet: u32, axis: Axis, boundary: i32, delta: i32, area: Area) -> 
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it.
     cell_dependents: HashMap<Position, Vec<Position>>,
-    /// `(range, dependent)` pairs, kept unexpanded so a `SUM` over a large range
-    /// does not create an edge per cell.
-    range_dependents: Vec<(Area, Position)>,
+    /// Distinct range to the cells that read it, kept unexpanded so a `SUM` over
+    /// a large range does not create an edge per cell. Deduplicating the range
+    /// means the affected-set walk tests each area once no matter how many
+    /// formulas share it, rather than once per referencing formula.
+    range_dependents: HashMap<Area, Vec<Position>>,
     dirty: HashSet<Position>,
     /// A value-only edit kept the graph valid, so the next evaluation may run
     /// incrementally.
@@ -171,7 +173,10 @@ impl DependencyGraph {
 
     /// Records that `dependent` reads every cell in `range`.
     pub(crate) fn add_range_edge(&mut self, range: Area, dependent: Position) {
-        self.range_dependents.push((range, dependent));
+        self.range_dependents
+            .entry(range)
+            .or_default()
+            .push(dependent);
     }
 
     /// Records a value-only edit, opting the next evaluation into incremental
@@ -208,9 +213,9 @@ impl DependencyGraph {
             if let Some(dependents) = self.cell_dependents.get(&cell) {
                 stack.extend(dependents.iter().copied());
             }
-            for (range, dependent) in &self.range_dependents {
-                if !affected.contains(dependent) && area_contains(range, cell) {
-                    stack.push(*dependent);
+            for (range, dependents) in &self.range_dependents {
+                if area_contains(range, cell) {
+                    stack.extend(dependents.iter().filter(|d| !affected.contains(d)).copied());
                 }
             }
         }
@@ -243,9 +248,9 @@ impl DependencyGraph {
                 self.dirty.extend(dependents.iter().copied());
             }
         }
-        for (area, dependent) in &self.range_dependents {
+        for (area, dependents) in &self.range_dependents {
             if area.0 == sheet && axis.area_max(*area) >= boundary {
-                self.dirty.insert(*dependent);
+                self.dirty.extend(dependents.iter().copied());
             }
         }
         if !self.forced_full {
@@ -255,7 +260,7 @@ impl DependencyGraph {
 
     fn range_overlaps_band(&self, sheet: u32, axis: Axis, boundary: i32, delta: i32) -> bool {
         let band_end = boundary - delta - 1;
-        self.range_dependents.iter().any(|(area, _)| {
+        self.range_dependents.keys().any(|area| {
             area.0 == sheet && axis.area_max(*area) >= boundary && axis.area_min(*area) <= band_end
         })
     }
@@ -276,16 +281,17 @@ impl DependencyGraph {
             }
         }
         self.cell_dependents = shifted;
-        self.range_dependents = self
-            .range_dependents
-            .drain(..)
-            .filter_map(|(area, dependent)| {
-                Some((
-                    shift_area(sheet, axis, boundary, delta, area)?,
-                    shift_pos(dependent)?,
-                ))
-            })
-            .collect();
+        let mut shifted_ranges: HashMap<Area, Vec<Position>> = HashMap::new();
+        for (area, dependents) in self.range_dependents.drain() {
+            let Some(area) = shift_area(sheet, axis, boundary, delta, area) else {
+                continue;
+            };
+            let dependents: Vec<Position> = dependents.into_iter().filter_map(shift_pos).collect();
+            if !dependents.is_empty() {
+                shifted_ranges.entry(area).or_default().extend(dependents);
+            }
+        }
+        self.range_dependents = shifted_ranges;
         self.dirty = self.dirty.drain().filter_map(shift_pos).collect();
     }
 

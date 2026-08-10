@@ -102,3 +102,27 @@ fn incremental_handles_row_delete() {
     model.evaluate();
     assert_eq!(model.get_formatted_cell_value(0, 4, 1).unwrap(), "11");
 }
+
+/// Many formulas sharing one range collapse to a single range vertex; editing a
+/// cell inside the range still fans out to every dependent incrementally.
+#[test]
+fn incremental_shares_one_range_vertex() {
+    let mut model = Model::new_empty("m", "en", "UTC", "en").unwrap();
+    for row in 1..=10 {
+        model.set_user_input(0, row, 1, row.to_string()).unwrap(); // A1..A10
+    }
+    for row in 1..=50 {
+        model
+            .set_user_input(0, row, 3, "=SUM(A1:A10)".into())
+            .unwrap(); // C1..C50
+    }
+    model.evaluate();
+    model.set_recalc_mode(RecalcMode::Incremental);
+    model.evaluate();
+
+    model.set_user_input(0, 5, 1, "100".into()).unwrap(); // A5: 5 -> 100, sum 55 -> 150
+    model.evaluate();
+    for row in 1..=50 {
+        assert_eq!(model.get_formatted_cell_value(0, row, 3).unwrap(), "150");
+    }
+}
