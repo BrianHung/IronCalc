@@ -167,7 +167,7 @@ impl Model {
 
     /// Opts into incremental recalculation, which recomputes only the cells
     /// affected by an edit. Off by default; falls back to a full recompute for
-    /// anything it does not yet model.
+    /// edits it does not yet model.
     #[wasm_bindgen(js_name = "setIncrementalRecalc")]
     pub fn set_incremental_recalc(&mut self, incremental: bool) {
         let mode = if incremental {
