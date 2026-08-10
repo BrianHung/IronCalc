@@ -1,6 +1,7 @@
 use crate::cf_types::{CfRule, Cfvo};
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
+use crate::dependency_graph::Axis;
 use crate::expressions::parser::stringify::{
     to_localized_string, to_string_displaced, DisplaceData,
 };
@@ -508,6 +509,36 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
+    /// Keeps the dependency graph in step with a structural edit. A row or column
+    /// insert or delete reflects its displacement onto the graph so the next
+    /// evaluation can run incrementally. A move or cell displacement, which the
+    /// shift does not model, forces a full recompute, as does an array sheet. The
+    /// match is exhaustive so a new `DisplaceData` variant cannot silently skip
+    /// graph maintenance.
+    fn record_structural_edit(&mut self, disp: &DisplaceData) {
+        let (sheet, axis, boundary, delta) = match *disp {
+            DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
+            DisplaceData::Column {
+                sheet,
+                column,
+                delta,
+            } => (sheet, Axis::Column, column, delta),
+            DisplaceData::RowMove { .. }
+            | DisplaceData::ColumnMove { .. }
+            | DisplaceData::CellHorizontal { .. }
+            | DisplaceData::CellVertical { .. } => {
+                self.graph.force_full();
+                return;
+            }
+            DisplaceData::None => return,
+        };
+        if self.array_cells.iter().any(|&(s, _, _)| s == sheet) {
+            self.graph.force_full();
+        } else {
+            self.graph.structural_edit(sheet, axis, boundary, delta);
+        }
+    }
+
     /// Inserts one or more new columns into the model at the specified index.
     ///
     /// This method shifts existing columns to the right to make space for the new columns.
@@ -572,6 +603,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         // In the list of columns:
         // * Keep all the columns to the left
@@ -674,6 +706,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
 
         // deletes all the column styles
@@ -926,6 +959,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         Ok(())
     }
@@ -1007,6 +1041,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1163,6 +1198,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1309,6 +1345,7 @@ impl<'a> Model<'a> {
         let disp = DisplaceData::RowMove { sheet, row, delta };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 

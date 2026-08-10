@@ -63,3 +63,42 @@ fn incremental_coexists_with_arrays() {
     model.evaluate();
     assert_eq!(model.get_formatted_cell_value(0, 2, 1).unwrap(), "9"); // A2 re-spilled
 }
+
+/// A row insert grows a straddling range: `SUM` is unchanged (new cells empty)
+/// while `ROWS` reflects the larger range, so the size-sensitive dependent must
+/// recompute incrementally.
+#[test]
+fn incremental_handles_row_insert() {
+    let mut model = Model::new_empty("m", "en", "UTC", "en").unwrap();
+    for row in 1..=5 {
+        model.set_user_input(0, row, 1, row.to_string()).unwrap(); // A1..A5
+    }
+    model.set_user_input(0, 1, 3, "=SUM(A1:A5)".into()).unwrap(); // C1
+    model
+        .set_user_input(0, 1, 5, "=ROWS(A1:A5)".into())
+        .unwrap(); // E1
+    model.evaluate();
+    model.set_recalc_mode(RecalcMode::Incremental);
+    model.evaluate();
+
+    model.insert_rows(0, 3, 2).unwrap(); // A1:A5 -> A1:A7
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 3).unwrap(), "15"); // SUM unchanged
+    assert_eq!(model.get_formatted_cell_value(0, 1, 5).unwrap(), "7"); // ROWS grew
+}
+
+/// A delete with no tracked range stays incremental: the referencing cell shifts
+/// up and its precedent, above the deletion, is untouched.
+#[test]
+fn incremental_handles_row_delete() {
+    let mut model = Model::new_empty("m", "en", "UTC", "en").unwrap();
+    model.set_user_input(0, 1, 1, "10".into()).unwrap(); // A1
+    model.set_user_input(0, 5, 1, "=A1+1".into()).unwrap(); // A5
+    model.evaluate();
+    model.set_recalc_mode(RecalcMode::Incremental);
+    model.evaluate();
+
+    model.delete_rows(0, 2, 1).unwrap(); // A5 -> A4, ref A1 intact
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 4, 1).unwrap(), "11");
+}

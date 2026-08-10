@@ -49,6 +49,89 @@ pub(crate) type Position = (u32, i32, i32);
 /// `(sheet, row1, column1, row2, column2)`.
 type Area = (u32, i32, i32, i32, i32);
 
+/// Axis a structural edit inserts or deletes lines along.
+#[derive(Clone, Copy)]
+pub(crate) enum Axis {
+    Row,
+    Column,
+}
+
+impl Axis {
+    fn coord(self, (_, row, column): Position) -> i32 {
+        match self {
+            Axis::Row => row,
+            Axis::Column => column,
+        }
+    }
+
+    fn area_max(self, (_, _, _, row2, column2): Area) -> i32 {
+        match self {
+            Axis::Row => row2,
+            Axis::Column => column2,
+        }
+    }
+
+    fn area_min(self, (_, row1, column1, _, _): Area) -> i32 {
+        match self {
+            Axis::Row => row1,
+            Axis::Column => column1,
+        }
+    }
+}
+
+/// New coordinate after inserting (`delta > 0`) or deleting (`delta < 0`)
+/// `|delta|` lines at `boundary`. `None` when the line falls inside a deleted
+/// band `[boundary, boundary - delta)`.
+fn shift_coord(x: i32, boundary: i32, delta: i32) -> Option<i32> {
+    if x < boundary {
+        Some(x)
+    } else if delta < 0 && x < boundary - delta {
+        None
+    } else {
+        Some(x + delta)
+    }
+}
+
+fn shift_position(
+    sheet: u32,
+    axis: Axis,
+    boundary: i32,
+    delta: i32,
+    pos: Position,
+) -> Option<Position> {
+    let (s, row, column) = pos;
+    if s != sheet {
+        return Some(pos);
+    }
+    match axis {
+        Axis::Row => shift_coord(row, boundary, delta).map(|r| (s, r, column)),
+        Axis::Column => shift_coord(column, boundary, delta).map(|c| (s, row, c)),
+    }
+}
+
+fn shift_area(sheet: u32, axis: Axis, boundary: i32, delta: i32, area: Area) -> Option<Area> {
+    let (s, row1, column1, row2, column2) = area;
+    if s != sheet {
+        return Some(area);
+    }
+    match axis {
+        Axis::Row => Some((
+            s,
+            shift_coord(row1, boundary, delta)?,
+            column1,
+            shift_coord(row2, boundary, delta)?,
+            column2,
+        )),
+        Axis::Column => Some((
+            s,
+            row1,
+            shift_coord(column1, boundary, delta)?,
+            row2,
+            shift_coord(column2, boundary, delta)?,
+        )),
+    }
+}
+
 /// Forward dependency edges and the pending dirty set, used to scope an
 /// incremental recompute to the cells that can change.
 #[derive(Default)]
@@ -132,6 +215,78 @@ impl DependencyGraph {
             }
         }
         affected
+    }
+
+    /// Applies a row or column insert (`delta > 0`) or delete (`delta < 0`) to
+    /// the graph: marks the dependents the edit can change, then shifts every
+    /// stored position to match the displacement so later edits still resolve.
+    /// Forces a full recompute when the shift cannot model the edit, so the
+    /// caller never has to reason about the fallback.
+    pub(crate) fn structural_edit(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        // A delete that shrinks a tracked range would need the range clamped;
+        // fall back to full rather than model partial-range removal.
+        if delta < 0 && self.range_overlaps_band(sheet, axis, boundary, delta) {
+            self.force_full();
+            return;
+        }
+        self.mark_structural_dependents(sheet, axis, boundary);
+        self.shift(sheet, axis, boundary, delta);
+    }
+
+    /// Marks the dependents whose value a structural edit at `boundary` can
+    /// change: those reading a moved precedent or a range reaching the boundary.
+    /// Uses pre-shift coordinates; [`shift`](Self::shift) then carries the dirty
+    /// set along with every other position.
+    fn mark_structural_dependents(&mut self, sheet: u32, axis: Axis, boundary: i32) {
+        for (precedent, dependents) in &self.cell_dependents {
+            if precedent.0 == sheet && axis.coord(*precedent) >= boundary {
+                self.dirty.extend(dependents.iter().copied());
+            }
+        }
+        for (area, dependent) in &self.range_dependents {
+            if area.0 == sheet && axis.area_max(*area) >= boundary {
+                self.dirty.insert(*dependent);
+            }
+        }
+        if !self.forced_full {
+            self.incremental_eligible = true;
+        }
+    }
+
+    fn range_overlaps_band(&self, sheet: u32, axis: Axis, boundary: i32, delta: i32) -> bool {
+        let band_end = boundary - delta - 1;
+        self.range_dependents.iter().any(|(area, _)| {
+            area.0 == sheet && axis.area_max(*area) >= boundary && axis.area_min(*area) <= band_end
+        })
+    }
+
+    /// Rewrites every stored position for a displacement at `boundary`. Edges
+    /// and ranges landing in a deleted band are dropped; the next full pass
+    /// rebuilds them.
+    fn shift(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        let shift_pos = |p| shift_position(sheet, axis, boundary, delta, p);
+        let mut shifted: HashMap<Position, Vec<Position>> = HashMap::new();
+        for (precedent, dependents) in self.cell_dependents.drain() {
+            let Some(precedent) = shift_pos(precedent) else {
+                continue;
+            };
+            let dependents: Vec<Position> = dependents.into_iter().filter_map(shift_pos).collect();
+            if !dependents.is_empty() {
+                shifted.entry(precedent).or_default().extend(dependents);
+            }
+        }
+        self.cell_dependents = shifted;
+        self.range_dependents = self
+            .range_dependents
+            .drain(..)
+            .filter_map(|(area, dependent)| {
+                Some((
+                    shift_area(sheet, axis, boundary, delta, area)?,
+                    shift_pos(dependent)?,
+                ))
+            })
+            .collect();
+        self.dirty = self.dirty.drain().filter_map(shift_pos).collect();
     }
 
     /// Resets pending state after a full pass, which rebuilt the edges.
