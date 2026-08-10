@@ -204,8 +204,16 @@ impl DependencyGraph {
     /// Consumes the dirty set and returns every cell transitively reachable from
     /// it, including the dirty cells.
     pub(crate) fn take_affected(&mut self) -> HashSet<Position> {
+        let seeds: Vec<Position> = self.dirty.drain().collect();
+        self.reachable(seeds)
+    }
+
+    /// Every cell transitively reachable from `seeds`, including the seeds. Does
+    /// not touch the dirty set, so `Verify` can use it to find the cells a
+    /// volatile can taint.
+    pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
         let mut affected = HashSet::new();
-        let mut stack: Vec<Position> = self.dirty.drain().collect();
+        let mut stack = seeds;
         while let Some(cell) = stack.pop() {
             if !affected.insert(cell) {
                 continue;

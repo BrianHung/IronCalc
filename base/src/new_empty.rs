@@ -701,6 +701,7 @@ impl<'a> Model<'a> {
             recalc_mode: crate::RecalcMode::from_env(),
             recompute_scope: None,
             array_cells: std::collections::HashSet::new(),
+            volatile_cells: std::collections::HashSet::new(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

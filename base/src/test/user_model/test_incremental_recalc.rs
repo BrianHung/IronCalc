@@ -126,3 +126,25 @@ fn incremental_shares_one_range_vertex() {
         assert_eq!(model.get_formatted_cell_value(0, row, 3).unwrap(), "150");
     }
 }
+
+/// A volatile function is recomputed on every incremental edit, matching a full
+/// pass. `INDIRECT` reads its target through a string, so no static edge links
+/// the target to the reader; only volatile handling makes the reader recompute.
+#[test]
+fn incremental_recomputes_volatiles() {
+    let mut model = Model::new_empty("m", "en", "UTC", "en").unwrap();
+    model.set_user_input(0, 1, 3, "5".into()).unwrap(); // C1 = 5
+    model
+        .set_user_input(0, 1, 1, "=INDIRECT(\"C1\")".into())
+        .unwrap(); // A1 reads C1 dynamically
+    model.set_user_input(0, 1, 2, "0".into()).unwrap(); // B1 unrelated
+    model.evaluate();
+    model.set_recalc_mode(RecalcMode::Incremental);
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 1).unwrap(), "5");
+
+    // Edit C1, A1's hidden target. Without volatile handling A1 would stay 5.
+    model.set_user_input(0, 1, 3, "99".into()).unwrap();
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 1).unwrap(), "99");
+}

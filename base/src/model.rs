@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
 
 use crate::dependency_graph::{DependencyGraph, Position, RecalcMode};
+use crate::functions::Function;
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -136,6 +137,66 @@ pub struct FmtSettings {
     pub number_example: String,
 }
 
+/// Functions whose result can change without any input changing: random and
+/// clock functions, and the reference functions whose target our static edges do
+/// not capture. A cell calling one must be recomputed on every pass.
+fn is_volatile_function(kind: &Function) -> bool {
+    matches!(
+        kind,
+        Function::Rand
+            | Function::Randbetween
+            | Function::Randarray
+            | Function::Now
+            | Function::Today
+            | Function::Offset
+            | Function::Indirect
+            | Function::Cell
+            | Function::Info
+    )
+}
+
+/// Whether a formula tree calls a volatile function anywhere. The match is
+/// exhaustive so a new compound `Node` variant fails to compile until it is
+/// classified here, rather than silently reading as non-volatile.
+fn node_is_volatile(node: &Node) -> bool {
+    match node {
+        Node::FunctionKind { kind, args } => {
+            is_volatile_function(kind) || args.iter().any(node_is_volatile)
+        }
+        Node::NamedFunctionKind { args, .. } => args.iter().any(node_is_volatile),
+        Node::LambdaCallKind { lambda, args } => {
+            node_is_volatile(lambda) || args.iter().any(node_is_volatile)
+        }
+        Node::LambdaDefKind { body, .. } => node_is_volatile(body),
+        Node::OpRangeKind { left, right }
+        | Node::OpConcatenateKind { left, right }
+        | Node::OpSumKind { left, right, .. }
+        | Node::OpProductKind { left, right, .. }
+        | Node::OpPowerKind { left, right }
+        | Node::CompareKind { left, right, .. } => {
+            node_is_volatile(left) || node_is_volatile(right)
+        }
+        Node::UnaryKind { right, .. } => node_is_volatile(right),
+        Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
+            node_is_volatile(child)
+        }
+        Node::BooleanKind(_)
+        | Node::NumberKind(_)
+        | Node::StringKind(_)
+        | Node::ReferenceKind { .. }
+        | Node::RangeKind { .. }
+        | Node::WrongReferenceKind { .. }
+        | Node::WrongRangeKind { .. }
+        | Node::ArrayKind(_)
+        | Node::DefinedNameKind(_)
+        | Node::TableNameKind(_)
+        | Node::NamedVariableKind { .. }
+        | Node::ErrorKind(_)
+        | Node::ParseErrorKind { .. }
+        | Node::EmptyArgKind => false,
+    }
+}
+
 fn array_node_to_formula_value(node: ArrayNode) -> FormulaValue {
     match node {
         ArrayNode::Boolean(b) => FormulaValue::Boolean(b),
@@ -238,6 +299,10 @@ pub struct Model<'a> {
     /// evaluation does not model spilling, so an edit whose affected set reaches
     /// one of these falls back to a full recompute.
     pub(crate) array_cells: HashSet<Position>,
+    /// Cells whose formula calls a volatile function (`RAND`, `NOW`, `OFFSET`,
+    /// ...), computed on each full pass. A full recompute re-rolls these on every
+    /// pass, so incremental recomputes them on every edit to match.
+    pub(crate) volatile_cells: HashSet<Position>,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1768,6 +1833,7 @@ impl<'a> Model<'a> {
             recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
             array_cells: HashSet::new(),
+            volatile_cells: HashSet::new(),
         };
 
         model.parse_formulas();
@@ -3037,6 +3103,27 @@ impl<'a> Model<'a> {
         self.array_cells = array_cells;
     }
 
+    /// Records the cells whose formula calls a volatile function. A full pass
+    /// re-rolls these on every evaluation; recording them lets the incremental
+    /// path recompute them on every edit so it matches that behavior.
+    fn collect_volatile_cells(&mut self) {
+        let mut volatile_cells = HashSet::new();
+        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
+            let sheet = sheet_index as u32;
+            for (row, row_data) in &worksheet.sheet_data {
+                for (col, cell) in row_data {
+                    if let Some(formula) = cell.get_formula() {
+                        let node = &self.parsed_formulas[sheet as usize][formula as usize].0;
+                        if node_is_volatile(node) {
+                            volatile_cells.insert((sheet, *row, *col));
+                        }
+                    }
+                }
+            }
+        }
+        self.volatile_cells = volatile_cells;
+    }
+
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
     /// including the anchor itself.
     fn get_spill_area(&self, cell_ref: CellReferenceIndex) -> Vec<CellReferenceIndex> {
@@ -3116,8 +3203,20 @@ impl<'a> Model<'a> {
                     let incremental = self.snapshot_values();
                     self.evaluate_full();
                     let full = self.snapshot_values();
+                    // Volatile cells and everything downstream re-roll on each
+                    // pass (RAND, NOW), so their values legitimately differ
+                    // between the two. Both passes recompute them, which is the
+                    // behavior we want; drop them and require the rest to match.
+                    let tainted = self
+                        .graph
+                        .reachable(self.volatile_cells.iter().copied().collect());
+                    let strip = |mut values: HashMap<Position, crate::cell::CellValue>| {
+                        values.retain(|position, _| !tainted.contains(position));
+                        values
+                    };
                     assert_eq!(
-                        incremental, full,
+                        strip(incremental),
+                        strip(full),
                         "incremental recalc diverged from full recompute"
                     );
                 }
@@ -3158,6 +3257,11 @@ impl<'a> Model<'a> {
         if self.graph.should_recompute_full() {
             self.evaluate_full();
             return false;
+        }
+        // Volatile cells re-roll on every full pass, so mark them dirty to
+        // recompute them (and their dependents) on every incremental pass too.
+        for &cell in &self.volatile_cells {
+            self.graph.mark_dirty(cell);
         }
         let affected = self.graph.take_affected();
         // Array and spill formulas need the full pass two-phase ordering, so an
@@ -3255,6 +3359,7 @@ impl<'a> Model<'a> {
         }
         self.evaluate_conditional_formatting();
         self.collect_array_cells();
+        self.collect_volatile_cells();
         self.graph.after_full();
     }
 
