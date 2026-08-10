@@ -137,6 +137,10 @@ pub struct FmtSettings {
     pub number_example: String,
 }
 
+/// Below this many formula cells, incremental never falls back on fanout: the
+/// bookkeeping is cheap in absolute terms and full has no edge to exploit.
+const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
+
 /// Functions whose result can change without any input changing: random and
 /// clock functions, and the reference functions whose target our static edges do
 /// not capture. A cell calling one must be recomputed on every pass.
@@ -303,6 +307,10 @@ pub struct Model<'a> {
     /// ...), computed on each full pass. A full recompute re-rolls these on every
     /// pass, so incremental recomputes them on every edit to match.
     pub(crate) volatile_cells: HashSet<Position>,
+    /// Number of formula cells at the last full pass. An incremental pass whose
+    /// affected set approaches this recomputes about as much as a full pass but
+    /// with extra bookkeeping, so it falls back to full instead.
+    pub(crate) formula_cell_count: usize,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1834,6 +1842,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             array_cells: HashSet::new(),
             volatile_cells: HashSet::new(),
+            formula_cell_count: 0,
         };
 
         model.parse_formulas();
@@ -3108,11 +3117,13 @@ impl<'a> Model<'a> {
     /// path recompute them on every edit so it matches that behavior.
     fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
+        let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
             for (row, row_data) in &worksheet.sheet_data {
                 for (col, cell) in row_data {
                     if let Some(formula) = cell.get_formula() {
+                        formula_cell_count += 1;
                         let node = &self.parsed_formulas[sheet as usize][formula as usize].0;
                         if node_is_volatile(node) {
                             volatile_cells.insert((sheet, *row, *col));
@@ -3122,6 +3133,7 @@ impl<'a> Model<'a> {
             }
         }
         self.volatile_cells = volatile_cells;
+        self.formula_cell_count = formula_cell_count;
     }
 
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
@@ -3264,6 +3276,17 @@ impl<'a> Model<'a> {
             self.graph.mark_dirty(cell);
         }
         let affected = self.graph.take_affected();
+        // A wide-fanout edit reaches most of the workbook. For scalar formulas
+        // the incremental bookkeeping (dirty set, scope checks, per-cell removal)
+        // roughly matches the recomputation it saves near half the formula cells,
+        // past which a full pass is cheaper. The floor keeps small workbooks, and
+        // the tests, on the incremental path where the overhead is negligible.
+        if self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
+            && affected.len() * 2 >= self.formula_cell_count
+        {
+            self.evaluate_full();
+            return false;
+        }
         // Array and spill formulas need the full pass two-phase ordering, so an
         // edit that reaches one falls back to full. Edits that do not are still
         // incremental even when arrays exist elsewhere.

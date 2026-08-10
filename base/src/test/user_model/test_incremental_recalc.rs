@@ -148,3 +148,23 @@ fn incremental_recomputes_volatiles() {
     model.evaluate();
     assert_eq!(model.get_formatted_cell_value(0, 1, 1).unwrap(), "99");
 }
+
+/// An edit that fans out past half the formula cells falls back to a full pass;
+/// the result must still be correct. Uses more than the fanout floor so the
+/// guard engages.
+#[test]
+fn incremental_wide_fanout_stays_correct() {
+    let mut model = Model::new_empty("m", "en", "UTC", "en").unwrap();
+    model.set_user_input(0, 1, 1, "1".into()).unwrap(); // A1
+    for row in 1..=1100 {
+        model.set_user_input(0, row, 3, "=$A$1*2".into()).unwrap(); // C1..C1100 all read A1
+    }
+    model.evaluate();
+    model.set_recalc_mode(RecalcMode::Incremental);
+    model.evaluate();
+
+    model.set_user_input(0, 1, 1, "5".into()).unwrap(); // reaches all 1100 dependents
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 3).unwrap(), "10");
+    assert_eq!(model.get_formatted_cell_value(0, 1100, 3).unwrap(), "10");
+}

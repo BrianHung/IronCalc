@@ -702,6 +702,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             array_cells: std::collections::HashSet::new(),
             volatile_cells: std::collections::HashSet::new(),
+            formula_cell_count: 0,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();
