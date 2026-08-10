@@ -698,7 +698,7 @@ impl<'a> Model<'a> {
             cf_cache: HashMap::new(),
             links: HashMap::new(),
             graph: crate::dependency_graph::DependencyGraph::default(),
-            recalc: crate::RecalcMode::from_env(),
+            recalc_mode: crate::RecalcMode::from_env(),
             recompute_scope: None,
             has_arrays: false,
         };

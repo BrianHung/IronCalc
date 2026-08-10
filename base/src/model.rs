@@ -230,7 +230,7 @@ pub struct Model<'a> {
     /// Forward dependency graph + dirty set backing incremental evaluation.
     pub(crate) graph: DependencyGraph,
     /// Which recalculation strategy `evaluate` uses (`Full` by default).
-    pub(crate) recalc: RecalcMode,
+    pub(crate) recalc_mode: RecalcMode,
     /// When `Some`, `evaluate_cell` only recomputes cells in this set and returns
     /// the stored value for any cell outside it. Drives the incremental pass.
     pub(crate) recompute_scope: Option<HashSet<Position>>,
@@ -1445,10 +1445,7 @@ impl<'a> Model<'a> {
             );
             if !scope.contains(&position) {
                 return match self.fetch_cell(cell_reference) {
-                    Some(cell) => {
-                        let cell = cell.clone();
-                        self.get_cell_value(&cell, cell_reference)
-                    }
+                    Some(cell) => self.get_cell_value(cell, cell_reference),
                     None => CalcResult::EmptyCell,
                 };
             }
@@ -1768,7 +1765,7 @@ impl<'a> Model<'a> {
             cf_cache: HashMap::new(),
             links: HashMap::new(),
             graph: DependencyGraph::default(),
-            recalc: RecalcMode::from_env(),
+            recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
             has_arrays: false,
         };
@@ -3097,7 +3094,7 @@ impl<'a> Model<'a> {
     /// Recomputes the workbook using the configured [`RecalcMode`] (`Full` by
     /// default).
     pub fn evaluate(&mut self) {
-        match self.recalc {
+        match self.recalc_mode {
             RecalcMode::Full => self.evaluate_full(),
             RecalcMode::Incremental => self.evaluate_selective(),
             RecalcMode::Verify => {
@@ -3123,7 +3120,7 @@ impl<'a> Model<'a> {
     /// Sets the recalculation strategy. See [`RecalcMode`]. The graph reflects
     /// the last full pass, so switching modes forces one full recompute first.
     pub fn set_recalc_mode(&mut self, mode: RecalcMode) {
-        self.recalc = mode;
+        self.recalc_mode = mode;
         self.graph.force_full();
     }
 
@@ -3168,9 +3165,12 @@ impl<'a> Model<'a> {
         let mut to_recompute: Vec<Position> = affected.iter().copied().collect();
         to_recompute.sort_unstable();
         // Force recomputation of the affected cells only; unaffected cells keep
-        // their `Evaluated` status and their stored values.
+        // their `Evaluated` status and their stored values. Drop each cell's
+        // dynamic link too, the way a full pass clears them all, so a cell that
+        // no longer resolves to a `HYPERLINK` does not keep a stale one.
         for position in &to_recompute {
             self.cells.remove(position);
+            self.links.remove(position);
         }
         self.recompute_scope = Some(affected);
         for &(sheet, row, column) in &to_recompute {

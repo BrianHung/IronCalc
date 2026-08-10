@@ -22,7 +22,10 @@ pub enum RecalcMode {
     Full,
     /// Recompute only the cells reachable from the dirty set.
     Incremental,
-    /// Run incremental, then full, and assert they produce identical values.
+    /// Testing and development only: run incremental, then full, and
+    /// `assert_eq!` that they produce identical values, panicking on any
+    /// divergence. Not for production use.
+    #[doc(hidden)]
     Verify,
 }
 
