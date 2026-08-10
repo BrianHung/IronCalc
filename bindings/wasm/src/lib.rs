@@ -14,7 +14,7 @@ use ironcalc_base::{
     },
     types::{CellType, Color, Link, Style, StyleIncludes},
     worksheet::NavigationDirection,
-    BorderArea, ClipboardData, UserModel as BaseModel,
+    BorderArea, ClipboardData, RecalcMode, UserModel as BaseModel,
 };
 
 fn to_js_error(error: String) -> JsError {
@@ -163,6 +163,19 @@ impl Model {
     #[wasm_bindgen(js_name = "pauseEvaluation")]
     pub fn pause_evaluation(&mut self) {
         self.model.pause_evaluation()
+    }
+
+    /// Opts into incremental recalculation, which recomputes only the cells
+    /// affected by an edit. Off by default; falls back to a full recompute for
+    /// anything it does not yet model.
+    #[wasm_bindgen(js_name = "setIncrementalRecalc")]
+    pub fn set_incremental_recalc(&mut self, incremental: bool) {
+        let mode = if incremental {
+            RecalcMode::Incremental
+        } else {
+            RecalcMode::Full
+        };
+        self.model.set_recalc_mode(mode);
     }
 
     #[wasm_bindgen(js_name = "resumeEvaluation")]

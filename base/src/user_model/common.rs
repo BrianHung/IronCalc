@@ -385,6 +385,11 @@ impl<'a> UserModel<'a> {
         self.model.evaluate()
     }
 
+    /// Sets the recalculation strategy. See [`RecalcMode`](crate::RecalcMode).
+    pub fn set_recalc_mode(&mut self, mode: crate::RecalcMode) {
+        self.model.set_recalc_mode(mode);
+    }
+
     /// Returns the list of pending diffs and removes them from the queue
     ///
     /// This is used together with [apply_external_diffs](UserModel::apply_external_diffs) to keep two remote models

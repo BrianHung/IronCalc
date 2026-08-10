@@ -2152,6 +2152,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: &str,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index;
         if common::value_needs_quoting(value, self.language) {
@@ -2202,6 +2203,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: bool,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2244,6 +2246,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: f64,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2289,6 +2292,7 @@ impl<'a> Model<'a> {
         column: i32,
         formula: String,
     ) -> Result<(), String> {
+        self.graph.force_full();
         let mut style_index = self.get_cell_style_index(sheet, row, column)?;
         if self.workbook.styles.style_is_quote_prefix(style_index) {
             style_index = self
