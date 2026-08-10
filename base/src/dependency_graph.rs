@@ -25,7 +25,6 @@ pub enum RecalcMode {
     /// Testing and development only: run incremental, then full, and
     /// `assert_eq!` that they produce identical values, panicking on any
     /// divergence. Not for production use.
-    #[doc(hidden)]
     Verify,
 }
 
