@@ -66,20 +66,16 @@ impl<'a> Model<'a> {
                         };
                     }
 
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, value);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // ignore non-numeric
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, *value);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // ignore non-numeric
                             }
                         }
                     }
@@ -191,20 +187,16 @@ impl<'a> Model<'a> {
                         };
                     }
 
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, value);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // ignore non-numeric
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, *value);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // ignore non-numeric
                             }
                         }
                     }
@@ -315,27 +307,23 @@ impl<'a> Model<'a> {
                         };
                     }
 
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, value);
-                                }
-                                CalcResult::String(_) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, 0.0);
-                                }
-                                CalcResult::Boolean(value) => {
-                                    let val = if value { 1.0 } else { 0.0 };
-                                    accumulate(&mut sum, &mut sumsq, &mut count, val);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // ignore non-numeric for now
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, *value);
+                            }
+                            CalcResult::String(_) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, 0.0);
+                            }
+                            CalcResult::Boolean(value) => {
+                                let val = if *value { 1.0 } else { 0.0 };
+                                accumulate(&mut sum, &mut sumsq, &mut count, val);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // ignore non-numeric for now
                             }
                         }
                     }
@@ -446,27 +434,23 @@ impl<'a> Model<'a> {
                         };
                     }
 
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, value);
-                                }
-                                CalcResult::String(_) => {
-                                    accumulate(&mut sum, &mut sumsq, &mut count, 0.0);
-                                }
-                                CalcResult::Boolean(value) => {
-                                    let val = if value { 1.0 } else { 0.0 };
-                                    accumulate(&mut sum, &mut sumsq, &mut count, val);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // ignore non-numeric for now
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, *value);
+                            }
+                            CalcResult::String(_) => {
+                                accumulate(&mut sum, &mut sumsq, &mut count, 0.0);
+                            }
+                            CalcResult::Boolean(value) => {
+                                let val = if *value { 1.0 } else { 0.0 };
+                                accumulate(&mut sum, &mut sumsq, &mut count, val);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // ignore non-numeric for now
                             }
                         }
                     }

@@ -69,26 +69,21 @@ impl<'a> Model<'a> {
                         ));
                     }
 
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    f(value);
-                                }
-                                error @ CalcResult::Error { .. } => return Err(error),
-                                CalcResult::Range { .. } => {
-                                    return Err(CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    ));
-                                }
-                                _ => {}
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                f(*value);
                             }
+                            error @ CalcResult::Error { .. } => return Err(error.clone()),
+                            CalcResult::Range { .. } => {
+                                return Err(CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    "Unexpected Range".to_string(),
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -163,32 +158,27 @@ impl<'a> Model<'a> {
                         ));
                     }
 
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    f(value);
-                                }
-                                CalcResult::Boolean(b) => {
-                                    f(if b { 1.0 } else { 0.0 });
-                                }
-                                CalcResult::String(_) => {
-                                    f(0.0);
-                                }
-                                error @ CalcResult::Error { .. } => return Err(error),
-                                CalcResult::Range { .. } => {
-                                    return Err(CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    ));
-                                }
-                                _ => {}
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                f(*value);
                             }
+                            CalcResult::Boolean(b) => {
+                                f(if *b { 1.0 } else { 0.0 });
+                            }
+                            CalcResult::String(_) => {
+                                f(0.0);
+                            }
+                            error @ CalcResult::Error { .. } => return Err(error.clone()),
+                            CalcResult::Range { .. } => {
+                                return Err(CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    "Unexpected Range".to_string(),
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -240,39 +230,34 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::String(_) => count += 1.0,
-                                CalcResult::Number(value) => {
-                                    count += 1.0;
-                                    sum += value;
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::String(_) => count += 1.0,
+                            CalcResult::Number(value) => {
+                                count += 1.0;
+                                sum += value;
+                            }
+                            CalcResult::Boolean(b) => {
+                                if *b {
+                                    sum += 1.0;
                                 }
-                                CalcResult::Boolean(b) => {
-                                    if b {
-                                        sum += 1.0;
-                                    }
-                                    count += 1.0;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                CalcResult::Range { .. } => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        "Unexpected Range".to_string(),
-                                    );
-                                }
-                                CalcResult::EmptyCell | CalcResult::EmptyArg => {}
-                                CalcResult::Array(_) | CalcResult::Lambda(_) => {
-                                    return CalcResult::Error {
-                                        error: Error::NIMPL,
-                                        origin: cell,
-                                        message: "Arrays not supported yet".to_string(),
-                                    }
+                                count += 1.0;
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            CalcResult::Range { .. } => {
+                                return CalcResult::new_error(
+                                    Error::ERROR,
+                                    cell,
+                                    "Unexpected Range".to_string(),
+                                );
+                            }
+                            CalcResult::EmptyCell | CalcResult::EmptyArg => {}
+                            CalcResult::Array(_) | CalcResult::Lambda(_) => {
+                                return CalcResult::Error {
+                                    error: Error::NIMPL,
+                                    origin: cell,
+                                    message: "Arrays not supported yet".to_string(),
                                 }
                             }
                         }
@@ -350,15 +335,10 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            if let CalcResult::Number(_) = self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                result += 1.0;
-                            }
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        if let CalcResult::Number(_) = value {
+                            result += 1.0;
                         }
                     }
                 }
@@ -386,17 +366,12 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::EmptyCell | CalcResult::EmptyArg => {}
-                                _ => {
-                                    result += 1.0;
-                                }
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::EmptyCell | CalcResult::EmptyArg => {}
+                            _ => {
+                                result += 1.0;
                             }
                         }
                     }
@@ -516,20 +491,16 @@ impl<'a> Model<'a> {
                         };
                     }
 
-                    for row in row1..=row2 {
-                        for column in column1..=column2 {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    accumulate(&mut values, &mut sum, &mut count, value);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // ignore non-numeric
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                accumulate(&mut values, &mut sum, &mut count, *value);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // ignore non-numeric
                             }
                         }
                     }

@@ -225,33 +225,28 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::String(value) => {
-                                    result = format!("{result}{value}");
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::String(value) => {
+                                result = format!("{result}{value}");
+                            }
+                            CalcResult::Number(value) => result = format!("{result}{value}"),
+                            CalcResult::Boolean(value) => {
+                                if *value {
+                                    result = format!("{result}TRUE");
+                                } else {
+                                    result = format!("{result}FALSE");
                                 }
-                                CalcResult::Number(value) => result = format!("{result}{value}"),
-                                CalcResult::Boolean(value) => {
-                                    if value {
-                                        result = format!("{result}TRUE");
-                                    } else {
-                                        result = format!("{result}FALSE");
-                                    }
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                CalcResult::EmptyCell | CalcResult::EmptyArg => {}
-                                CalcResult::Range { .. } => {}
-                                CalcResult::Array(_) | CalcResult::Lambda(_) => {
-                                    return CalcResult::Error {
-                                        error: Error::NIMPL,
-                                        origin: cell,
-                                        message: "Arrays not supported yet".to_string(),
-                                    }
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            CalcResult::EmptyCell | CalcResult::EmptyArg => {}
+                            CalcResult::Range { .. } => {}
+                            CalcResult::Array(_) | CalcResult::Lambda(_) => {
+                                return CalcResult::Error {
+                                    error: Error::NIMPL,
+                                    origin: cell,
+                                    message: "Arrays not supported yet".to_string(),
                                 }
                             }
                         }

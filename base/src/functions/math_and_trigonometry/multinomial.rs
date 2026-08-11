@@ -46,34 +46,27 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
-                            match self.evaluate_cell(
-                                crate::expressions::types::CellReferenceIndex {
-                                    sheet: left.sheet,
-                                    row,
-                                    column,
-                                },
-                            ) {
-                                CalcResult::Number(v) => {
-                                    if v < 0.0 {
-                                        return CalcResult::new_error(
-                                            Error::NUM,
-                                            cell,
-                                            "MULTINOMIAL requires non-negative values".to_string(),
-                                        );
-                                    }
-                                    values.push(v.trunc() as u64);
-                                }
-                                CalcResult::EmptyCell | CalcResult::EmptyArg => values.push(0),
-                                err @ CalcResult::Error { .. } => return err,
-                                _ => {
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(v) => {
+                                if *v < 0.0 {
                                     return CalcResult::new_error(
-                                        Error::VALUE,
+                                        Error::NUM,
                                         cell,
-                                        "MULTINOMIAL requires numeric values".to_string(),
-                                    )
+                                        "MULTINOMIAL requires non-negative values".to_string(),
+                                    );
                                 }
+                                values.push(v.trunc() as u64);
+                            }
+                            CalcResult::EmptyCell | CalcResult::EmptyArg => values.push(0),
+                            err @ CalcResult::Error { .. } => return err.clone(),
+                            _ => {
+                                return CalcResult::new_error(
+                                    Error::VALUE,
+                                    cell,
+                                    "MULTINOMIAL requires numeric values".to_string(),
+                                )
                             }
                         }
                     }
