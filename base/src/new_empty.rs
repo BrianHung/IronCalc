@@ -697,6 +697,7 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            range_cache: HashMap::new(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

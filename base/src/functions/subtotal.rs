@@ -147,7 +147,10 @@ impl<'a> Model<'a> {
                             let column1 = left.column;
                             let column2 = right.column;
 
-                            for row in row1..=row2 {
+                            let range_cells =
+                                self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                            for (row_index, row_values) in range_cells.iter().enumerate() {
+                                let row = row1 + row_index as i32;
                                 let cell_status = self
                                     .cell_hidden_status(left.sheet, row, column1)
                                     .map_err(|message| {
@@ -161,19 +164,18 @@ impl<'a> Model<'a> {
                                 {
                                     continue;
                                 }
-                                for column in column1..=column2 {
+                                for (column_index, value) in row_values.iter().enumerate() {
+                                    let column = column1 + column_index as i32;
                                     if self.cell_is_subtotal(left.sheet, row, column) {
                                         continue;
                                     }
-                                    match self.evaluate_cell(CellReferenceIndex {
-                                        sheet: left.sheet,
-                                        row,
-                                        column,
-                                    }) {
+                                    match value {
                                         CalcResult::Number(value) => {
-                                            result.push(value);
+                                            result.push(*value);
                                         }
-                                        error @ CalcResult::Error { .. } => return Err(error),
+                                        error @ CalcResult::Error { .. } => {
+                                            return Err(error.clone())
+                                        }
                                         _ => {
                                             // We ignore booleans and strings
                                         }
@@ -395,7 +397,10 @@ impl<'a> Model<'a> {
                             let column1 = left.column;
                             let column2 = right.column;
 
-                            for row in row1..=row2 {
+                            let range_cells =
+                                self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                            for (row_index, row_values) in range_cells.iter().enumerate() {
+                                let row = row1 + row_index as i32;
                                 let cell_status = match self
                                     .cell_hidden_status(left.sheet, row, column1)
                                 {
@@ -412,15 +417,12 @@ impl<'a> Model<'a> {
                                 {
                                     continue;
                                 }
-                                for column in column1..=column2 {
+                                for (column_index, value) in row_values.iter().enumerate() {
+                                    let column = column1 + column_index as i32;
                                     if self.cell_is_subtotal(left.sheet, row, column) {
                                         continue;
                                     }
-                                    match self.evaluate_cell(CellReferenceIndex {
-                                        sheet: left.sheet,
-                                        row,
-                                        column,
-                                    }) {
+                                    match value {
                                         CalcResult::EmptyCell | CalcResult::EmptyArg => {
                                             // skip
                                         }
@@ -478,7 +480,10 @@ impl<'a> Model<'a> {
                             let column1 = left.column;
                             let column2 = right.column;
 
-                            for row in row1..=row2 {
+                            let range_cells =
+                                self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                            for (row_index, row_values) in range_cells.iter().enumerate() {
+                                let row = row1 + row_index as i32;
                                 let cell_status = match self
                                     .cell_hidden_status(left.sheet, row, column1)
                                 {
@@ -495,17 +500,12 @@ impl<'a> Model<'a> {
                                 {
                                     continue;
                                 }
-                                for column in column1..=column2 {
+                                for (column_index, value) in row_values.iter().enumerate() {
+                                    let column = column1 + column_index as i32;
                                     if self.cell_is_subtotal(left.sheet, row, column) {
                                         continue;
                                     }
-                                    if let CalcResult::Number(_) =
-                                        self.evaluate_cell(CellReferenceIndex {
-                                            sheet: left.sheet,
-                                            row,
-                                            column,
-                                        })
-                                    {
+                                    if let CalcResult::Number(_) = value {
                                         count += 1;
                                     }
                                 }

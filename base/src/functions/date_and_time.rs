@@ -864,29 +864,24 @@ impl<'a> Model<'a> {
                         "Ranges are in different sheets".to_string(),
                     ));
                 }
-                for row in left.row..=right.row {
-                    for column in left.column..=right.column {
-                        match self.evaluate_cell(CellReferenceIndex {
-                            sheet: left.sheet,
-                            row,
-                            column,
-                        }) {
-                            CalcResult::Number(v) => {
-                                let serial = v.floor() as i64;
-                                self.excel_date(serial, cell)?;
-                                handle(serial)?;
-                            }
-                            CalcResult::EmptyCell => {
-                                // ignore empty cells
-                            }
-                            e @ CalcResult::Error { .. } => return Err(e),
-                            _ => {
-                                return Err(CalcResult::new_error(
-                                    Error::VALUE,
-                                    cell,
-                                    "Invalid holiday date".to_string(),
-                                ))
-                            }
+                let range_cells = self.range_values(left, right);
+                for value in range_cells.iter().flatten() {
+                    match value {
+                        CalcResult::Number(v) => {
+                            let serial = v.floor() as i64;
+                            self.excel_date(serial, cell)?;
+                            handle(serial)?;
+                        }
+                        CalcResult::EmptyCell => {
+                            // ignore empty cells
+                        }
+                        e @ CalcResult::Error { .. } => return Err(e.clone()),
+                        _ => {
+                            return Err(CalcResult::new_error(
+                                Error::VALUE,
+                                cell,
+                                "Invalid holiday date".to_string(),
+                            ))
                         }
                     }
                 }

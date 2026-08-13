@@ -1,6 +1,7 @@
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::vec::Vec;
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
@@ -175,6 +176,10 @@ pub(crate) enum CellOrRange {
     Range((u32, i32, i32, i32, i32)),
 }
 
+/// Materialized values of a rectangular range, shared across the formulas that
+/// read it in a pass. See [`Model::range_values`].
+pub(crate) type RangeValues = Arc<Vec<Vec<CalcResult>>>;
+
 /// A dynamical IronCalc model.
 ///
 /// Its is composed of a `Workbook`. Everything else are dynamical quantities:
@@ -225,6 +230,14 @@ pub struct Model<'a> {
     pub(crate) cf_cache: HashMap<(u32, i32, i32), Vec<CfCellResult>>,
     /// Dynamic links: links created by formulas like HYPERLINK
     pub(crate) links: HashMap<(u32, i32, i32), Link>,
+    /// Materialized cell values per range, valid only within a single pass:
+    /// cleared at the pass start and end, and on each spill restart so a range
+    /// materialized under a superseded order is never reused. A column of
+    /// `SUM(A1:A10000)` then reads the range once instead of once per formula.
+    /// Shared through `Arc` so a cache hit is a refcount bump. Trades memory for
+    /// speed: peak memory scales with the distinct ranges read in the pass, not
+    /// the largest one.
+    pub(crate) range_cache: HashMap<(u32, i32, i32, i32, i32), RangeValues>,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1364,6 +1377,74 @@ impl<'a> Model<'a> {
         self.workbook.worksheet(sheet)?.is_empty_cell(row, column)
     }
 
+    /// Materialized values of a rectangular range, cached for the pass. Every
+    /// cell is evaluated on demand, and repeated reads of the same range reuse
+    /// the `Arc`, so a column of aggregates over one range reads it once.
+    pub(crate) fn range_values(
+        &mut self,
+        left: CellReferenceIndex,
+        right: CellReferenceIndex,
+    ) -> RangeValues {
+        // Clamp an open range (one ending at the last row/column, e.g. A:A or
+        // the skip-header A2:A1048576) to the used area so it does not
+        // materialize a million empty cells. Blank-counting functions
+        // (COUNTBLANK, TEXTJOIN) keep direct reads, since for them the trailing
+        // blanks are significant.
+        let (mut row2, mut column2) = (right.row, right.column);
+        if let Ok(worksheet) = self.workbook.worksheet(left.sheet) {
+            let dimension = worksheet.dimension();
+            if row2 == LAST_ROW {
+                row2 = dimension.max_row;
+            }
+            if column2 == LAST_COLUMN {
+                column2 = dimension.max_column;
+            }
+        }
+        let key = (left.sheet, left.row, left.column, row2, column2);
+        if let Some(hit) = self.range_cache.get(&key) {
+            return hit.clone();
+        }
+        let mut rows = Vec::with_capacity((row2 - left.row + 1).max(0) as usize);
+        for row in left.row..=row2 {
+            let mut columns = Vec::with_capacity((column2 - left.column + 1).max(0) as usize);
+            for column in left.column..=column2 {
+                columns.push(self.evaluate_cell(CellReferenceIndex {
+                    sheet: left.sheet,
+                    row,
+                    column,
+                }));
+            }
+            rows.push(columns);
+        }
+        let shared = Arc::new(rows);
+        self.range_cache.insert(key, shared.clone());
+        shared
+    }
+
+    /// [`range_values`](Self::range_values) for callers that hold loose corner
+    /// coordinates, so they need not build two `CellReferenceIndex` structs.
+    pub(crate) fn range_values_rect(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        column1: i32,
+        row2: i32,
+        column2: i32,
+    ) -> RangeValues {
+        self.range_values(
+            CellReferenceIndex {
+                sheet,
+                row: row1,
+                column: column1,
+            },
+            CellReferenceIndex {
+                sheet,
+                row: row2,
+                column: column2,
+            },
+        )
+    }
+
     /// Evaluates all cells in a given range and returns the results in a 2D vector.
     pub(crate) fn evaluate_range(
         &mut self,
@@ -1722,6 +1803,7 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            range_cache: HashMap::new(),
         };
 
         model.parse_formulas();
@@ -3034,6 +3116,11 @@ impl<'a> Model<'a> {
     /// Phase 2 evaluates every remaining cell in natural order.  Because all spill areas have
     /// already been written, regular cells always read the correct spill values.
     pub fn evaluate(&mut self) {
+        // The cache is valid only within one pass. A full pass rebuilds every
+        // cell, so clearing here suffices today. If a partial (incremental) pass
+        // is ever added, it must clear or refresh this too, or it will read
+        // stale materialized ranges.
+        self.range_cache.clear();
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3045,6 +3132,9 @@ impl<'a> Model<'a> {
         while retry && restart_count < max_restarts {
             retry = false;
             self.cells.clear();
+            // A restart re-evaluates in a corrected spill order, so ranges
+            // materialized under the old order must not be served from the cache.
+            self.range_cache.clear();
             self.support.clear();
             // dynamic links (HYPERLINK) are rebuilt on every evaluation
             self.links.clear();
@@ -3088,6 +3178,9 @@ impl<'a> Model<'a> {
             });
         }
         self.evaluate_conditional_formatting();
+        // The cache is only valid within this pass; drop it so materialized
+        // ranges are not held resident while the model sits idle.
+        self.range_cache.clear();
     }
 
     /// Removes the content of every cell in the range but leaves the style.

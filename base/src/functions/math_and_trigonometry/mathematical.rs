@@ -23,20 +23,15 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.min(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                result = value.min(result);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // We ignore booleans and strings
                             }
                         }
                     }
@@ -83,20 +78,15 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.max(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
+                    let range_cells = self.range_values(left, right);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                result = value.max(result);
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // We ignore booleans and strings
                             }
                         }
                     }
@@ -325,20 +315,16 @@ impl<'a> Model<'a> {
                             }
                         };
                     }
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result += value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                result += value;
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // We ignore booleans and strings
                             }
                         }
                     }
@@ -425,20 +411,16 @@ impl<'a> Model<'a> {
                             }
                         };
                     }
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result += value * value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                result += value * value;
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // We ignore booleans and strings
                             }
                         }
                     }
@@ -557,23 +539,17 @@ impl<'a> Model<'a> {
                             }
                         };
                     }
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            let cell_value = self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            });
-
-                            match cell_value {
-                                CalcResult::Number(value) => {
-                                    seen_value = true;
-                                    result *= value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
+                    let range_cells =
+                        self.range_values_rect(left.sheet, row1, column1, row2, column2);
+                    for value in range_cells.iter().flatten() {
+                        match value {
+                            CalcResult::Number(value) => {
+                                seen_value = true;
+                                result *= value;
+                            }
+                            error @ CalcResult::Error { .. } => return error.clone(),
+                            _ => {
+                                // We ignore booleans and strings
                             }
                         }
                     }
