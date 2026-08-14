@@ -1,7 +1,8 @@
 .PHONY: lint
 lint:
 	cargo fmt -- --check
-	cargo clippy --all-targets --all-features -- -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -D warnings
+	cargo clippy --workspace --exclude wasm --all-targets --all-features -- -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -D warnings
+	cd bindings/wasm/ && cargo clippy --target wasm32-unknown-unknown -- -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -D warnings
 	cd webapp/IronCalc/ && npm install && npm run check
 	cd webapp/app.ironcalc.com/frontend/ && npm install && npm run check
 	cd docs/docs.ironcalc.com/ && npm install && npm run build

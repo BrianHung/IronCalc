@@ -2,7 +2,9 @@
 #![allow(clippy::panic)]
 
 use ironcalc::export::save_to_xlsx;
-use ironcalc::import::{load_from_xlsx, load_from_xlsx_bytes};
+use ironcalc::import::{
+    load_from_icalc, load_from_icalc_bytes, load_from_xlsx, load_from_xlsx_bytes,
+};
 use ironcalc_base::types::{Color, HorizontalAlignment, Link, VerticalAlignment};
 use ironcalc_base::{Model, UserModel, ROW_HEIGHT_FACTOR};
 use std::fs;
@@ -53,6 +55,16 @@ fn test_load_from_xlsx_bytes() {
     file.read_to_end(&mut bytes).unwrap();
     let workbook = load_from_xlsx_bytes(&bytes, "home", "en", "UTC").unwrap();
     assert_eq!(workbook.views[&0].sheet, 7);
+}
+
+#[test]
+fn test_load_from_icalc_bytes() {
+    let mut file = fs::File::open("tests/example.ic").unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    let model = load_from_icalc_bytes(&bytes, "en").unwrap();
+    let model_from_file = load_from_icalc("tests/example.ic", "en").unwrap();
+    assert_eq!(model.workbook, model_from_file.workbook);
 }
 
 #[test]

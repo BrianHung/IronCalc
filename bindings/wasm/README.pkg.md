@@ -1,7 +1,6 @@
 # IronCalc Web bindings
 
-This package contains web bindings for IronCalc. Note that it does not contain the xlsx writer and reader, only the engine.
-
+This crate is used to build the web bindings for IronCalc.
 
 ## Usage
 
@@ -13,21 +12,26 @@ npm install @ironcalc/wasm
 
 And then in your TypeScript
 
+The core engine and the XLSX helpers are separate WebAssembly modules. Import
+the engine from the package root, and the helpers from `@ironcalc/wasm/xlsx`
+only if you need them, so XLSX support is not added to your bundle unless used.
+
 ```TypeScript
 import init, { Model } from "@ironcalc/wasm";
+import initXLSX, { toXLSXBytes, fromXLSXBytes } from "@ironcalc/wasm/xlsx";
 
 await init();
+await initXLSX();
 
-function compute() {
-    const model = new Model('en', 'UTC');
-    
-    model.setUserInput(0, 1, 1, "23");
-    model.setUserInput(0, 1, 2, "=A1*3+1");
-    
-    const result = model.getFormattedCellValue(0, 1, 2);
-    
-    console.log("Result: ", result);
-}
+// Model(name, locale, timezone, languageId)
+const model = new Model("Workbook1", "en", "UTC", "en");
+model.setUserInput(0, 1, 1, "23");
+model.setUserInput(0, 1, 2, "=A1*3+1");
+console.log(model.getFormattedCellValue(0, 1, 2)); // "70"
 
-compute();
+// Export the workbook to XLSX bytes, then read them back.
+const xlsxBytes = toXLSXBytes(model.toBytes(), "en");
+const modelBytes = fromXLSXBytes(xlsxBytes, "Workbook1", "en", "UTC", "en");
+const roundTripped = Model.fromBytes(modelBytes, "en");
 ```
+
