@@ -3,6 +3,41 @@
 use crate::{Model, RecalcMode};
 use std::time::Instant;
 
+// cargo test -p ironcalc_base bench_range_composition --release -- --ignored --nocapture
+//
+// Running totals `B_k = SUM(A1:Ak)`: every prefix is a referenced range, so range
+// composition reduces the family in O(n) rather than O(n^2). Timing two sizes
+// shows near-linear scaling; a direct scan would grow ~4x when n doubles.
+#[test]
+#[ignore]
+fn bench_range_composition() {
+    let run = |n: i32| {
+        let mut m = Model::new_empty("m", "en", "UTC", "en").unwrap();
+        for r in 1..=n {
+            m.set_user_input(0, r, 1, "1".into()).unwrap();
+            m.set_user_input(0, r, 2, format!("=SUM(A$1:A{r})"))
+                .unwrap();
+        }
+        let t = Instant::now();
+        m.evaluate();
+        (t.elapsed(), m.get_formatted_cell_value(0, n, 2).unwrap())
+    };
+
+    let (small_n, large_n) = (2000, 4000);
+    let (small_t, _) = run(small_n);
+    let (large_t, tail) = run(large_n);
+
+    assert_eq!(tail, large_n.to_string());
+    let ratio = large_t.as_secs_f64() / small_t.as_secs_f64();
+    println!(
+        "\n[bench] running-total SUM: n={small_n} {small_t:?}, n={large_n} {large_t:?} | scaling={ratio:.1}x (quadratic ~4x)\n"
+    );
+    assert!(
+        ratio < 3.0,
+        "range composition should scale near-linearly, got {ratio:.1}x"
+    );
+}
+
 // cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
 #[test]
 #[ignore]

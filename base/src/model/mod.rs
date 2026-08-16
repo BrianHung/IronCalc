@@ -39,6 +39,9 @@ use crate::{
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 mod incremental;
+pub(crate) mod range_reduce;
+
+use range_reduce::{RangeReduceCache, ReferencedRanges};
 
 #[cfg(any(test, feature = "mock_time"))]
 pub use crate::mock_time::get_milliseconds_since_epoch;
@@ -248,6 +251,13 @@ pub struct Model<'a> {
     /// affected set approaches this recomputes about as much as a full pass but
     /// with extra bookkeeping, so it falls back to full instead.
     pub(crate) formula_cell_count: usize,
+    /// Ranges referenced by formulas, per sheet, computed on each full pass. Lets
+    /// range composition reuse a one-row-shorter range only when it is itself
+    /// referenced. See [`crate::model::range_reduce`].
+    pub(crate) referenced_ranges: ReferencedRanges,
+    /// Memoized range reductions for the current pass, keyed by range and reducer.
+    /// Cleared whenever cell values are recomputed, so it never outlives them.
+    pub(crate) range_reduce_cache: RangeReduceCache,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1767,6 +1777,8 @@ impl<'a> Model<'a> {
             array_cells: HashSet::new(),
             volatile_cells: HashSet::new(),
             formula_cell_count: 0,
+            referenced_ranges: HashMap::new(),
+            range_reduce_cache: HashMap::new(),
         };
 
         model.parse_formulas();
@@ -3158,6 +3170,7 @@ impl<'a> Model<'a> {
     /// circular spill dependencies. Phase 2 evaluates the remaining cells.
     fn evaluate_full(&mut self) {
         self.collect_spill_cells();
+        self.collect_referenced_ranges();
 
         let n = self.spill_cells.len();
         // Each restart fixes at least one pair; O(N*N) restarts suffice.
@@ -3168,6 +3181,7 @@ impl<'a> Model<'a> {
         while retry && restart_count < max_restarts {
             retry = false;
             self.cells.clear();
+            self.range_reduce_cache.clear();
             self.support.clear();
             // dynamic links (HYPERLINK) are rebuilt on every evaluation
             self.links.clear();

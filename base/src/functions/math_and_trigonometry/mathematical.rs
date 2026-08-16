@@ -2,6 +2,7 @@ use crate::cast::NumberOrArray;
 use crate::constants::{EXCEL_PRECISION, LAST_COLUMN, LAST_ROW};
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
+use crate::model::range_reduce::{RangeAgg, RangeReducer};
 use crate::number_format::{to_excel_precision, to_precision};
 use crate::single_number_fn;
 use crate::{
@@ -23,22 +24,16 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.min(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.reduce_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Min,
+                    ) {
+                        RangeAgg::Number(value) => result = value.min(result),
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {
@@ -83,22 +78,16 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.max(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.reduce_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Max,
+                    ) {
+                        RangeAgg::Number(value) => result = value.max(result),
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {
@@ -325,22 +314,16 @@ impl<'a> Model<'a> {
                             }
                         };
                     }
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result += value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.reduce_range(
+                        left.sheet,
+                        row1,
+                        column1,
+                        row2,
+                        column2,
+                        RangeReducer::Sum,
+                    ) {
+                        RangeAgg::Number(value) => result += value,
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {

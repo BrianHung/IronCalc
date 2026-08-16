@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
+use crate::model::range_reduce::{RangeAgg, RangeReducer};
 use crate::{
     calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
 };
@@ -350,16 +351,16 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
-                            if let CalcResult::Number(_) = self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                result += 1.0;
-                            }
-                        }
+                    match self.reduce_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Count,
+                    ) {
+                        RangeAgg::Number(value) => result += value,
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 _ => {

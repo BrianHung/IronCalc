@@ -177,7 +177,7 @@ impl Model<'_> {
     /// Dynamic branches are over-approximated (all `IF` branches), a safe superset;
     /// truly dynamic references (`INDIRECT`, `OFFSET`, computed endpoints) are left
     /// to volatile handling. Resolves defined names and lambda bodies, cycle-guarded.
-    fn collect_references(
+    pub(in crate::model) fn collect_references(
         &self,
         node: &Node,
         context: CellReferenceIndex,
@@ -389,6 +389,8 @@ impl Model<'_> {
     /// Returns `false` after falling back to a full recompute for anything the
     /// incremental path cannot model.
     pub(crate) fn evaluate_selective(&mut self) -> bool {
+        // Range reductions memoized in a prior pass summarize stale values.
+        self.range_reduce_cache.clear();
         if self.graph.should_recompute_full() {
             self.evaluate_full();
             return false;
