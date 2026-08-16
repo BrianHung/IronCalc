@@ -1,0 +1,23 @@
+{
+  "name": "IronCalc",
+  "install": "./.cursor/install.sh",
+  "terminals": [
+    {
+      "name": "api-server",
+      "command": "cd webapp/app.ironcalc.com/server && cargo run"
+    },
+    {
+      "name": "frontend",
+      "command": "cd webapp/app.ironcalc.com/frontend && npm run dev"
+    },
+    {
+      "name": "caddy",
+      "command": "cd webapp/app.ironcalc.com && caddy run"
+    }
+  ],
+  "ports": [
+    { "name": "webapp", "port": 2080 },
+    { "name": "frontend", "port": 5173 },
+    { "name": "api", "port": 8000 }
+  ]
+}
