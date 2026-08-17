@@ -1,6 +1,7 @@
 use crate::cf_types::{CfRule, Cfvo};
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
+use crate::dependency_graph::Axis;
 use crate::expressions::parser::stringify::{
     to_localized_string, to_string_displaced, DisplaceData,
 };
@@ -303,7 +304,6 @@ impl<'a> Model<'a> {
                 row,
                 column,
             };
-            // FIXME: This is not a very performant way if the formula has changed :S.
             // Both strings must be in the active locale/language: the displaced
             // one is written back through the (localized) parser, and comparing
             // against an English rendering would flag every formula as changed.
@@ -316,7 +316,12 @@ impl<'a> Model<'a> {
                 self.language,
             );
             if formula != formula_displaced {
-                self.update_cell_with_formula(sheet, row, column, format!("={formula_displaced}"))?;
+                // A displacement only shifts references; it does not rewire the
+                // dependency graph, so write the formula without forcing a full
+                // recompute. `record_structural_edit` shifts the existing edges
+                // (and falls back to full for edits the shift cannot model), so
+                // the next pass can run incrementally.
+                self.write_cell_formula(sheet, row, column, format!("={formula_displaced}"))?;
             };
         }
         Ok(())
@@ -495,6 +500,17 @@ impl<'a> Model<'a> {
                 height,
                 &formula_or_value,
             )?;
+        } else if let Some(formula) = formula_or_value.strip_prefix('=') {
+            // Relocating a formula only moves it; its references are shifted by
+            // the surrounding displacement. Write it graph-neutrally (rather than
+            // through `set_user_input`, which forces a full recompute for any
+            // formula) so the structural edit's edge shift can keep the next pass
+            // incremental. The source style is re-applied below, so the cell is
+            // otherwise identical. The rewritten formula holds no cached value, so
+            // mark it dirty at the pre-shift position; the later shift moves that
+            // mark to the target, ensuring the incremental pass evaluates it.
+            self.write_cell_formula(sheet, target_row, target_column, format!("={formula}"))?;
+            self.graph.mark_dirty((sheet, source_row, source_column));
         } else {
             self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
         }
@@ -506,6 +522,46 @@ impl<'a> Model<'a> {
         // delete source cell content and style
         worksheet.remove_cell(source_row, source_column)?;
         Ok(())
+    }
+
+    /// Keeps the dependency graph in step with a structural edit. A row or column
+    /// insert or delete reflects its displacement onto the graph so the next
+    /// evaluation can run incrementally. A move or cell displacement, which the
+    /// shift does not model, forces a full recompute, as does an array sheet. The
+    /// match is exhaustive so a new `DisplaceData` variant cannot silently skip
+    /// graph maintenance.
+    fn record_structural_edit(&mut self, disp: &DisplaceData) {
+        let (sheet, axis, boundary, delta) = match *disp {
+            DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
+            DisplaceData::Column {
+                sheet,
+                column,
+                delta,
+            } => (sheet, Axis::Column, column, delta),
+            DisplaceData::RowMove { .. }
+            | DisplaceData::ColumnMove { .. }
+            | DisplaceData::CellHorizontal { .. }
+            | DisplaceData::CellVertical { .. } => {
+                self.graph.force_full();
+                return;
+            }
+            DisplaceData::None => return,
+        };
+        // The shift moves the graph's edges, but `volatile_cells` and `array_cells`
+        // are keyed by position and only rebuilt on a full pass. An array cell or a
+        // volatile at or past the boundary would move, leaving those sets pointing
+        // at its old position and its new position never re-seeded, so force a full
+        // recompute to rebuild them. Cells above the boundary do not move.
+        let array_on_sheet = self.array_cells.iter().any(|&(s, _, _)| s == sheet);
+        let volatile_moves = self
+            .volatile_cells
+            .iter()
+            .any(|&cell| cell.0 == sheet && axis.coord(cell) >= boundary);
+        if array_on_sheet || volatile_moves {
+            self.graph.force_full();
+        } else {
+            self.graph.structural_edit(sheet, axis, boundary, delta);
+        }
     }
 
     /// Inserts one or more new columns into the model at the specified index.
@@ -572,6 +628,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         // In the list of columns:
         // * Keep all the columns to the left
@@ -674,6 +731,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
 
         // deletes all the column styles
@@ -926,6 +984,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         Ok(())
     }
@@ -1007,6 +1066,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1163,6 +1223,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1309,6 +1370,7 @@ impl<'a> Model<'a> {
         let disp = DisplaceData::RowMove { sheet, row, delta };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 

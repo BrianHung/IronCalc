@@ -1,7 +1,9 @@
 #![deny(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
+
+use crate::dependency_graph::{DependencyGraph, Position, RecalcMode};
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -35,6 +37,8 @@ use crate::{
 };
 
 use crate::{cf_types::CfCellResult, tz::Tz};
+
+mod incremental;
 
 #[cfg(any(test, feature = "mock_time"))]
 pub use crate::mock_time::get_milliseconds_since_epoch;
@@ -225,6 +229,25 @@ pub struct Model<'a> {
     pub(crate) cf_cache: HashMap<(u32, i32, i32), Vec<CfCellResult>>,
     /// Dynamic links: links created by formulas like HYPERLINK
     pub(crate) links: HashMap<(u32, i32, i32), Link>,
+    /// Forward dependency graph + dirty set backing incremental evaluation.
+    pub(crate) graph: DependencyGraph,
+    /// Which recalculation strategy `evaluate` uses (`Full` by default).
+    pub(crate) recalc_mode: RecalcMode,
+    /// When `Some`, `evaluate_cell` only recomputes cells in this set and returns
+    /// the stored value for any cell outside it. Drives the incremental pass.
+    pub(crate) recompute_scope: Option<HashSet<Position>>,
+    /// Array and spill cell positions, computed on each full pass. Incremental
+    /// evaluation does not model spilling, so an edit whose affected set reaches
+    /// one of these falls back to a full recompute.
+    pub(crate) array_cells: HashSet<Position>,
+    /// Cells whose formula calls a volatile function (`RAND`, `NOW`, `OFFSET`,
+    /// ...), computed on each full pass. A full recompute re-rolls these on every
+    /// pass, so incremental recomputes them on every edit to match.
+    pub(crate) volatile_cells: HashSet<Position>,
+    /// Number of formula cells at the last full pass. An incremental pass whose
+    /// affected set approaches this recomputes about as much as a full pass but
+    /// with extra bookkeeping, so it falls back to full instead.
+    pub(crate) formula_cell_count: usize,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1409,6 +1432,22 @@ impl<'a> Model<'a> {
     // Evaluates a cell and returns the value in the cell
     // FIXME: CalcResult cannot be Array or Range, should we have a different type?
     pub(crate) fn evaluate_cell(&mut self, cell_reference: CellReferenceIndex) -> CalcResult {
+        // Incremental pass: a cell outside the affected set did not change, so
+        // return its stored value instead of recomputing it (and its precedents).
+        if let Some(scope) = &self.recompute_scope {
+            let position = (
+                cell_reference.sheet,
+                cell_reference.row,
+                cell_reference.column,
+            );
+            if !scope.contains(&position) {
+                return match self.fetch_cell(cell_reference) {
+                    Some(cell) => self.get_cell_value(cell, cell_reference),
+                    None => CalcResult::EmptyCell,
+                };
+            }
+        }
+
         let original_cell = match self.fetch_cell(cell_reference) {
             Some(c) => c.clone(),
             None => return CalcResult::EmptyCell,
@@ -1722,6 +1761,12 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            graph: DependencyGraph::default(),
+            recalc_mode: RecalcMode::from_env(),
+            recompute_scope: None,
+            array_cells: HashSet::new(),
+            volatile_cells: HashSet::new(),
+            formula_cell_count: 0,
         };
 
         model.parse_formulas();
@@ -2103,6 +2148,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: &str,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index;
         if common::value_needs_quoting(value, self.language) {
@@ -2153,6 +2199,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: bool,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2195,6 +2242,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: f64,
     ) -> Result<(), String> {
+        self.graph.mark_dirty((sheet, row, column));
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2234,6 +2282,26 @@ impl<'a> Model<'a> {
     /// * [Model::update_cell_with_bool()]
     /// * [Model::update_cell_with_text()]
     pub fn update_cell_with_formula(
+        &mut self,
+        sheet: u32,
+        row: i32,
+        column: i32,
+        formula: String,
+    ) -> Result<(), String> {
+        // A user-entered formula can rewire dependencies arbitrarily, so rebuild
+        // the graph on the next pass. A structural displacement instead shifts the
+        // existing edges (see [`write_cell_formula`]).
+        self.graph.force_full();
+        self.write_cell_formula(sheet, row, column, formula)
+    }
+
+    /// Writes a formula to a cell without forcing a full recompute. The
+    /// dependency graph is left untouched, so a caller that changes the
+    /// dependency structure must invalidate it itself (as
+    /// [`Model::update_cell_with_formula`] does); a structural displacement
+    /// relies on [`crate::dependency_graph::DependencyGraph::structural_edit`]
+    /// to shift the existing edges to match.
+    pub(crate) fn write_cell_formula(
         &mut self,
         sheet: u32,
         row: i32,
@@ -2374,6 +2442,14 @@ impl<'a> Model<'a> {
         column: i32,
         value: String,
     ) -> Result<(), String> {
+        // A plain value edit keeps the graph valid and opts into incremental;
+        // a formula, clear, or quote-prefixed literal forces a full recompute.
+        if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') {
+            self.graph.mark_dirty((sheet, row, column));
+        } else {
+            self.graph.force_full();
+        }
+
         // first we make sure we can write in the cell and clear the spills.
         self.prepare_cell_for_user_input(sheet, row, column)?;
         if value.is_empty() {
@@ -2481,6 +2557,8 @@ impl<'a> Model<'a> {
         height: i32,
         value: &str,
     ) -> Result<(), String> {
+        // A new array formula changes the parse structures the graph is built on.
+        self.graph.force_full();
         self.prepare_cell_for_user_input(sheet, row, column)?;
         // If value starts with "'" then we force the style to be quote_prefix
         let style_index = self.get_cell_style_index(sheet, row, column)?;
@@ -2961,6 +3039,24 @@ impl<'a> Model<'a> {
         self.spill_cells = spill_cells;
     }
 
+    /// Resolves a name used as a function (`FOO(...)`) to a defined-name lambda
+    /// body and its scope, or `None` if the name is unknown or resolves to
+    /// something other than a lambda. Sheet-local is tried before global, and
+    /// only the first match is considered, mirroring how the evaluator resolves
+    /// the same call.
+    fn resolve_named_lambda(&self, name: &str, sheet: u32) -> Option<(Option<u32>, Node)> {
+        let (scope, resolved) = [Some(sheet), None].into_iter().find_map(|scope| {
+            let parsed = self.get_parsed_defined_name(name, scope).ok().flatten()?;
+            Some((scope, parsed))
+        })?;
+        match resolved {
+            ParsedDefinedName::LambdaDefinition(_, body) => Some((scope, body)),
+            ParsedDefinedName::CellReference(_)
+            | ParsedDefinedName::RangeReference(_)
+            | ParsedDefinedName::InvalidDefinedNameFormula => None,
+        }
+    }
+
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
     /// including the anchor itself.
     fn get_spill_area(&self, cell_ref: CellReferenceIndex) -> Vec<CellReferenceIndex> {
@@ -3023,17 +3119,44 @@ impl<'a> Model<'a> {
         false
     }
 
-    /// Evaluates the model using a two-phase algorithm that correctly handles dynamic arrays.
-    ///
-    /// Phase 1 evaluates all spill-capable cells first (in dependency order), so their spill
-    /// areas are populated before any other cell reads from them.  When a spill cell writes
-    /// into a position that an earlier spill cell depends on, the two cells are reordered and
-    /// the phase restarts.  A restart bound of N*N prevents infinite loops caused by circular
-    /// dependencies between spill cells.
-    ///
-    /// Phase 2 evaluates every remaining cell in natural order.  Because all spill areas have
-    /// already been written, regular cells always read the correct spill values.
+    /// Recomputes the workbook using the configured [`RecalcMode`] (`Full` by
+    /// default).
     pub fn evaluate(&mut self) {
+        match self.recalc_mode {
+            RecalcMode::Full => self.evaluate_full(),
+            RecalcMode::Incremental => {
+                self.evaluate_selective();
+            }
+            #[cfg(feature = "recalc_verify")]
+            RecalcMode::Verify => self.verify_incremental_matches_full(),
+        }
+    }
+
+    /// Chooses the recalculation strategy for the model's lifetime. See
+    /// [`RecalcMode`]. Meant to be chained onto a constructor; forces the next
+    /// evaluation to be full so the graph is built under the chosen strategy.
+    #[must_use]
+    pub fn with_recalc_mode(mut self, mode: RecalcMode) -> Self {
+        self.recalc_mode = mode;
+        self.graph.force_full();
+        self
+    }
+
+    /// Forces the next evaluation to be a full recompute. Callers use this after
+    /// a change the incremental graph does not model (a structural edit).
+    pub(crate) fn force_full_recompute(&mut self) {
+        self.graph.force_full();
+    }
+
+    /// Recomputes every cell with the two-phase algorithm that handles dynamic
+    /// arrays.
+    ///
+    /// Phase 1 evaluates spill-capable cells first, in dependency order, so their
+    /// spill areas are populated before other cells read them. When a spill cell
+    /// writes into a position an earlier spill cell depends on, the two are
+    /// reordered and the phase restarts; an N*N bound prevents infinite loops on
+    /// circular spill dependencies. Phase 2 evaluates the remaining cells.
+    fn evaluate_full(&mut self) {
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3088,6 +3211,13 @@ impl<'a> Model<'a> {
             });
         }
         self.evaluate_conditional_formatting();
+        // Only the incremental path reads the graph; Full mode skips building it.
+        if self.recalc_mode != RecalcMode::Full {
+            self.collect_array_cells();
+            self.collect_volatile_cells();
+            self.build_dependency_graph();
+        }
+        self.graph.after_full();
     }
 
     /// Removes the content of every cell in the range but leaves the style.
@@ -3122,6 +3252,8 @@ impl<'a> Model<'a> {
         if !self.can_clear_range(range)? {
             return Err("Cannot clear the range because it contains array formulas".to_string());
         }
+        // Clearing changes which cells hold formulas, invalidating the graph.
+        self.graph.force_full();
         let sheet = range.sheet;
         let ws = self.workbook.worksheet_mut(sheet)?;
         for row in range.row..range.row + range.height {
@@ -3224,6 +3356,8 @@ impl<'a> Model<'a> {
         if !self.can_clear_range(area)? {
             return Err("Cannot clear the range because it contains array formulas".to_string());
         }
+        // Clearing changes which cells hold formulas, invalidating the graph.
+        self.graph.force_full();
         let worksheet = self.workbook.worksheet_mut(area.sheet)?;
 
         let sheet_data = &mut worksheet.sheet_data;
@@ -3827,6 +3961,8 @@ impl<'a> Model<'a> {
         self.parser.set_locale(locale);
         self.locale = locale;
         self.workbook.settings.locale = locale_id.to_string();
+        // A locale change re-renders every formatted value (TEXT, DOLLAR, dates).
+        self.graph.force_full();
         self.evaluate();
         Ok(())
     }
@@ -3839,6 +3975,8 @@ impl<'a> Model<'a> {
         };
         self.tz = tz;
         self.workbook.settings.tz = timezone.to_string();
+        // A timezone change moves NOW/TODAY and any time-formatted value.
+        self.graph.force_full();
         self.evaluate();
         Ok(())
     }

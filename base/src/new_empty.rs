@@ -194,6 +194,8 @@ impl<'a> Model<'a> {
         self.parse_formulas();
         self.parsed_defined_names = HashMap::new();
         self.parse_defined_names();
+        // Reparsing invalidates the dependency graph built on the old parse.
+        self.graph.force_full();
         self.evaluate();
     }
 
@@ -697,6 +699,12 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            graph: crate::dependency_graph::DependencyGraph::default(),
+            recalc_mode: crate::RecalcMode::from_env(),
+            recompute_scope: None,
+            array_cells: std::collections::HashSet::new(),
+            volatile_cells: std::collections::HashSet::new(),
+            formula_cell_count: 0,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();
