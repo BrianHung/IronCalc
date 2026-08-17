@@ -8,6 +8,7 @@ use crate::language::{get_language, Language};
 use crate::locale::{get_locale, Locale};
 use crate::{expressions::types::CellReferenceRC, number_format::to_excel_precision_str};
 
+#[derive(Debug)]
 pub enum DisplaceData {
     Column {
         sheet: u32,
@@ -214,6 +215,148 @@ pub fn to_string_displaced(
 /// It uses A1 style if context is not None. If context is None it uses R1C1 style
 /// If full_row is true then the row details will be omitted in the A1 case
 /// If full_column is true then column details will be omitted.
+/// Applies `displace_data` to an already-resolved (absolute) coordinate, the
+/// numeric core shared by [`stringify_reference`] and the in-place AST transform
+/// (see `crate::expressions::parser::displace`). Returns `None` when the
+/// reference is displaced out of the sheet (`#REF!`). `full_row`/`full_column`
+/// mark open ranges (`A:A`, `1:1`) whose spanning axis must not shift.
+pub(crate) fn displace_resolved_coordinates(
+    sheet_index: u32,
+    mut row: i32,
+    mut column: i32,
+    full_row: bool,
+    full_column: bool,
+    displace_data: &DisplaceData,
+) -> Option<(i32, i32)> {
+    match displace_data {
+        DisplaceData::Row {
+            sheet,
+            row: displace_row,
+            delta,
+        } => {
+            if sheet_index == *sheet && !full_row {
+                if *delta < 0 {
+                    if &row >= displace_row {
+                        if row < displace_row - *delta {
+                            return None;
+                        }
+                        row += *delta;
+                    }
+                } else if &row >= displace_row {
+                    row += *delta;
+                }
+            }
+        }
+        DisplaceData::Column {
+            sheet,
+            column: displace_column,
+            delta,
+        } => {
+            if sheet_index == *sheet && !full_column {
+                if *delta < 0 {
+                    if &column >= displace_column {
+                        if column < displace_column - *delta {
+                            return None;
+                        }
+                        column += *delta;
+                    }
+                } else if &column >= displace_column {
+                    column += *delta;
+                }
+            }
+        }
+        DisplaceData::CellHorizontal {
+            sheet,
+            row: displace_row,
+            column: displace_column,
+            delta,
+        } => {
+            if sheet_index == *sheet && displace_row == &row {
+                if *delta < 0 {
+                    if &column >= displace_column {
+                        if column < displace_column - *delta {
+                            return None;
+                        }
+                        column += *delta;
+                    }
+                } else if &column >= displace_column {
+                    column += *delta;
+                }
+            }
+        }
+        DisplaceData::CellVertical {
+            sheet,
+            row: displace_row,
+            column: displace_column,
+            delta,
+        } => {
+            if sheet_index == *sheet && displace_column == &column {
+                if *delta < 0 {
+                    if &row >= displace_row {
+                        if row < displace_row - *delta {
+                            return None;
+                        }
+                        row += *delta;
+                    }
+                } else if &row >= displace_row {
+                    row += *delta;
+                }
+            }
+        }
+        DisplaceData::RowMove {
+            sheet,
+            row: move_row,
+            delta,
+        } => {
+            if sheet_index == *sheet {
+                if row == *move_row {
+                    row += *delta;
+                } else if *delta > 0 {
+                    // Moving the row downwards
+                    if row > *move_row && row <= *move_row + *delta {
+                        // Intermediate rows move up by one position
+                        row -= 1;
+                    }
+                } else if *delta < 0 {
+                    // Moving the row upwards
+                    if row < *move_row && row >= *move_row + *delta {
+                        // Intermediate rows move down by one position
+                        row += 1;
+                    }
+                }
+            }
+        }
+        DisplaceData::ColumnMove {
+            sheet,
+            column: move_column,
+            delta,
+        } => {
+            if sheet_index == *sheet {
+                if column == *move_column {
+                    column += *delta;
+                } else if *delta > 0 {
+                    // Moving the column to the right
+                    if column > *move_column && column <= *move_column + *delta {
+                        // Intermediate columns move left by one position
+                        column -= 1;
+                    }
+                } else if *delta < 0 {
+                    // Moving the column to the left
+                    if column < *move_column && column >= *move_column + *delta {
+                        // Intermediate columns move right by one position
+                        column += 1;
+                    }
+                }
+            }
+        }
+        DisplaceData::None => {}
+    }
+    if !(1..=LAST_ROW).contains(&row) || !(1..=LAST_COLUMN).contains(&column) {
+        return None;
+    }
+    Some((row, column))
+}
+
 pub(crate) fn stringify_reference(
     context: Option<&CellReferenceRC>,
     displace_data: &DisplaceData,
@@ -229,138 +372,23 @@ pub(crate) fn stringify_reference(
     let column = reference.column;
     match context {
         Some(context) => {
-            let mut row = if absolute_row { row } else { row + context.row };
-            let mut column = if absolute_column {
+            let resolved_row = if absolute_row { row } else { row + context.row };
+            let resolved_column = if absolute_column {
                 column
             } else {
                 column + context.column
             };
-            match displace_data {
-                DisplaceData::Row {
-                    sheet,
-                    row: displace_row,
-                    delta,
-                } => {
-                    if sheet_index == *sheet && !full_row {
-                        if *delta < 0 {
-                            if &row >= displace_row {
-                                if row < displace_row - *delta {
-                                    return "#REF!".to_string();
-                                }
-                                row += *delta;
-                            }
-                        } else if &row >= displace_row {
-                            row += *delta;
-                        }
-                    }
-                }
-                DisplaceData::Column {
-                    sheet,
-                    column: displace_column,
-                    delta,
-                } => {
-                    if sheet_index == *sheet && !full_column {
-                        if *delta < 0 {
-                            if &column >= displace_column {
-                                if column < displace_column - *delta {
-                                    return "#REF!".to_string();
-                                }
-                                column += *delta;
-                            }
-                        } else if &column >= displace_column {
-                            column += *delta;
-                        }
-                    }
-                }
-                DisplaceData::CellHorizontal {
-                    sheet,
-                    row: displace_row,
-                    column: displace_column,
-                    delta,
-                } => {
-                    if sheet_index == *sheet && displace_row == &row {
-                        if *delta < 0 {
-                            if &column >= displace_column {
-                                if column < displace_column - *delta {
-                                    return "#REF!".to_string();
-                                }
-                                column += *delta;
-                            }
-                        } else if &column >= displace_column {
-                            column += *delta;
-                        }
-                    }
-                }
-                DisplaceData::CellVertical {
-                    sheet,
-                    row: displace_row,
-                    column: displace_column,
-                    delta,
-                } => {
-                    if sheet_index == *sheet && displace_column == &column {
-                        if *delta < 0 {
-                            if &row >= displace_row {
-                                if row < displace_row - *delta {
-                                    return "#REF!".to_string();
-                                }
-                                row += *delta;
-                            }
-                        } else if &row >= displace_row {
-                            row += *delta;
-                        }
-                    }
-                }
-                DisplaceData::RowMove {
-                    sheet,
-                    row: move_row,
-                    delta,
-                } => {
-                    if sheet_index == *sheet {
-                        if row == *move_row {
-                            row += *delta;
-                        } else if *delta > 0 {
-                            // Moving the row downwards
-                            if row > *move_row && row <= *move_row + *delta {
-                                // Intermediate rows move up by one position
-                                row -= 1;
-                            }
-                        } else if *delta < 0 {
-                            // Moving the row upwards
-                            if row < *move_row && row >= *move_row + *delta {
-                                // Intermediate rows move down by one position
-                                row += 1;
-                            }
-                        }
-                    }
-                }
-                DisplaceData::ColumnMove {
-                    sheet,
-                    column: move_column,
-                    delta,
-                } => {
-                    if sheet_index == *sheet {
-                        if column == *move_column {
-                            column += *delta;
-                        } else if *delta > 0 {
-                            // Moving the column to the right
-                            if column > *move_column && column <= *move_column + *delta {
-                                // Intermediate columns move left by one position
-                                column -= 1;
-                            }
-                        } else if *delta < 0 {
-                            // Moving the column to the left
-                            if column < *move_column && column >= *move_column + *delta {
-                                // Intermediate columns move right by one position
-                                column += 1;
-                            }
-                        }
-                    }
-                }
-                DisplaceData::None => {}
-            }
-            if row < 1 {
-                return "#REF!".to_string();
-            }
+            let (row, column) = match displace_resolved_coordinates(
+                sheet_index,
+                resolved_row,
+                resolved_column,
+                full_row,
+                full_column,
+                displace_data,
+            ) {
+                Some(coordinates) => coordinates,
+                None => return "#REF!".to_string(),
+            };
             let mut row_abs = if absolute_row {
                 format!("${row}")
             } else {

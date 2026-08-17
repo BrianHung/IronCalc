@@ -1,3 +1,4 @@
+mod bench_displace;
 mod test_add_delete_sheets;
 mod test_array_formulas;
 mod test_auto_link;
