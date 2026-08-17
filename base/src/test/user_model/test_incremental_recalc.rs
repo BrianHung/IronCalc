@@ -302,6 +302,22 @@ fn incremental_set_locale_forces_full() {
 }
 
 #[test]
+fn incremental_reports_locale_change() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1234.5");
+    model._set("B1", "=TEXT(A1,\"#,##0.00\")");
+    model._set("Z1", "0"); // independent
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("Z1", "1"); // a pending edit that alone would be a small delta
+    model.set_locale("de").unwrap();
+    // A locale change re-renders every formatted value, so no small delta
+    // describes it; the record reports everything changed.
+    assert!(model.take_changed_cells().is_none());
+}
+
+#[test]
 fn incremental_tracks_dynamic_branch_dependencies() {
     let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
     model._set("D1", "1");
@@ -408,4 +424,233 @@ fn incremental_undo_under_pause_stays_correct() {
     model.evaluate();
     assert_eq!(model.get_formatted_cell_value(0, 1, 2).unwrap(), "2"); // B1 repaired, not stale 6
     assert_eq!(model.get_formatted_cell_value(0, 1, 4).unwrap(), "21"); // D1
+}
+
+#[test]
+fn take_changed_cells_reports_incremental_delta() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1*2");
+    model._set("C1", "100"); // independent
+    model.evaluate();
+    // Switching mode forces a full pass, so everything is potentially changed.
+    assert_eq!(model.take_changed_cells(), None);
+
+    model._set("A1", "5"); // A1 and its dependent B1 recompute; C1 untouched
+    model.evaluate();
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 1))); // A1 edited
+    assert!(changed.contains(&(1, 2))); // B1 recomputed
+    assert!(!changed.contains(&(1, 3))); // C1 not touched
+
+    assert_eq!(model.take_changed_cells(), Some(vec![])); // reading clears
+
+    model._set("D1", "=A1+1"); // a new formula forces a full recompute
+    model.evaluate();
+    assert_eq!(model.take_changed_cells(), None);
+}
+
+#[test]
+fn take_changed_cells_reports_structural_edit_delta() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "10");
+    model._set("B10", "=A1+1"); // depends on A1, value 11
+    model.evaluate();
+    let _ = model.take_changed_cells(); // clear the mode-switch full
+
+    // Delete row 1: A1 is removed so B10's reference dangles, and B10 shifts up to
+    // B9. Its value moves 11 -> #REF!. This is an incremental structural edit, so
+    // the delta must name the changed cell at its new position.
+    model.delete_rows(0, 1, 1).unwrap();
+    model.evaluate();
+
+    let changed = model.take_changed_cells().unwrap();
+    assert!(
+        changed.iter().any(|c| (c.row, c.column) == (9, 2)),
+        "B9 (was B10) became #REF! and must appear in the delta, got {changed:?}"
+    );
+    assert_eq!(model._get_text("B9"), "#REF!");
+}
+
+#[test]
+fn take_changed_cells_survives_redundant_evaluate() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1*2");
+    model.evaluate();
+    let _ = model.take_changed_cells(); // clear the mode-switch full
+
+    model._set("A1", "5");
+    model.evaluate(); // incremental: records A1, B1
+    model.evaluate(); // redundant no-op full: must keep the delta
+
+    // The delta survives the redundant evaluate, so this is Some, not None.
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 1)));
+    assert!(changed.contains(&(1, 2)));
+}
+
+#[test]
+fn redundant_evaluate_with_volatile_reports_full_change() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1+1");
+    model._set("C1", "=RAND()"); // volatile: re-rolls on every full pass
+    model.evaluate();
+    let _ = model.take_changed_cells(); // clear the mode-switch full
+
+    model._set("A1", "5");
+    model.evaluate(); // incremental edit
+    let _ = model.take_changed_cells(); // clear that delta
+
+    model.evaluate(); // redundant full: re-rolls C1, so not a no-op
+    assert_eq!(model.take_changed_cells(), None); // not Some([])
+}
+
+#[test]
+fn incremental_reports_dynamic_link_retarget() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "http://a.com");
+    model._set("B1", "=HYPERLINK(A1,\"click\")"); // label "click", target A1
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("A1", "http://b.com"); // label unchanged, only the target moves
+    model.evaluate();
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 2))); // B1's link changed, so it is reported
+}
+
+#[test]
+fn incremental_reports_conditional_format_change() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "5");
+    model._set("B1", "x");
+    model
+        .add_conditional_formatting(
+            0,
+            "B1",
+            crate::cf_types::CfRuleInput::Formula {
+                formula: "=$A$1>10".to_string(),
+                format: crate::types::Dxf::default(),
+                stop_if_true: false,
+            },
+        )
+        .unwrap();
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("A1", "20"); // flips B1's rule on, though B1's value is unchanged
+    model.evaluate();
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 2))); // B1's conditional format changed
+}
+
+#[test]
+fn incremental_reports_cf_only_mutation() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "5");
+    model._set("B1", "x");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model
+        .add_conditional_formatting(
+            0,
+            "B1",
+            crate::cf_types::CfRuleInput::Formula {
+                formula: "=$A$1>3".to_string(),
+                format: crate::types::Dxf::default(),
+                stop_if_true: false,
+            },
+        )
+        .unwrap();
+    model.evaluate(); // a CF-rule edit with no cell value change
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 2))); // B1's new format is reported
+}
+
+#[test]
+fn incremental_reports_signed_zero_flip() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "5");
+    model._set("B1", "=A1*0");
+    model._set("C1", "=B1&\"!\"");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("A1", "-5"); // B1: +0 -> -0, observable in C1's text
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "-0!"); // not the stale "0!"
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 3))); // C1 reported
+}
+
+#[test]
+fn incremental_reports_only_value_changes() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1*0"); // always 0
+    model._set("C1", "=B1+1"); // always 1
+    model.evaluate();
+    let _ = model.take_changed_cells(); // clear the mode-switch full
+
+    model._set("A1", "5");
+    model.evaluate();
+    let changed: std::collections::HashSet<(i32, i32)> = model
+        .take_changed_cells()
+        .unwrap()
+        .iter()
+        .map(|c| (c.row, c.column))
+        .collect();
+    assert!(changed.contains(&(1, 1))); // A1 moved 1 -> 5
+    assert!(!changed.contains(&(1, 2))); // B1 recomputed but stayed 0
+    assert!(!changed.contains(&(1, 3))); // C1 not reached
+    assert_eq!(model._get_text("C1"), "1"); // still correct
+}
+
+#[test]
+fn incremental_propagates_error_to_text_transition() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    model._set("A1", "1"); // truthy: take the error branch
+    model._set("B1", "=IF(A1, 1/0, \"#DIV/0!\")"); // error #DIV/0!
+    model._set("C1", "=ISERROR(B1)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "#DIV/0!");
+    assert_eq!(model._get_text("C1"), "TRUE");
+
+    model._set("A1", "0"); // falsy: B1 becomes the literal text "#DIV/0!"
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "#DIV/0!"); // same string, now text
+    assert_eq!(model._get_text("C1"), "FALSE"); // dependent must flip
 }

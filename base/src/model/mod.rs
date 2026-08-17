@@ -105,6 +105,16 @@ pub(crate) enum CellState {
     Evaluating,
 }
 
+/// What cells changed since the last [`Model::take_changed_cells`], backing the
+/// incremental delta API.
+pub(crate) enum ChangedCells {
+    /// A full recompute ran: no delta is available and every cell may have
+    /// changed.
+    All,
+    /// The exact cells incremental passes recomputed since the last read.
+    Delta(HashSet<Position>),
+}
+
 /// A parsed formula for a defined name
 #[derive(Clone)]
 pub(crate) enum ParsedDefinedName {
@@ -248,6 +258,9 @@ pub struct Model<'a> {
     /// affected set approaches this recomputes about as much as a full pass but
     /// with extra bookkeeping, so it falls back to full instead.
     pub(crate) formula_cell_count: usize,
+    /// What cells changed since the last [`Model::take_changed_cells`], backing
+    /// the incremental delta API. See [`ChangedCells`].
+    pub(crate) changed_cells: ChangedCells,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1767,6 +1780,7 @@ impl<'a> Model<'a> {
             array_cells: HashSet::new(),
             volatile_cells: HashSet::new(),
             formula_cell_count: 0,
+            changed_cells: ChangedCells::All,
         };
 
         model.parse_formulas();
@@ -3123,7 +3137,7 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full(),
+            RecalcMode::Full => self.evaluate_full_untracked(),
             RecalcMode::Incremental => {
                 self.evaluate_selective();
             }

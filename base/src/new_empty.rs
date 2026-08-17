@@ -705,6 +705,7 @@ impl<'a> Model<'a> {
             array_cells: std::collections::HashSet::new(),
             volatile_cells: std::collections::HashSet::new(),
             formula_cell_count: 0,
+            changed_cells: crate::model::ChangedCells::All,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

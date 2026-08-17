@@ -201,6 +201,24 @@ impl Model {
         self.model.pause_evaluation()
     }
 
+    /// Returns the cells recomputed by incremental evaluations since the last
+    /// call, and clears the record. Returns `null` when a full recompute has
+    /// run, meaning every cell may have changed. Only meaningful for a model
+    /// constructed with `RecalcMode.Incremental`.
+    #[wasm_bindgen(
+        js_name = "takeChangedCells",
+        unchecked_return_type = "CellReferenceIndex[] | null"
+    )]
+    pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
+        let cells = self.model.take_changed_cells();
+        // Serialize `None` to `null` rather than serde_wasm_bindgen's default
+        // `undefined`, matching the declared return type.
+        let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+        cells
+            .serialize(&serializer)
+            .map_err(|e| to_js_error(e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = "resumeEvaluation")]
     pub fn resume_evaluation(&mut self) {
         self.model.resume_evaluation()

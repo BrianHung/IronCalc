@@ -393,6 +393,13 @@ impl<'a> UserModel<'a> {
         self
     }
 
+    /// See [`Model::take_changed_cells`](crate::Model::take_changed_cells).
+    pub fn take_changed_cells(
+        &mut self,
+    ) -> Option<Vec<crate::expressions::types::CellReferenceIndex>> {
+        self.model.take_changed_cells()
+    }
+
     /// Returns the list of pending diffs and removes them from the queue
     ///
     /// This is used together with [apply_external_diffs](UserModel::apply_external_diffs) to keep two remote models

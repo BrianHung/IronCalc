@@ -266,11 +266,78 @@ impl DependencyGraph {
         !self.graph_built || self.forced_full || !self.incremental_eligible
     }
 
-    /// Consumes the dirty set and returns every cell transitively reachable from
-    /// it, including the dirty cells.
-    pub(crate) fn take_affected(&mut self) -> HashSet<Position> {
+    /// Whether a required full recompute reflects a real change (a shape-changing
+    /// edit or the first pass) rather than a redundant evaluation with nothing
+    /// pending. Lets the change tracker tell "everything changed" from a no-op.
+    pub(crate) fn full_reflects_change(&self) -> bool {
+        self.forced_full || !self.graph_built
+    }
+
+    /// Drains the dirty set and returns its cells (the recompute seeds) with
+    /// every cell transitively reachable from them, including the seeds.
+    pub(crate) fn take_seeds_and_affected(&mut self) -> (Vec<Position>, HashSet<Position>) {
         let seeds: Vec<Position> = self.dirty.drain().collect();
-        self.reachable(seeds)
+        let affected = self.reachable(seeds.clone());
+        (seeds, affected)
+    }
+
+    /// Direct dependents of `cell`: cells reading it, and cells reading a range
+    /// that contains it.
+    pub(crate) fn dependents_of(&self, cell: Position) -> Vec<Position> {
+        let mut dependents: Vec<Position> = self
+            .cell_dependents
+            .get(&cell)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        if let Some(sheet_ranges) = self.range_dependents.get(&cell.0) {
+            for range in sheet_ranges.containing(cell) {
+                if let Some(range_dependents) = sheet_ranges.dependents_of(range) {
+                    dependents.extend(range_dependents.iter().copied());
+                }
+            }
+        }
+        dependents
+    }
+
+    /// Orders `affected` so each cell follows the affected cells it reads.
+    /// Returns `None` when the affected set contains a dependency cycle, so the
+    /// caller can fall back to the recursive recompute that reports `#CIRC!`.
+    pub(crate) fn topo_order(&self, affected: &HashSet<Position>) -> Option<Vec<Position>> {
+        let successors = |cell: Position| -> Vec<Position> {
+            self.dependents_of(cell)
+                .into_iter()
+                .filter(|d| affected.contains(d))
+                .collect()
+        };
+        let mut indegree: HashMap<Position, usize> = affected.iter().map(|&c| (c, 0)).collect();
+        for &cell in affected {
+            for dependent in successors(cell) {
+                *indegree.entry(dependent).or_default() += 1;
+            }
+        }
+        let mut queue: Vec<Position> = indegree
+            .iter()
+            .filter(|(_, &n)| n == 0)
+            .map(|(&c, _)| c)
+            .collect();
+        queue.sort_unstable(); // deterministic order among independent cells
+        let mut order = Vec::with_capacity(affected.len());
+        let mut head = 0;
+        while head < queue.len() {
+            let cell = queue[head];
+            head += 1;
+            order.push(cell);
+            for dependent in successors(cell) {
+                let n = indegree.entry(dependent).or_default();
+                *n -= 1;
+                if *n == 0 {
+                    queue.push(dependent);
+                }
+            }
+        }
+        (order.len() == affected.len()).then_some(order)
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
