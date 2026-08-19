@@ -437,7 +437,8 @@ impl Model<'_> {
         let before = self.render_snapshot();
         // Completeness must run even if no consumer called take_changed_cells;
         // a fresh delta so a miss on this pass cannot hide behind an earlier one.
-        let consumer = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
+        let consumer =
+            std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
         let pass = self.evaluate_selective();
         let this_pass =
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
