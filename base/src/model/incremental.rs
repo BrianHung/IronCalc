@@ -78,6 +78,10 @@ fn is_nondeterministic_function(kind: &Function) -> bool {
     )
 }
 
+fn is_dynamic_ref_function(kind: &Function) -> bool {
+    matches!(kind, Function::Offset | Function::Indirect)
+}
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -207,92 +211,14 @@ impl Model<'_> {
         }
     }
 
-    /// Whether a formula reads a cell through a reference the static edges do not
-    /// capture: `OFFSET`, `INDIRECT`, or the range operator with a computed
-    /// endpoint. Stored on [`crate::dependency_graph::DynamicRefs`], not
-    /// [`crate::dependency_graph::ArrayCells`]. These cells are also volatile, so
-    /// they re-roll every incremental pass; they do not force a full workbook
-    /// recompute by themselves.
     fn node_has_dynamic_reference(
         &self,
         node: &Node,
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
-        match node {
-            Node::FunctionKind { kind, args } => {
-                matches!(kind, Function::Offset | Function::Indirect)
-                    || args
-                        .iter()
-                        .any(|arg| self.node_has_dynamic_reference(arg, sheet, seen_names))
-            }
-            Node::NamedFunctionKind { name, args, id } => {
-                if args
-                    .iter()
-                    .any(|arg| self.node_has_dynamic_reference(arg, sheet, seen_names))
-                {
-                    return true;
-                }
-                if id.is_none() {
-                    if let Some((scope, body)) = self.resolve_named_lambda(name, sheet) {
-                        if seen_names.insert((name.clone(), scope)) {
-                            return self.node_has_dynamic_reference(&body, sheet, seen_names);
-                        }
-                    }
-                }
-                false
-            }
-            Node::LambdaCallKind { lambda, args } => {
-                self.node_has_dynamic_reference(lambda, sheet, seen_names)
-                    || args
-                        .iter()
-                        .any(|arg| self.node_has_dynamic_reference(arg, sheet, seen_names))
-            }
-            Node::LambdaDefKind { body, .. } => {
-                self.node_has_dynamic_reference(body, sheet, seen_names)
-            }
-            Node::OpRangeKind { .. } => true,
-            Node::OpConcatenateKind { left, right }
-            | Node::OpSumKind { left, right, .. }
-            | Node::OpProductKind { left, right, .. }
-            | Node::OpPowerKind { left, right }
-            | Node::CompareKind { left, right, .. } => {
-                self.node_has_dynamic_reference(left, sheet, seen_names)
-                    || self.node_has_dynamic_reference(right, sheet, seen_names)
-            }
-            Node::UnaryKind { right, .. } => {
-                self.node_has_dynamic_reference(right, sheet, seen_names)
-            }
-            Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
-                self.node_has_dynamic_reference(child, sheet, seen_names)
-            }
-            // A bare defined name resolves to a cell/range (captured by static
-            // edges) or a lambda whose body can call `OFFSET`/`INDIRECT`; resolve
-            // and walk it as the evaluator does, mirroring `collect_references`.
-            Node::DefinedNameKind((name, scope, _)) => {
-                if seen_names.insert((name.clone(), *scope)) {
-                    if let Ok(Some(ParsedDefinedName::LambdaDefinition(_, body))) =
-                        self.get_parsed_defined_name(name, *scope)
-                    {
-                        return self.node_has_dynamic_reference(&body, sheet, seen_names);
-                    }
-                }
-                false
-            }
-            Node::BooleanKind(_)
-            | Node::NumberKind(_)
-            | Node::StringKind(_)
-            | Node::ReferenceKind { .. }
-            | Node::RangeKind { .. }
-            | Node::WrongReferenceKind { .. }
-            | Node::WrongRangeKind { .. }
-            | Node::ArrayKind(_)
-            | Node::TableNameKind(_)
-            | Node::NamedVariableKind { .. }
-            | Node::ErrorKind(_)
-            | Node::ParseErrorKind { .. }
-            | Node::EmptyArgKind => false,
-        }
+        matches!(node, Node::OpRangeKind { .. })
+            || self.node_matches_function(node, sheet, seen_names, is_dynamic_ref_function)
     }
 
     /// Records the cells whose formula calls a volatile function. A full pass
@@ -674,7 +600,7 @@ impl Model<'_> {
         if let ChangedCells::Delta(delta) = &mut self.changed_cells {
             delta.extend(changed);
         }
-        self.graph.after_incremental();
+        self.graph.after_pass();
         let cf_before = self.cf_cache.clone();
         self.evaluate_conditional_formatting();
         self.record_cf_changes(cf_before);
