@@ -21,9 +21,6 @@ use crate::expressions::types::CellReferenceIndex;
 /// `column1 <= column2`, matching how references are collected.
 pub(crate) type Area = (u32, i32, i32, i32, i32);
 
-/// Ranges referenced by formulas, per sheet.
-pub(crate) type ReferencedRanges = HashMap<u32, HashSet<Area>>;
-
 /// Per-pass memo of range reductions, keyed by range and reducer.
 pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), RangeAgg>;
 
@@ -95,9 +92,9 @@ impl RangeReducer {
 
 impl Model<'_> {
     /// Records the ranges referenced by formulas, per sheet, so range composition
-    /// knows when reusing a one-row-shorter range is worthwhile. Derived from
-    /// formula structure, so it is rebuilt on a full pass and stable otherwise,
-    /// like the dependency graph.
+    /// knows when reusing a one-row-shorter range is worthwhile. Stored on the
+    /// graph and shifted with it, so an incremental insert or delete keeps the
+    /// set without a full rebuild.
     pub(crate) fn collect_referenced_ranges(&mut self) {
         let mut referenced: HashMap<u32, HashSet<Area>> = HashMap::new();
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
@@ -122,7 +119,7 @@ impl Model<'_> {
                 }
             }
         }
-        self.referenced_ranges = referenced;
+        self.graph.replace_referenced(referenced);
     }
 
     /// Reduces `reducer` over `sheet!row1:row2 x column1:column2`, memoized per
@@ -153,10 +150,7 @@ impl Model<'_> {
                 break;
             }
             let shorter = (sheet, row1, column1, base - 1, column2);
-            let shorter_referenced = self
-                .referenced_ranges
-                .get(&sheet)
-                .is_some_and(|areas| areas.contains(&shorter));
+            let shorter_referenced = self.graph.referenced.contains(&shorter);
             if !shorter_referenced {
                 break;
             }

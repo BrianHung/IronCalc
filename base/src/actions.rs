@@ -10,7 +10,7 @@ use crate::expressions::types::CellReferenceRC;
 use crate::expressions::utils;
 use crate::language::get_default_language;
 use crate::locale::get_default_locale;
-use crate::model::{CellStructure, Model};
+use crate::model::{CellStructure, DisplacementToken, Model};
 use crate::types::{ArrayKind, Cell, Link, Worksheet};
 
 /// Applies `map` to the (row, column) key of every link in the worksheet, so
@@ -321,7 +321,13 @@ impl<'a> Model<'a> {
                 // recompute. `record_structural_edit` shifts the existing edges
                 // (and falls back to full for edits the shift cannot model), so
                 // the next pass can run incrementally.
-                self.write_cell_formula(sheet, row, column, format!("={formula_displaced}"))?;
+                self.write_displaced_formula(
+                    DisplacementToken::structural(),
+                    sheet,
+                    row,
+                    column,
+                    format!("={formula_displaced}"),
+                )?;
             };
         }
         Ok(())
@@ -509,7 +515,13 @@ impl<'a> Model<'a> {
             // otherwise identical. The rewritten formula holds no cached value, so
             // mark it dirty at the pre-shift position; the later shift moves that
             // mark to the target, ensuring the incremental pass evaluates it.
-            self.write_cell_formula(sheet, target_row, target_column, format!("={formula}"))?;
+            self.write_displaced_formula(
+                DisplacementToken::structural(),
+                sheet,
+                target_row,
+                target_column,
+                format!("={formula}"),
+            )?;
             self.graph.mark_dirty((sheet, source_row, source_column));
         } else {
             self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
@@ -525,9 +537,9 @@ impl<'a> Model<'a> {
     }
 
     /// Keeps the dependency graph in step with a structural edit. A row or column
-    /// insert or delete reflects its displacement onto the graph so the next
-    /// evaluation can run incrementally. A move or cell displacement, which the
-    /// shift does not model, forces a full recompute, as does an array sheet. The
+    /// insert or delete shifts every stored position (edges, volatiles, arrays,
+    /// dynamic refs) and formula `HYPERLINK` results in one pass. A move or cell
+    /// displacement, which the shift does not model, forces a full recompute. The
     /// match is exhaustive so a new `DisplaceData` variant cannot silently skip
     /// graph maintenance.
     fn record_structural_edit(&mut self, disp: &DisplaceData) {
@@ -547,21 +559,20 @@ impl<'a> Model<'a> {
             }
             DisplaceData::None => return,
         };
-        // The shift moves the graph's edges, but `volatile_cells` and `array_cells`
-        // are keyed by position and only rebuilt on a full pass. An array cell or a
-        // volatile at or past the boundary would move, leaving those sets pointing
-        // at its old position and its new position never re-seeded, so force a full
-        // recompute to rebuild them. Cells above the boundary do not move.
-        let array_on_sheet = self.array_cells.iter().any(|&(s, _, _)| s == sheet);
-        let volatile_moves = self
-            .volatile_cells
-            .iter()
-            .any(|&cell| cell.0 == sheet && axis.coord(cell) >= boundary);
-        if array_on_sheet || volatile_moves {
-            self.graph.force_full();
-        } else {
-            self.graph.structural_edit(sheet, axis, boundary, delta);
-        }
+        self.shift_dynamic_links(sheet, axis, boundary, delta);
+        let _ = self.graph.structural_edit(sheet, axis, boundary, delta);
+    }
+
+    /// Moves formula `HYPERLINK` results with their cells. Worksheet links are
+    /// displaced separately; this map is not on the graph.
+    fn shift_dynamic_links(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        self.links = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter_map(|(pos, link)| {
+                crate::dependency_graph::shift_position(sheet, axis, boundary, delta, pos)
+                    .map(|pos| (pos, link))
+            })
+            .collect();
     }
 
     /// Inserts one or more new columns into the model at the specified index.
