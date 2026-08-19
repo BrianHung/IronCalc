@@ -72,6 +72,7 @@ pub mod mock_time;
 pub use dependency_graph::RecalcMode;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
+pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
 pub use user_model::BorderArea;

@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{CellOrRange, ChangedCells, ParsedDefinedName};
+use super::{CellOrRange, ChangedCells, ChangedSinceRead, ParsedDefinedName};
 use crate::cell::CellValue;
 use crate::dependency_graph::Position;
 use crate::expressions::parser::Node;
@@ -65,6 +65,25 @@ fn is_volatile_function(kind: &Function) -> bool {
     )
 }
 
+/// Values that are not a function of the sheet. Incremental then full will
+/// disagree even when both paths are correct, so Verify strips only this cone.
+fn is_nondeterministic_function(kind: &Function) -> bool {
+    matches!(
+        kind,
+        Function::Rand
+            | Function::Randbetween
+            | Function::Randarray
+            | Function::Now
+            | Function::Today
+    )
+}
+
+/// Whether an evaluate stayed incremental or fell back to a full pass.
+pub(crate) enum EvalPass {
+    Incremental,
+    Full,
+}
+
 impl Model<'_> {
     /// Records the positions of array and spill cells after a full pass, so the
     /// incremental path can fall back to full for any edit that reaches one. Must
@@ -81,7 +100,7 @@ impl Model<'_> {
                 }
             }
         }
-        self.array_cells = array_cells;
+        self.graph.replace_arrays(array_cells);
     }
 
     /// Whether a formula tree calls a volatile function anywhere. Exhaustive so a
@@ -93,60 +112,81 @@ impl Model<'_> {
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
+        // A surviving `A1:expr` has a dynamic endpoint and is volatile even
+        // when `expr` itself is not a volatile function.
+        matches!(node, Node::OpRangeKind { .. })
+            || self.node_matches_function(node, sheet, seen_names, is_volatile_function)
+    }
+
+    fn node_is_nondeterministic(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+    ) -> bool {
+        self.node_matches_function(node, sheet, seen_names, is_nondeterministic_function)
+    }
+
+    fn node_matches_function(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+        pred: fn(&Function) -> bool,
+    ) -> bool {
         match node {
             Node::FunctionKind { kind, args } => {
-                is_volatile_function(kind)
+                pred(kind)
                     || args
                         .iter()
-                        .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
             }
             Node::NamedFunctionKind { name, args, id } => {
                 if args
                     .iter()
-                    .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                    .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
                 {
                     return true;
                 }
                 if id.is_none() {
                     if let Some((scope, body)) = self.resolve_named_lambda(name, sheet) {
                         if seen_names.insert((name.clone(), scope)) {
-                            return self.node_is_volatile(&body, sheet, seen_names);
+                            return self.node_matches_function(&body, sheet, seen_names, pred);
                         }
                     }
                 }
                 false
             }
             Node::LambdaCallKind { lambda, args } => {
-                self.node_is_volatile(lambda, sheet, seen_names)
+                self.node_matches_function(lambda, sheet, seen_names, pred)
                     || args
                         .iter()
-                        .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
             }
-            Node::LambdaDefKind { body, .. } => self.node_is_volatile(body, sheet, seen_names),
-            // The range operator survives parsing only with a dynamic endpoint
-            // (static `A1:A10` folds to one reference), so its span is volatile.
-            Node::OpRangeKind { .. } => true,
-            Node::OpConcatenateKind { left, right }
+            Node::LambdaDefKind { body, .. } => {
+                self.node_matches_function(body, sheet, seen_names, pred)
+            }
+            Node::OpRangeKind { left, right }
+            | Node::OpConcatenateKind { left, right }
             | Node::OpSumKind { left, right, .. }
             | Node::OpProductKind { left, right, .. }
             | Node::OpPowerKind { left, right }
             | Node::CompareKind { left, right, .. } => {
-                self.node_is_volatile(left, sheet, seen_names)
-                    || self.node_is_volatile(right, sheet, seen_names)
+                self.node_matches_function(left, sheet, seen_names, pred)
+                    || self.node_matches_function(right, sheet, seen_names, pred)
             }
-            Node::UnaryKind { right, .. } => self.node_is_volatile(right, sheet, seen_names),
+            Node::UnaryKind { right, .. } => {
+                self.node_matches_function(right, sheet, seen_names, pred)
+            }
             Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
-                self.node_is_volatile(child, sheet, seen_names)
+                self.node_matches_function(child, sheet, seen_names, pred)
             }
-            // A bare defined name resolves to a cell/range (inert) or a lambda
-            // whose body can call a volatile function; resolve and walk it as the
-            // evaluator does, mirroring `collect_references`.
             Node::DefinedNameKind((name, scope, _)) => {
                 if seen_names.insert((name.clone(), *scope)) {
                     if let Ok(Some(ParsedDefinedName::LambdaDefinition(_, body))) =
                         self.get_parsed_defined_name(name, *scope)
                     {
-                        return self.node_is_volatile(&body, sheet, seen_names);
+                        return self.node_matches_function(&body, sheet, seen_names, pred);
                     }
                 }
                 false
@@ -169,9 +209,10 @@ impl Model<'_> {
 
     /// Whether a formula reads a cell through a reference the static edges do not
     /// capture: `OFFSET`, `INDIRECT`, or the range operator with a computed
-    /// endpoint. The frontier can recompute such a cell before the precedent it
-    /// resolves to, reading a stale value, so an edit reaching one forces a full
-    /// pass where evaluation order is fixed.
+    /// endpoint. Stored on [`crate::dependency_graph::DynamicRefs`], not
+    /// [`crate::dependency_graph::ArrayCells`]. These cells are also volatile, so
+    /// they re-roll every incremental pass; they do not force a full workbook
+    /// recompute by themselves.
     fn node_has_dynamic_reference(
         &self,
         node: &Node,
@@ -260,9 +301,9 @@ impl Model<'_> {
     pub(crate) fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
         // Cells reading a precedent through a dynamic reference the static edges
-        // miss. They join `array_cells` so an edit reaching one forces a full
-        // pass, the only way to recompute them after the precedent they resolve to.
+        // miss. Stored on their own type so they cannot be treated as arrays.
         let mut dynamic_reference_cells = HashSet::new();
+        let mut nondeterministic_cells = HashSet::new();
         let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
@@ -277,12 +318,16 @@ impl Model<'_> {
                         if self.node_has_dynamic_reference(node, sheet, &mut HashSet::new()) {
                             dynamic_reference_cells.insert((sheet, *row, *col));
                         }
+                        if self.node_is_nondeterministic(node, sheet, &mut HashSet::new()) {
+                            nondeterministic_cells.insert((sheet, *row, *col));
+                        }
                     }
                 }
             }
         }
-        self.volatile_cells = volatile_cells;
-        self.array_cells.extend(dynamic_reference_cells);
+        self.graph.replace_volatile(volatile_cells);
+        self.graph.replace_dynamic_refs(dynamic_reference_cells);
+        self.graph.replace_nondeterministic(nondeterministic_cells);
         self.formula_cell_count = formula_cell_count;
     }
 
@@ -467,10 +512,10 @@ impl Model<'_> {
         // Arm delta tracking for this pass so the completeness check below runs on
         // every evaluate, not only after a consumer has called `take_changed_cells`.
         // Scoped to the verify build, so it never affects the shipped delta.
-        if matches!(self.changed_cells, ChangedCells::All) {
-            self.changed_cells = ChangedCells::Delta(HashSet::new());
-        }
-        if !self.evaluate_selective() {
+        // Fresh delta for this pass. Accumulating across evaluates would hide a
+        // miss on pass 2 if the cell was recorded on pass 1.
+        self.changed_cells = ChangedCells::Delta(HashSet::new());
+        if !matches!(self.evaluate_selective(), EvalPass::Incremental) {
             return;
         }
         let incremental = self.render_snapshot();
@@ -478,7 +523,7 @@ impl Model<'_> {
         // delta, so exclude them from both checks.
         let tainted = self
             .graph
-            .reachable(self.volatile_cells.iter().copied().collect());
+            .reachable(self.graph.nondeterministic.iter().collect());
         // Delta completeness: every non-volatile cell whose observable state
         // (value, type, link, conditional format) moved must be in the delta.
         if let ChangedCells::Delta(delta) = &self.changed_cells {
@@ -513,6 +558,7 @@ impl Model<'_> {
         for c in self.get_all_cells() {
             positions.insert((c.index, c.row, c.column));
         }
+        positions.extend(self.links.keys().copied());
         positions
             .into_iter()
             .map(|p| {
@@ -548,17 +594,14 @@ impl Model<'_> {
         }
     }
 
-    /// Recomputes only the cells reachable from the dirty set, returning `true`.
-    /// Returns `false` after falling back to a full recompute for anything the
-    /// incremental path cannot model.
-    pub(crate) fn evaluate_selective(&mut self) -> bool {
+    pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A redundant full with nothing pending is a
             // no-op and keeps the delta, unless volatiles are present: a full pass
             // re-rolls them, so their new values would be missed. Treat that as an
             // everything-changed delta too.
-            if self.graph.full_reflects_change() || !self.volatile_cells.is_empty() {
+            if self.graph.full_reflects_change() || self.graph.volatile.iter().next().is_some() {
                 self.evaluate_full_untracked();
             } else {
                 // A redundant full preserves the delta, but a conditional-format
@@ -567,37 +610,65 @@ impl Model<'_> {
                 self.evaluate_full();
                 self.record_cf_changes(cf_before);
             }
-            return false;
+            return EvalPass::Full;
         }
-        // Volatile cells re-roll on every full pass, so mark them dirty to
-        // recompute them (and their dependents) on every incremental pass too.
-        for &cell in &self.volatile_cells {
-            self.graph.mark_dirty(cell);
+        // RAND/NOW re-roll every full pass, so seed them (and their dependents)
+        // on every incremental pass too. OFFSET/INDIRECT are also volatile, but
+        // their static edges miss the cell they actually read: if they run in
+        // this frontier they can see a stale target. They are evaluated after
+        // the static pass instead.
+        let volatiles: Vec<Position> = self.graph.volatile.iter().collect();
+        for cell in volatiles {
+            if !self.graph.dynamic_refs.contains(&cell) {
+                self.graph.mark_dirty(cell);
+            }
         }
         let (seeds, affected) = self.graph.take_seeds_and_affected();
+        let dyn_seeds: Vec<Position> = self.graph.dynamic_refs.iter().collect();
+        let dyn_cone = self.graph.reachable(dyn_seeds.clone());
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
+        let fanout = affected.len().max(dyn_cone.len());
         if self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
-            && affected.len() * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
+            && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
         {
             self.evaluate_full_untracked();
-            return false;
+            return EvalPass::Full;
         }
-        // Array and spill cells need the full pass's two-phase ordering, so an
-        // edit reaching one falls back to full; edits that do not stay incremental.
-        if affected.iter().any(|cell| self.array_cells.contains(cell)) {
+        // Array and spill cells need the full pass's two-phase ordering. Dynamic
+        // refs are a separate set; they do not force full by themselves.
+        if affected
+            .iter()
+            .chain(dyn_cone.iter())
+            .any(|cell| self.graph.arrays.contains(cell))
+        {
             self.evaluate_full_untracked();
-            return false;
+            return EvalPass::Full;
         }
         // Recompute the affected cells and collect the ones whose value actually
         // moved. A cycle in the affected set has no topological order, so fall
         // back to recomputing the whole set, where `evaluate_cell`'s recursion
         // still reports `#CIRC!`.
-        let changed = match self.graph.topo_order(&affected) {
+        let mut changed = match self.graph.topo_order(&affected) {
             Some(order) => self.recompute_frontier(affected, &seeds, order),
             None => self.recompute_all(affected, &seeds),
         };
+        // OFFSET/INDIRECT run after the static frontier so they read updated
+        // targets, then their dependents pick up the new value. They have no
+        // static edges to each other, so invalidate every dynamic ref first:
+        // otherwise A1=OFFSET(...) can read D2=OFFSET(...) while D2 is still
+        // Evaluated from the last pass.
+        if !dyn_seeds.is_empty() {
+            for &position in &dyn_seeds {
+                self.invalidate(position);
+            }
+            let dyn_changed = match self.graph.topo_order(&dyn_cone) {
+                Some(order) => self.recompute_frontier(dyn_cone, &dyn_seeds, order),
+                None => self.recompute_all(dyn_cone, &dyn_seeds),
+            };
+            changed.extend(dyn_changed);
+        }
         // Record only the changed cells for `take_changed_cells`, unless a full
         // pass has already marked everything changed since the last read.
         if let ChangedCells::Delta(delta) = &mut self.changed_cells {
@@ -607,7 +678,7 @@ impl Model<'_> {
         let cf_before = self.cf_cache.clone();
         self.evaluate_conditional_formatting();
         self.record_cf_changes(cf_before);
-        true
+        EvalPass::Incremental
     }
 
     /// A cell's observable signature: value, type (so an error and a same-text
@@ -695,18 +766,18 @@ impl Model<'_> {
     }
 
     /// Returns the cells recomputed by incremental evaluations since the last
-    /// call, sorted, and clears the record. `None` means a full recompute has run,
-    /// so every cell should be treated as potentially changed.
-    pub fn take_changed_cells(&mut self) -> Option<Vec<CellReferenceIndex>> {
+    /// call, sorted, and clears the record. `Everything` means a full recompute
+    /// has run, so every cell should be treated as potentially changed.
+    pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
         // Reading re-arms tracking: the record resets to an empty delta, so
         // subsequent incremental passes accumulate afresh.
         let taken = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
         let ChangedCells::Delta(cells) = taken else {
-            return None;
+            return ChangedSinceRead::Everything;
         };
         let mut cells: Vec<Position> = cells.into_iter().collect();
         cells.sort_unstable();
-        Some(
+        ChangedSinceRead::Cells(
             cells
                 .into_iter()
                 .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })

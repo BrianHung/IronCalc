@@ -394,9 +394,7 @@ impl<'a> UserModel<'a> {
     }
 
     /// See [`Model::take_changed_cells`](crate::Model::take_changed_cells).
-    pub fn take_changed_cells(
-        &mut self,
-    ) -> Option<Vec<crate::expressions::types::CellReferenceIndex>> {
+    pub fn take_changed_cells(&mut self) -> crate::ChangedSinceRead {
         self.model.take_changed_cells()
     }
 

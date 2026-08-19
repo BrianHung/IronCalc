@@ -115,6 +115,19 @@ pub(crate) enum ChangedCells {
     Delta(HashSet<Position>),
 }
 
+/// Cells that changed since the last [`Model::take_changed_cells`].
+///
+/// `Everything` is a full pass (rescan the workbook). `Cells` is the incremental
+/// delta, possibly empty. These are not the same kind of answer, so this is not
+/// an `Option`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangedSinceRead {
+    /// A full pass ran: every cell may have changed; rescan the workbook.
+    Everything,
+    /// The incremental delta since the last read, possibly empty.
+    Cells(Vec<CellReferenceIndex>),
+}
+
 /// A parsed formula for a defined name
 #[derive(Clone)]
 pub(crate) enum ParsedDefinedName {
@@ -246,14 +259,6 @@ pub struct Model<'a> {
     /// When `Some`, `evaluate_cell` only recomputes cells in this set and returns
     /// the stored value for any cell outside it. Drives the incremental pass.
     pub(crate) recompute_scope: Option<HashSet<Position>>,
-    /// Array and spill cell positions, computed on each full pass. Incremental
-    /// evaluation does not model spilling, so an edit whose affected set reaches
-    /// one of these falls back to a full recompute.
-    pub(crate) array_cells: HashSet<Position>,
-    /// Cells whose formula calls a volatile function (`RAND`, `NOW`, `OFFSET`,
-    /// ...), computed on each full pass. A full recompute re-rolls these on every
-    /// pass, so incremental recomputes them on every edit to match.
-    pub(crate) volatile_cells: HashSet<Position>,
     /// Number of formula cells at the last full pass. An incremental pass whose
     /// affected set approaches this recomputes about as much as a full pass but
     /// with extra bookkeeping, so it falls back to full instead.
@@ -261,6 +266,17 @@ pub struct Model<'a> {
     /// What cells changed since the last [`Model::take_changed_cells`], backing
     /// the incremental delta API. See [`ChangedCells`].
     pub(crate) changed_cells: ChangedCells,
+}
+
+/// Crate-private token required to rewrite a formula without rebuilding the graph.
+pub(crate) struct DisplacementToken {
+    _priv: (),
+}
+
+impl DisplacementToken {
+    pub(crate) fn structural() -> Self {
+        Self { _priv: () }
+    }
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1777,8 +1793,6 @@ impl<'a> Model<'a> {
             graph: DependencyGraph::default(),
             recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
-            array_cells: HashSet::new(),
-            volatile_cells: HashSet::new(),
             formula_cell_count: 0,
             changed_cells: ChangedCells::All,
         };
@@ -2302,20 +2316,24 @@ impl<'a> Model<'a> {
         column: i32,
         formula: String,
     ) -> Result<(), String> {
-        // A user-entered formula can rewire dependencies arbitrarily, so rebuild
-        // the graph on the next pass. A structural displacement instead shifts the
-        // existing edges (see [`write_cell_formula`]).
+        // A user-entered formula can rewire dependencies arbitrarily.
         self.graph.force_full();
-        self.write_cell_formula(sheet, row, column, formula)
+        self.write_formula_bytes(sheet, row, column, formula)
     }
 
-    /// Writes a formula to a cell without forcing a full recompute. The
-    /// dependency graph is left untouched, so a caller that changes the
-    /// dependency structure must invalidate it itself (as
-    /// [`Model::update_cell_with_formula`] does); a structural displacement
-    /// relies on [`crate::dependency_graph::DependencyGraph::structural_edit`]
-    /// to shift the existing edges to match.
-    pub(crate) fn write_cell_formula(
+    /// Rewrite a formula after a structural displacement.
+    pub(crate) fn write_displaced_formula(
+        &mut self,
+        DisplacementToken { .. }: DisplacementToken,
+        sheet: u32,
+        row: i32,
+        column: i32,
+        formula: String,
+    ) -> Result<(), String> {
+        self.write_formula_bytes(sheet, row, column, formula)
+    }
+
+    fn write_formula_bytes(
         &mut self,
         sheet: u32,
         row: i32,

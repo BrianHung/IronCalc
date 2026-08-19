@@ -1,11 +1,12 @@
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
 
-use crate::test::util::new_empty_model;
-use crate::{RecalcMode, UserModel};
+use crate::test::util::{incremental_mode, new_empty_model};
+use crate::{ChangedSinceRead, RecalcMode, UserModel};
 
 #[test]
 fn incremental_matches_full_on_a_chain() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1*2");
     model._set("C1", "=B1+1");
@@ -19,7 +20,7 @@ fn incremental_matches_full_on_a_chain() {
 
 #[test]
 fn volatile_hidden_in_defined_name_lambda_is_detected() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     // A lambda stored as a defined name, hiding a volatile function. Passed bare
     // to MAP it appears as a defined-name node, not an inline lambda.
     model
@@ -31,12 +32,12 @@ fn volatile_hidden_in_defined_name_lambda_is_detected() {
 
     // B1 (sheet 0, row 1, column 2) must be volatile so the incremental path
     // re-rolls it every pass, matching a full recompute.
-    assert!(model.volatile_cells.contains(&(0, 1, 2)));
+    assert!(model.graph.volatile.contains(&(0, 1, 2)));
 }
 
 #[test]
 fn incremental_coexists_with_arrays() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "1");
     model._set("B2", "2");
     model._set("A1", "=B1:B2"); // spills A1:A2
@@ -56,7 +57,7 @@ fn incremental_coexists_with_arrays() {
 
 #[test]
 fn incremental_handles_row_insert() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=5 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -75,7 +76,7 @@ fn incremental_handles_row_insert() {
 
 #[test]
 fn incremental_handles_row_delete() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
     model._set("A5", "=A1+1");
     model.evaluate();
@@ -90,7 +91,7 @@ fn incremental_handles_row_delete() {
 
 #[test]
 fn incremental_column_insert_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "2");
     model._set("D1", "=A1+B1");
@@ -104,7 +105,7 @@ fn incremental_column_insert_stays_incremental() {
 
 #[test]
 fn incremental_row_delete_shrinking_range_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=5 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -121,21 +122,49 @@ fn incremental_row_delete_shrinking_range_forces_full() {
 }
 
 #[test]
-fn incremental_structural_edit_moving_volatile_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+fn incremental_structural_edit_moves_volatile_with_the_graph() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A10", "=RAND()");
     model.evaluate();
+    assert!(model.graph.volatile.contains(&(0, 10, 1)));
 
-    // Inserting above the volatile moves it; its entry in volatile_cells is keyed
-    // by position and only rebuilt on a full pass, so the edit must force full to
-    // re-seed it at the new row rather than leave the moved cell frozen.
+    // The graph shifts every position-keyed set, so the volatile travels to A11
+    // and the next pass can stay incremental.
     model.insert_rows(0, 1, 1).unwrap();
-    assert!(model.graph.should_recompute_full());
+    assert!(!model.graph.should_recompute_full());
+    assert!(model.graph.volatile.contains(&(0, 11, 1)));
+    assert!(!model.graph.volatile.contains(&(0, 10, 1)));
+
+    model.evaluate();
+    assert!(model.graph.volatile.contains(&(0, 11, 1)));
+}
+
+#[test]
+fn incremental_insert_moves_hyperlink_with_the_cell() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A10", "=HYPERLINK(\"http://a.com\",\"x\")");
+    model.evaluate();
+    let dynamic_rows = |model: &crate::Model| {
+        model
+            .get_links_list(0)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.dynamic)
+            .map(|l| l.row)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dynamic_rows(&model), vec![10]);
+
+    model.insert_rows(0, 1, 1).unwrap();
+    // The formula map must move with the cell; a leftover at A10 is a ghost.
+    assert_eq!(dynamic_rows(&model), vec![11]);
+    model.evaluate();
+    assert_eq!(dynamic_rows(&model), vec![11]);
 }
 
 #[test]
 fn incremental_structural_edit_below_volatile_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "=RAND()");
     model._set("C10", "=1+1");
     model.evaluate();
@@ -148,7 +177,7 @@ fn incremental_structural_edit_below_volatile_stays_incremental() {
 
 #[test]
 fn incremental_shares_one_range_vertex() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=10 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -166,7 +195,7 @@ fn incremental_shares_one_range_vertex() {
 
 #[test]
 fn incremental_recomputes_volatiles() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("C1", "5");
     model._set("A1", "=INDIRECT(\"C1\")"); // reads C1 dynamically
     model.evaluate();
@@ -179,7 +208,7 @@ fn incremental_recomputes_volatiles() {
 
 #[test]
 fn incremental_wide_fanout_stays_correct() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     // Exceed INCREMENTAL_FANOUT_FLOOR (1024) so editing A1 trips the fanout
     // guard and falls back to full; the result must still be correct.
@@ -196,7 +225,7 @@ fn incremental_wide_fanout_stays_correct() {
 
 #[test]
 fn incremental_tracks_defined_name_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model
         .new_defined_name("MyRef", None, &format!("{sheet}!$B$1"))
@@ -213,7 +242,7 @@ fn incremental_tracks_defined_name_references() {
 
 #[test]
 fn incremental_defined_name_retarget_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model._set("A1", "10");
     model._set("C1", "777");
@@ -233,7 +262,7 @@ fn incremental_defined_name_retarget_forces_full() {
 
 #[test]
 fn incremental_range_clear_contents_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1");
     model._set("C1", "=B1");
@@ -257,7 +286,7 @@ fn incremental_range_clear_contents_forces_full() {
 
 #[test]
 fn incremental_set_array_formula_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "1");
     model._set("B2", "2");
     model._set("D1", "10");
@@ -275,21 +304,65 @@ fn incremental_set_array_formula_forces_full() {
 
 #[test]
 fn incremental_offset_reads_dynamic_target() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("C1", "10");
     model._set("D2", "=C1");
     model._set("A1", "=OFFSET(D1,1,0)"); // reads D2, a target no static edge captures
+    model._set("B1", "=A1"); // static dependent of the dynamic ref
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
+    assert_eq!(model._get_text("B1"), "10");
 
     model._set("C1", "20"); // D2 -> 20; A1 must follow, not read a stale D2
     model.evaluate();
     assert_eq!(model._get_text("A1"), "20");
+    assert_eq!(model._get_text("B1"), "20");
+}
+
+#[test]
+fn incremental_chained_offset_reads_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("E2", "=C1");
+    model._set("D2", "=OFFSET(E1,1,0)"); // dynamic ref whose target is E2
+    model._set("A1", "=OFFSET(D1,1,0)"); // dynamic ref whose target is D2
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+
+    // No static edge A1→D2. If D2 is still Evaluated, A1 reads 10.
+    model._set("C1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A1"), "20");
+}
+
+#[test]
+fn incremental_offset_does_not_force_full_on_unrelated_edit() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("A1", "=OFFSET(C1,0,0)");
+    model._set("Z1", "1");
+    model.evaluate();
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    assert!(model.graph.dynamic_refs.contains(&(0, 1, 1)));
+    assert!(model.graph.volatile.contains(&(0, 1, 1)));
+
+    // OFFSET is volatile and a dynamic ref, not an array cell. An unrelated
+    // edit must stay incremental instead of falling back to a full workbook pass.
+    model._set("Z1", "2");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("OFFSET must not force a workbook-wide full pass");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(1, 26))); // Z1
 }
 
 #[test]
 fn incremental_set_locale_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
     model._set("B1", "=TEXT(A1,\"#,##0.00\")");
     model._set("Z1", "0"); // independent
@@ -303,7 +376,7 @@ fn incremental_set_locale_forces_full() {
 
 #[test]
 fn incremental_reports_locale_change() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
     model._set("B1", "=TEXT(A1,\"#,##0.00\")");
     model._set("Z1", "0"); // independent
@@ -314,12 +387,12 @@ fn incremental_reports_locale_change() {
     model.set_locale("de").unwrap();
     // A locale change re-renders every formatted value, so no small delta
     // describes it; the record reports everything changed.
-    assert!(model.take_changed_cells().is_none());
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 #[test]
 fn incremental_tracks_dynamic_branch_dependencies() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("D1", "1");
     model._set("E1", "10");
     model._set("F1", "20");
@@ -338,7 +411,7 @@ fn incremental_tracks_dynamic_branch_dependencies() {
 
 #[test]
 fn incremental_tracks_function_read_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("A2", "2");
     model._set("A3", "3");
@@ -358,7 +431,7 @@ fn incremental_tracks_function_read_references() {
 
 #[test]
 fn incremental_tracks_named_lambda_body_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model
         .new_defined_name("TAX", None, &format!("=LAMBDA(amt, amt + {sheet}!$B$1)"))
@@ -376,7 +449,7 @@ fn incremental_tracks_named_lambda_body_references() {
 
 #[test]
 fn incremental_tracks_volatile_in_lambda_body() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model
         .new_defined_name("VOL", None, "=LAMBDA(a, a + INDIRECT(\"A1\"))")
         .unwrap();
@@ -392,7 +465,7 @@ fn incremental_tracks_volatile_in_lambda_body() {
 
 #[test]
 fn incremental_tracks_dynamic_range_operator() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
     model._set("A2", "20");
     model._set("A3", "30");
@@ -410,7 +483,7 @@ fn incremental_tracks_dynamic_range_operator() {
 fn incremental_undo_under_pause_stays_correct() {
     let mut model = UserModel::new_empty("m", "en", "UTC", "en")
         .unwrap()
-        .with_recalc_mode(RecalcMode::Incremental);
+        .with_recalc_mode(incremental_mode());
     model.set_user_input(0, 1, 1, "1").unwrap(); // A1
     model.set_user_input(0, 1, 2, "=A1+1").unwrap(); // B1 = 2
     model.set_user_input(0, 1, 3, "10").unwrap(); // C1 (independent)
@@ -428,36 +501,35 @@ fn incremental_undo_under_pause_stays_correct() {
 
 #[test]
 fn take_changed_cells_reports_incremental_delta() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1*2");
     model._set("C1", "100"); // independent
     model.evaluate();
     // Switching mode forces a full pass, so everything is potentially changed.
-    assert_eq!(model.take_changed_cells(), None);
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 
     model._set("A1", "5"); // A1 and its dependent B1 recompute; C1 untouched
     model.evaluate();
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 1))); // A1 edited
     assert!(changed.contains(&(1, 2))); // B1 recomputed
     assert!(!changed.contains(&(1, 3))); // C1 not touched
 
-    assert_eq!(model.take_changed_cells(), Some(vec![])); // reading clears
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Cells(vec![])); // reading clears
 
     model._set("D1", "=A1+1"); // a new formula forces a full recompute
     model.evaluate();
-    assert_eq!(model.take_changed_cells(), None);
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 #[test]
 fn take_changed_cells_reports_structural_edit_delta() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
     model._set("B10", "=A1+1"); // depends on A1, value 11
     model.evaluate();
@@ -469,7 +541,9 @@ fn take_changed_cells_reports_structural_edit_delta() {
     model.delete_rows(0, 1, 1).unwrap();
     model.evaluate();
 
-    let changed = model.take_changed_cells().unwrap();
+    let ChangedSinceRead::Cells(changed) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
     assert!(
         changed.iter().any(|c| (c.row, c.column) == (9, 2)),
         "B9 (was B10) became #REF! and must appear in the delta, got {changed:?}"
@@ -479,6 +553,7 @@ fn take_changed_cells_reports_structural_edit_delta() {
 
 #[test]
 fn take_changed_cells_survives_redundant_evaluate() {
+    // Delta API: a second evaluate under Verify resets the per-pass record.
     let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
     model._set("A1", "1");
     model._set("B1", "=A1*2");
@@ -489,20 +564,19 @@ fn take_changed_cells_survives_redundant_evaluate() {
     model.evaluate(); // incremental: records A1, B1
     model.evaluate(); // redundant no-op full: must keep the delta
 
-    // The delta survives the redundant evaluate, so this is Some, not None.
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    // The delta survives the redundant evaluate, so this is Cells, not Everything.
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 1)));
     assert!(changed.contains(&(1, 2)));
 }
 
 #[test]
 fn redundant_evaluate_with_volatile_reports_full_change() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1+1");
     model._set("C1", "=RAND()"); // volatile: re-rolls on every full pass
@@ -514,12 +588,12 @@ fn redundant_evaluate_with_volatile_reports_full_change() {
     let _ = model.take_changed_cells(); // clear that delta
 
     model.evaluate(); // redundant full: re-rolls C1, so not a no-op
-    assert_eq!(model.take_changed_cells(), None); // not Some([])
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything); // not Cells([])
 }
 
 #[test]
 fn incremental_reports_dynamic_link_retarget() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "http://a.com");
     model._set("B1", "=HYPERLINK(A1,\"click\")"); // label "click", target A1
     model.evaluate();
@@ -527,18 +601,17 @@ fn incremental_reports_dynamic_link_retarget() {
 
     model._set("A1", "http://b.com"); // label unchanged, only the target moves
     model.evaluate();
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 2))); // B1's link changed, so it is reported
 }
 
 #[test]
 fn incremental_reports_conditional_format_change() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "5");
     model._set("B1", "x");
     model
@@ -557,18 +630,17 @@ fn incremental_reports_conditional_format_change() {
 
     model._set("A1", "20"); // flips B1's rule on, though B1's value is unchanged
     model.evaluate();
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 2))); // B1's conditional format changed
 }
 
 #[test]
 fn incremental_reports_cf_only_mutation() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "5");
     model._set("B1", "x");
     model.evaluate();
@@ -586,18 +658,17 @@ fn incremental_reports_cf_only_mutation() {
         )
         .unwrap();
     model.evaluate(); // a CF-rule edit with no cell value change
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 2))); // B1's new format is reported
 }
 
 #[test]
 fn incremental_reports_signed_zero_flip() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "5");
     model._set("B1", "=A1*0");
     model._set("C1", "=B1&\"!\"");
@@ -607,18 +678,17 @@ fn incremental_reports_signed_zero_flip() {
     model._set("A1", "-5"); // B1: +0 -> -0, observable in C1's text
     model.evaluate();
     assert_eq!(model._get_text("C1"), "-0!"); // not the stale "0!"
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 3))); // C1 reported
 }
 
 #[test]
 fn incremental_reports_only_value_changes() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1*0"); // always 0
     model._set("C1", "=B1+1"); // always 1
@@ -627,12 +697,11 @@ fn incremental_reports_only_value_changes() {
 
     model._set("A1", "5");
     model.evaluate();
-    let changed: std::collections::HashSet<(i32, i32)> = model
-        .take_changed_cells()
-        .unwrap()
-        .iter()
-        .map(|c| (c.row, c.column))
-        .collect();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 1))); // A1 moved 1 -> 5
     assert!(!changed.contains(&(1, 2))); // B1 recomputed but stayed 0
     assert!(!changed.contains(&(1, 3))); // C1 not reached
@@ -641,7 +710,7 @@ fn incremental_reports_only_value_changes() {
 
 #[test]
 fn incremental_propagates_error_to_text_transition() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1"); // truthy: take the error branch
     model._set("B1", "=IF(A1, 1/0, \"#DIV/0!\")"); // error #DIV/0!
     model._set("C1", "=ISERROR(B1)");
