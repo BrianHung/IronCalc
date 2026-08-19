@@ -6,6 +6,12 @@ export interface Area {
   height: number;
 }
 
+export interface CellReferenceIndex {
+  sheet: number;
+  row: number;
+  column: number;
+}
+
 export enum BorderType {
   All = "All",
   Inner = "Inner",

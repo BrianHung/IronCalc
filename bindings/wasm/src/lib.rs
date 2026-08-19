@@ -14,7 +14,8 @@ use ironcalc_base::{
     },
     types::{CellType, Color, Link, Style, StyleIncludes},
     worksheet::NavigationDirection,
-    BorderArea, ClipboardData, RecalcMode as BaseRecalcMode, UserModel as BaseModel,
+    BorderArea, ChangedSinceRead, ClipboardData, RecalcMode as BaseRecalcMode,
+    UserModel as BaseModel,
 };
 
 fn to_js_error(error: String) -> JsError {
@@ -199,6 +200,27 @@ impl Model {
     #[wasm_bindgen(js_name = "pauseEvaluation")]
     pub fn pause_evaluation(&mut self) {
         self.model.pause_evaluation()
+    }
+
+    /// Returns the cells recomputed by incremental evaluations since the last
+    /// call, and clears the record. Returns `null` when a full recompute has
+    /// run, meaning every cell may have changed. Only meaningful for a model
+    /// constructed with `RecalcMode.Incremental`.
+    #[wasm_bindgen(
+        js_name = "takeChangedCells",
+        unchecked_return_type = "CellReferenceIndex[] | null"
+    )]
+    pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
+        // JS keeps `null` for a full pass and an array for an incremental delta.
+        let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+        match self.model.take_changed_cells() {
+            ChangedSinceRead::Everything => {
+                Option::<Vec<ironcalc_base::expressions::types::CellReferenceIndex>>::None
+                    .serialize(&serializer)
+            }
+            ChangedSinceRead::Cells(cells) => cells.serialize(&serializer),
+        }
+        .map_err(|e| to_js_error(e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "resumeEvaluation")]

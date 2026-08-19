@@ -108,6 +108,29 @@ pub(crate) enum CellState {
     Evaluating,
 }
 
+/// What cells changed since the last [`Model::take_changed_cells`], backing the
+/// incremental delta API.
+pub(crate) enum ChangedCells {
+    /// A full recompute ran: no delta is available and every cell may have
+    /// changed.
+    All,
+    /// The exact cells incremental passes recomputed since the last read.
+    Delta(HashSet<Position>),
+}
+
+/// Cells that changed since the last [`Model::take_changed_cells`].
+///
+/// `Everything` is a full pass (rescan the workbook). `Cells` is the incremental
+/// delta, possibly empty. These are not the same kind of answer, so this is not
+/// an `Option`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangedSinceRead {
+    /// A full pass ran: every cell may have changed; rescan the workbook.
+    Everything,
+    /// The incremental delta since the last read, possibly empty.
+    Cells(Vec<CellReferenceIndex>),
+}
+
 /// A parsed formula for a defined name
 #[derive(Clone)]
 pub(crate) enum ParsedDefinedName {
@@ -244,19 +267,10 @@ pub struct Model<'a> {
     /// with extra bookkeeping, so it falls back to full instead.
     pub(crate) formula_cell_count: usize,
     /// Memoized range reductions for the current pass, keyed by range and reducer.
-    /// Cleared whenever cell values are recomputed, so it never outlives them.
     pub(crate) range_reduce_cache: RangeReduceCache,
-}
-
-/// Crate-private token required to rewrite a formula without rebuilding the graph.
-pub(crate) struct DisplacementToken {
-    _priv: (),
-}
-
-impl DisplacementToken {
-    pub(crate) fn structural() -> Self {
-        Self { _priv: () }
-    }
+    /// What cells changed since the last [`Model::take_changed_cells`], backing
+    /// the incremental delta API. See [`ChangedCells`].
+    pub(crate) changed_cells: ChangedCells,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1775,6 +1789,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
+            changed_cells: ChangedCells::All,
         };
 
         model.parse_formulas();
@@ -2301,10 +2316,9 @@ impl<'a> Model<'a> {
         self.write_formula_bytes(sheet, row, column, formula)
     }
 
-    /// Rewrite a formula after a structural displacement.
+    /// Rewrite a formula after a structural displacement. Does not rebuild the graph.
     pub(crate) fn write_displaced_formula(
         &mut self,
-        DisplacementToken { .. }: DisplacementToken,
         sheet: u32,
         row: i32,
         column: i32,
@@ -3135,7 +3149,7 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full(),
+            RecalcMode::Full => self.evaluate_full_untracked(),
             RecalcMode::Incremental => {
                 self.evaluate_selective();
             }
@@ -3154,8 +3168,8 @@ impl<'a> Model<'a> {
         self
     }
 
-    /// Forces the next evaluation to be a full recompute. Callers use this after
-    /// a change the incremental graph does not model (a structural edit).
+    /// Forces the next evaluation to be a full recompute. Used by undo, clipboard,
+    /// and sheet ops the graph does not model.
     pub(crate) fn force_full_recompute(&mut self) {
         self.graph.force_full();
     }
@@ -3231,7 +3245,7 @@ impl<'a> Model<'a> {
             self.collect_volatile_cells();
             self.build_dependency_graph();
         }
-        self.graph.after_full();
+        self.graph.after_pass();
     }
 
     /// Removes the content of every cell in the range but leaves the style.

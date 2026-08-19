@@ -704,6 +704,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
+            changed_cells: crate::model::ChangedCells::All,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

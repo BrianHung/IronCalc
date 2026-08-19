@@ -195,21 +195,13 @@ impl SheetRanges {
     }
 }
 
-/// Walkability of the stored edges. One enum so built/forced/eligible flags
-/// cannot disagree.
+/// Walkability of the stored edges. One enum so built/forced flags cannot disagree.
 #[derive(Default)]
 enum GraphState {
-    #[default]
-    Empty,
     Ready {
         dirty: HashSet<Position>,
     },
-    MustRebuild,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum StructuralOutcome {
-    Shifted,
+    #[default]
     MustRebuild,
 }
 
@@ -235,7 +227,7 @@ impl Positions {
     }
 }
 
-/// Array/spill cells. Not [`DynamicRefs`]: `OFFSET` is not an array formula.
+/// Array/spill cells. `OFFSET` is not stored here.
 #[derive(Default)]
 pub(crate) struct ArrayCells(Positions);
 
@@ -266,6 +258,14 @@ impl ArrayCells {
 }
 
 impl DynamicRefs {
+    pub(crate) fn contains(&self, cell: &Position) -> bool {
+        self.0.contains(cell)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
+        self.0.iter()
+    }
+
     pub(crate) fn replace(&mut self, cells: HashSet<Position>) {
         self.0.replace(cells);
     }
@@ -380,7 +380,7 @@ impl DependencyGraph {
     }
 
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
-    /// incremental; `Empty` / `MustRebuild` stay full.
+    /// incremental; `MustRebuild` stays full.
     pub(crate) fn mark_dirty(&mut self, cell: Position) {
         if let GraphState::Ready { dirty } = &mut self.state {
             dirty.insert(cell);
@@ -398,9 +398,7 @@ impl DependencyGraph {
         !matches!(&self.state, GraphState::Ready { dirty } if !dirty.is_empty())
     }
 
-    /// True when this full pass is rebuilding after a shape change (or the first
-    /// pass), so its result is not expressible as a delta.
-    #[cfg(test)]
+    /// True when the graph is not ready: first pass or an unmodeled edit.
     pub(crate) fn full_reflects_change(&self) -> bool {
         !matches!(self.state, GraphState::Ready { .. })
     }
@@ -435,6 +433,65 @@ impl DependencyGraph {
         self.referenced.replace(ranges);
     }
 
+    /// Direct dependents of `cell`: cells reading it, and cells reading a range
+    /// that contains it.
+    pub(crate) fn dependents_of(&self, cell: Position) -> Vec<Position> {
+        let mut dependents: Vec<Position> = self
+            .cell_dependents
+            .get(&cell)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        if let Some(sheet_ranges) = self.range_dependents.get(&cell.0) {
+            for range in sheet_ranges.containing(cell) {
+                if let Some(range_dependents) = sheet_ranges.dependents_of(range) {
+                    dependents.extend(range_dependents.iter().copied());
+                }
+            }
+        }
+        dependents
+    }
+
+    /// Orders `affected` so each cell follows the affected cells it reads.
+    /// Returns `None` when the affected set contains a dependency cycle, so the
+    /// caller can fall back to the recursive recompute that reports `#CIRC!`.
+    pub(crate) fn topo_order(&self, affected: &HashSet<Position>) -> Option<Vec<Position>> {
+        let successors = |cell: Position| -> Vec<Position> {
+            self.dependents_of(cell)
+                .into_iter()
+                .filter(|d| affected.contains(d))
+                .collect()
+        };
+        let mut indegree: HashMap<Position, usize> = affected.iter().map(|&c| (c, 0)).collect();
+        for &cell in affected {
+            for dependent in successors(cell) {
+                *indegree.entry(dependent).or_default() += 1;
+            }
+        }
+        let mut queue: Vec<Position> = indegree
+            .iter()
+            .filter(|(_, &n)| n == 0)
+            .map(|(&c, _)| c)
+            .collect();
+        queue.sort_unstable();
+        let mut order = Vec::with_capacity(affected.len());
+        let mut head = 0;
+        while head < queue.len() {
+            let cell = queue[head];
+            head += 1;
+            order.push(cell);
+            for dependent in successors(cell) {
+                let n = indegree.entry(dependent).or_default();
+                *n -= 1;
+                if *n == 0 {
+                    queue.push(dependent);
+                }
+            }
+        }
+        (order.len() == affected.len()).then_some(order)
+    }
+
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
     /// not touch the dirty set, so `Verify` can use it to find the cells a
     /// volatile can taint.
@@ -466,28 +523,19 @@ impl DependencyGraph {
     }
 
     /// Applies a row/column insert (`delta > 0`) or delete (`delta < 0`): marks
-    /// the dependents the edit can change, then shifts every stored position
-    /// (edges, dirty, volatiles, arrays, dynamic refs, referenced ranges) in one
-    /// pass.
-    pub(crate) fn structural_edit(
-        &mut self,
-        sheet: u32,
-        axis: Axis,
-        boundary: i32,
-        delta: i32,
-    ) -> StructuralOutcome {
+    /// the dependents the edit can change, then shifts every stored position.
+    pub(crate) fn structural_edit(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
         // A delete that shrinks a tracked range would need the range clamped.
         if delta < 0 && self.range_overlaps_band(sheet, axis, boundary, delta) {
             self.state = GraphState::MustRebuild;
-            return StructuralOutcome::MustRebuild;
+            return;
         }
         if !matches!(self.state, GraphState::Ready { .. }) {
             self.state = GraphState::MustRebuild;
-            return StructuralOutcome::MustRebuild;
+            return;
         }
         self.mark_structural_dependents(sheet, axis, boundary);
         self.shift(sheet, axis, boundary, delta);
-        StructuralOutcome::Shifted
     }
 
     /// Marks the dependents a structural edit at `boundary` can change: those
@@ -566,15 +614,8 @@ impl DependencyGraph {
         self.referenced.shift(sheet, axis, boundary, delta);
     }
 
-    /// Resets pending state after a full pass, which rebuilt the edges.
-    pub(crate) fn after_full(&mut self) {
-        self.state = GraphState::Ready {
-            dirty: HashSet::new(),
-        };
-    }
-
-    /// Resets pending state after an incremental pass.
-    pub(crate) fn after_incremental(&mut self) {
+    /// Marks the graph ready after a pass that left the edges valid.
+    pub(crate) fn after_pass(&mut self) {
         self.state = GraphState::Ready {
             dirty: HashSet::new(),
         };
@@ -595,7 +636,7 @@ mod tests {
         assert!(graph.full_reflects_change());
         assert!(graph.should_recompute_full());
 
-        graph.after_full();
+        graph.after_pass();
         assert!(!graph.full_reflects_change());
         assert!(graph.should_recompute_full()); // Ready, nothing dirty
 
@@ -644,14 +685,11 @@ mod tests {
     #[test]
     fn referenced_ranges_shift_with_the_graph() {
         let mut graph = DependencyGraph::default();
-        graph.after_full();
+        graph.after_pass();
         graph.replace_referenced(HashMap::from([(0, HashSet::from([(0, 1, 1, 5, 1)]))]));
         assert!(graph.referenced.contains(&(0, 1, 1, 5, 1)));
 
-        assert_eq!(
-            graph.structural_edit(0, Axis::Row, 3, 2),
-            StructuralOutcome::Shifted
-        );
+        graph.structural_edit(0, Axis::Row, 3, 2);
         assert!(graph.referenced.contains(&(0, 1, 1, 7, 1)));
         assert!(!graph.referenced.contains(&(0, 1, 1, 5, 1)));
     }
