@@ -5,6 +5,8 @@
 //! formula's AST; the incremental pass recomputes only the cells reachable from
 //! the ones that changed. See [`crate::dependency_graph`] for the graph and modes.
 
+#[cfg(feature = "recalc_verify")]
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::{CellOrRange, ParsedDefinedName};
@@ -16,8 +18,6 @@ use crate::expressions::types::CellReferenceIndex;
 use crate::functions::Function;
 use crate::model::Model;
 use crate::types::Cell;
-#[cfg(feature = "recalc_verify")]
-use std::collections::HashMap;
 
 /// Below this many formula cells, incremental never falls back on fanout: the
 /// bookkeeping is cheap in absolute terms and full has no edge to exploit.
@@ -47,6 +47,26 @@ fn is_volatile_function(kind: &Function) -> bool {
     )
 }
 
+/// Values that are not a function of the sheet. Incremental then full will
+/// disagree even when both paths are correct, so Verify strips only this cone.
+/// `OFFSET`/`INDIRECT` are volatile but deterministic and stay in the compare.
+fn is_nondeterministic_function(kind: &Function) -> bool {
+    matches!(
+        kind,
+        Function::Rand
+            | Function::Randbetween
+            | Function::Randarray
+            | Function::Now
+            | Function::Today
+    )
+}
+
+/// Whether an evaluate stayed incremental or fell back to a full pass.
+pub(crate) enum EvalPass {
+    Incremental,
+    Full,
+}
+
 impl Model<'_> {
     /// Records the positions of array and spill cells after a full pass, so the
     /// incremental path can fall back to full for any edit that reaches one. Must
@@ -63,7 +83,7 @@ impl Model<'_> {
                 }
             }
         }
-        self.array_cells = array_cells;
+        self.graph.replace_arrays(array_cells);
     }
 
     /// Whether a formula tree calls a volatile function anywhere. Exhaustive so a
@@ -75,60 +95,81 @@ impl Model<'_> {
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
+        // A surviving `A1:expr` has a dynamic endpoint and is volatile even
+        // when `expr` itself is not a volatile function.
+        matches!(node, Node::OpRangeKind { .. })
+            || self.node_matches_function(node, sheet, seen_names, is_volatile_function)
+    }
+
+    fn node_is_nondeterministic(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+    ) -> bool {
+        self.node_matches_function(node, sheet, seen_names, is_nondeterministic_function)
+    }
+
+    fn node_matches_function(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+        pred: fn(&Function) -> bool,
+    ) -> bool {
         match node {
             Node::FunctionKind { kind, args } => {
-                is_volatile_function(kind)
+                pred(kind)
                     || args
                         .iter()
-                        .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
             }
             Node::NamedFunctionKind { name, args, id } => {
                 if args
                     .iter()
-                    .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                    .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
                 {
                     return true;
                 }
                 if id.is_none() {
                     if let Some((scope, body)) = self.resolve_named_lambda(name, sheet) {
                         if seen_names.insert((name.clone(), scope)) {
-                            return self.node_is_volatile(&body, sheet, seen_names);
+                            return self.node_matches_function(&body, sheet, seen_names, pred);
                         }
                     }
                 }
                 false
             }
             Node::LambdaCallKind { lambda, args } => {
-                self.node_is_volatile(lambda, sheet, seen_names)
+                self.node_matches_function(lambda, sheet, seen_names, pred)
                     || args
                         .iter()
-                        .any(|arg| self.node_is_volatile(arg, sheet, seen_names))
+                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
             }
-            Node::LambdaDefKind { body, .. } => self.node_is_volatile(body, sheet, seen_names),
-            // The range operator survives parsing only with a dynamic endpoint
-            // (static `A1:A10` folds to one reference), so its span is volatile.
-            Node::OpRangeKind { .. } => true,
-            Node::OpConcatenateKind { left, right }
+            Node::LambdaDefKind { body, .. } => {
+                self.node_matches_function(body, sheet, seen_names, pred)
+            }
+            Node::OpRangeKind { left, right }
+            | Node::OpConcatenateKind { left, right }
             | Node::OpSumKind { left, right, .. }
             | Node::OpProductKind { left, right, .. }
             | Node::OpPowerKind { left, right }
             | Node::CompareKind { left, right, .. } => {
-                self.node_is_volatile(left, sheet, seen_names)
-                    || self.node_is_volatile(right, sheet, seen_names)
+                self.node_matches_function(left, sheet, seen_names, pred)
+                    || self.node_matches_function(right, sheet, seen_names, pred)
             }
-            Node::UnaryKind { right, .. } => self.node_is_volatile(right, sheet, seen_names),
+            Node::UnaryKind { right, .. } => {
+                self.node_matches_function(right, sheet, seen_names, pred)
+            }
             Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
-                self.node_is_volatile(child, sheet, seen_names)
+                self.node_matches_function(child, sheet, seen_names, pred)
             }
-            // A bare defined name resolves to a cell/range (inert) or a lambda
-            // whose body can call a volatile function; resolve and walk it as the
-            // evaluator does, mirroring `collect_references`.
             Node::DefinedNameKind((name, scope, _)) => {
                 if seen_names.insert((name.clone(), *scope)) {
                     if let Ok(Some(ParsedDefinedName::LambdaDefinition(_, body))) =
                         self.get_parsed_defined_name(name, *scope)
                     {
-                        return self.node_is_volatile(&body, sheet, seen_names);
+                        return self.node_matches_function(&body, sheet, seen_names, pred);
                     }
                 }
                 false
@@ -154,6 +195,7 @@ impl Model<'_> {
     /// path recompute them on every edit so it matches that behavior.
     pub(crate) fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
+        let mut nondeterministic_cells = HashSet::new();
         let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
@@ -165,11 +207,16 @@ impl Model<'_> {
                         if self.node_is_volatile(node, sheet, &mut HashSet::new()) {
                             volatile_cells.insert((sheet, *row, *col));
                         }
+                        if self.node_is_nondeterministic(node, sheet, &mut HashSet::new()) {
+                            nondeterministic_cells.insert((sheet, *row, *col));
+                        }
                     }
                 }
             }
         }
-        self.volatile_cells = volatile_cells;
+        self.graph.replace_volatile(volatile_cells);
+        self.graph.replace_nondeterministic(nondeterministic_cells);
+        self.graph.replace_dynamic_refs(HashSet::new());
         self.formula_cell_count = formula_cell_count;
     }
 
@@ -349,18 +396,18 @@ impl Model<'_> {
     pub(crate) fn verify_incremental_matches_full(&mut self) {
         // Only meaningful when the run was actually incremental: a full fallback
         // has nothing to check, and a second full re-rolls volatiles into false diffs.
-        if !self.evaluate_selective() {
+        if !matches!(self.evaluate_selective(), EvalPass::Incremental) {
             return;
         }
-        let incremental = self.snapshot_values();
+        let incremental = self.snapshot_workbook();
         self.evaluate_full();
-        let full = self.snapshot_values();
-        // Volatiles (RAND, NOW) and their dependents re-roll each pass, so they
-        // legitimately differ; drop them and require the rest to match.
+        let full = self.snapshot_workbook();
+        // RAND/NOW/TODAY re-roll each pass even when both paths are correct.
+        // OFFSET/INDIRECT are volatile but deterministic: keep them in the compare.
         let tainted = self
             .graph
-            .reachable(self.volatile_cells.iter().copied().collect());
-        let strip = |mut values: HashMap<Position, CellValue>| {
+            .reachable(self.graph.nondeterministic.iter().collect());
+        let strip = |mut values: HashMap<Position, (CellValue, Option<crate::types::Link>)>| {
             values.retain(|position, _| !tainted.contains(position));
             values
         };
@@ -371,34 +418,41 @@ impl Model<'_> {
         );
     }
 
-    /// Snapshot of every populated cell's value, keyed by position. Used by
-    /// `RecalcMode::Verify` to diff the incremental result against the full one.
+    /// Snapshot of every populated cell (value + formula `HYPERLINK`), plus any
+    /// leftover dynamic-link keys, so a ghost link after a structural edit fails
+    /// Verify. Used by `RecalcMode::Verify`.
     #[cfg(feature = "recalc_verify")]
-    fn snapshot_values(&self) -> HashMap<Position, CellValue> {
-        self.get_all_cells()
+    fn snapshot_workbook(&self) -> HashMap<Position, (CellValue, Option<crate::types::Link>)> {
+        let mut positions: HashSet<Position> = self
+            .get_all_cells()
             .into_iter()
-            .filter_map(|c| {
-                self.get_cell_value_by_index(c.index, c.row, c.column)
-                    .ok()
-                    .map(|value| ((c.index, c.row, c.column), value))
+            .map(|c| (c.index, c.row, c.column))
+            .collect();
+        positions.extend(self.links.keys().copied());
+        positions
+            .into_iter()
+            .map(|position @ (sheet, row, column)| {
+                let value = self
+                    .get_cell_value_by_index(sheet, row, column)
+                    .unwrap_or(CellValue::None);
+                (position, (value, self.links.get(&position).cloned()))
             })
             .collect()
     }
 
-    /// Recomputes only the cells reachable from the dirty set, returning `true`.
-    /// Returns `false` after falling back to a full recompute for anything the
-    /// incremental path cannot model.
-    pub(crate) fn evaluate_selective(&mut self) -> bool {
+    /// Recomputes only the cells reachable from the dirty set.
+    pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         if self.graph.should_recompute_full() {
             self.evaluate_full();
-            return false;
+            return EvalPass::Full;
         }
         // Volatile cells re-roll on every full pass, so mark them dirty to
         // recompute them (and their dependents) on every incremental pass too.
-        for &cell in &self.volatile_cells {
+        let volatiles: Vec<Position> = self.graph.volatile.iter().collect();
+        for cell in volatiles {
             self.graph.mark_dirty(cell);
         }
-        let affected = self.graph.take_affected();
+        let (_seeds, affected) = self.graph.take_seeds_and_affected();
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
@@ -406,13 +460,12 @@ impl Model<'_> {
             && affected.len() * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
         {
             self.evaluate_full();
-            return false;
+            return EvalPass::Full;
         }
-        // Array and spill cells need the full pass's two-phase ordering, so an
-        // edit reaching one falls back to full; edits that do not stay incremental.
-        if affected.iter().any(|cell| self.array_cells.contains(cell)) {
+        // Array and spill cells need the full pass's two-phase ordering.
+        if affected.iter().any(|cell| self.graph.arrays.contains(cell)) {
             self.evaluate_full();
-            return false;
+            return EvalPass::Full;
         }
         // Recompute in the full pass's (sheet, row, column) order so a chain is
         // walked precedent-first and `evaluate_cell`'s recursion stays shallow.
@@ -431,6 +484,6 @@ impl Model<'_> {
         self.recompute_scope = None;
         self.graph.after_incremental();
         self.evaluate_conditional_formatting();
-        true
+        EvalPass::Incremental
     }
 }

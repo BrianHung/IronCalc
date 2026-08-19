@@ -199,7 +199,7 @@ fn fixing_an_erroring_friendly_name_attaches_the_link() {
 // away from a `HYPERLINK` must not keep a stale link.
 #[test]
 fn incremental_rebuilds_dynamic_links() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(crate::test::util::incremental_mode());
     model
         .set_user_input(
             0,

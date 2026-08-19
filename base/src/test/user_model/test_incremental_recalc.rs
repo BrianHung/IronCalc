@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used)]
 
-use crate::test::util::new_empty_model;
-use crate::{RecalcMode, UserModel};
+use crate::test::util::{incremental_mode, new_empty_model};
+use crate::UserModel;
 
 #[test]
 fn incremental_matches_full_on_a_chain() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1*2");
     model._set("C1", "=B1+1");
@@ -19,7 +19,7 @@ fn incremental_matches_full_on_a_chain() {
 
 #[test]
 fn volatile_hidden_in_defined_name_lambda_is_detected() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     // A lambda stored as a defined name, hiding a volatile function. Passed bare
     // to MAP it appears as a defined-name node, not an inline lambda.
     model
@@ -31,12 +31,12 @@ fn volatile_hidden_in_defined_name_lambda_is_detected() {
 
     // B1 (sheet 0, row 1, column 2) must be volatile so the incremental path
     // re-rolls it every pass, matching a full recompute.
-    assert!(model.volatile_cells.contains(&(0, 1, 2)));
+    assert!(model.graph.volatile.contains(&(0, 1, 2)));
 }
 
 #[test]
 fn incremental_coexists_with_arrays() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "1");
     model._set("B2", "2");
     model._set("A1", "=B1:B2"); // spills A1:A2
@@ -56,7 +56,7 @@ fn incremental_coexists_with_arrays() {
 
 #[test]
 fn incremental_handles_row_insert() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=5 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -75,7 +75,7 @@ fn incremental_handles_row_insert() {
 
 #[test]
 fn incremental_handles_row_delete() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
     model._set("A5", "=A1+1");
     model.evaluate();
@@ -90,7 +90,7 @@ fn incremental_handles_row_delete() {
 
 #[test]
 fn incremental_column_insert_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "2");
     model._set("D1", "=A1+B1");
@@ -104,7 +104,7 @@ fn incremental_column_insert_stays_incremental() {
 
 #[test]
 fn incremental_row_delete_shrinking_range_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=5 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -121,21 +121,49 @@ fn incremental_row_delete_shrinking_range_forces_full() {
 }
 
 #[test]
-fn incremental_structural_edit_moving_volatile_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+fn incremental_structural_edit_moves_volatile_with_the_graph() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A10", "=RAND()");
     model.evaluate();
+    assert!(model.graph.volatile.contains(&(0, 10, 1)));
 
-    // Inserting above the volatile moves it; its entry in volatile_cells is keyed
-    // by position and only rebuilt on a full pass, so the edit must force full to
-    // re-seed it at the new row rather than leave the moved cell frozen.
+    // The graph shifts every position-keyed set, so the volatile travels to A11
+    // and the next pass can stay incremental.
     model.insert_rows(0, 1, 1).unwrap();
-    assert!(model.graph.should_recompute_full());
+    assert!(!model.graph.should_recompute_full());
+    assert!(model.graph.volatile.contains(&(0, 11, 1)));
+    assert!(!model.graph.volatile.contains(&(0, 10, 1)));
+
+    model.evaluate();
+    assert!(model.graph.volatile.contains(&(0, 11, 1)));
+}
+
+#[test]
+fn incremental_insert_moves_hyperlink_with_the_cell() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A10", "=HYPERLINK(\"http://a.com\",\"x\")");
+    model.evaluate();
+    let dynamic_rows = |model: &crate::Model| {
+        model
+            .get_links_list(0)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.dynamic)
+            .map(|l| l.row)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dynamic_rows(&model), vec![10]);
+
+    model.insert_rows(0, 1, 1).unwrap();
+    // The formula map must move with the cell; a leftover at A10 is a ghost.
+    assert_eq!(dynamic_rows(&model), vec![11]);
+    model.evaluate();
+    assert_eq!(dynamic_rows(&model), vec![11]);
 }
 
 #[test]
 fn incremental_structural_edit_below_volatile_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "=RAND()");
     model._set("C10", "=1+1");
     model.evaluate();
@@ -148,7 +176,7 @@ fn incremental_structural_edit_below_volatile_stays_incremental() {
 
 #[test]
 fn incremental_shares_one_range_vertex() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     for row in 1..=10 {
         model._set(&format!("A{row}"), &row.to_string());
     }
@@ -166,7 +194,7 @@ fn incremental_shares_one_range_vertex() {
 
 #[test]
 fn incremental_recomputes_volatiles() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("C1", "5");
     model._set("A1", "=INDIRECT(\"C1\")"); // reads C1 dynamically
     model.evaluate();
@@ -179,7 +207,7 @@ fn incremental_recomputes_volatiles() {
 
 #[test]
 fn incremental_wide_fanout_stays_correct() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     // Exceed INCREMENTAL_FANOUT_FLOOR (1024) so editing A1 trips the fanout
     // guard and falls back to full; the result must still be correct.
@@ -196,7 +224,7 @@ fn incremental_wide_fanout_stays_correct() {
 
 #[test]
 fn incremental_tracks_defined_name_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model
         .new_defined_name("MyRef", None, &format!("{sheet}!$B$1"))
@@ -213,7 +241,7 @@ fn incremental_tracks_defined_name_references() {
 
 #[test]
 fn incremental_defined_name_retarget_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model._set("A1", "10");
     model._set("C1", "777");
@@ -233,7 +261,7 @@ fn incremental_defined_name_retarget_forces_full() {
 
 #[test]
 fn incremental_range_clear_contents_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1");
     model._set("C1", "=B1");
@@ -257,7 +285,7 @@ fn incremental_range_clear_contents_forces_full() {
 
 #[test]
 fn incremental_set_array_formula_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "1");
     model._set("B2", "2");
     model._set("D1", "10");
@@ -275,7 +303,7 @@ fn incremental_set_array_formula_forces_full() {
 
 #[test]
 fn incremental_offset_reads_dynamic_target() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("C1", "10");
     model._set("D2", "=C1");
     model._set("A1", "=OFFSET(D1,1,0)"); // reads D2, a target no static edge captures
@@ -289,7 +317,7 @@ fn incremental_offset_reads_dynamic_target() {
 
 #[test]
 fn incremental_set_locale_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
     model._set("B1", "=TEXT(A1,\"#,##0.00\")");
     model._set("Z1", "0"); // independent
@@ -303,7 +331,7 @@ fn incremental_set_locale_forces_full() {
 
 #[test]
 fn incremental_tracks_dynamic_branch_dependencies() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("D1", "1");
     model._set("E1", "10");
     model._set("F1", "20");
@@ -322,7 +350,7 @@ fn incremental_tracks_dynamic_branch_dependencies() {
 
 #[test]
 fn incremental_tracks_function_read_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("A2", "2");
     model._set("A3", "3");
@@ -342,7 +370,7 @@ fn incremental_tracks_function_read_references() {
 
 #[test]
 fn incremental_tracks_named_lambda_body_references() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
     model
         .new_defined_name("TAX", None, &format!("=LAMBDA(amt, amt + {sheet}!$B$1)"))
@@ -360,7 +388,7 @@ fn incremental_tracks_named_lambda_body_references() {
 
 #[test]
 fn incremental_tracks_volatile_in_lambda_body() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model
         .new_defined_name("VOL", None, "=LAMBDA(a, a + INDIRECT(\"A1\"))")
         .unwrap();
@@ -376,7 +404,7 @@ fn incremental_tracks_volatile_in_lambda_body() {
 
 #[test]
 fn incremental_tracks_dynamic_range_operator() {
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
     model._set("A2", "20");
     model._set("A3", "30");
@@ -394,7 +422,7 @@ fn incremental_tracks_dynamic_range_operator() {
 fn incremental_undo_under_pause_stays_correct() {
     let mut model = UserModel::new_empty("m", "en", "UTC", "en")
         .unwrap()
-        .with_recalc_mode(RecalcMode::Incremental);
+        .with_recalc_mode(incremental_mode());
     model.set_user_input(0, 1, 1, "1").unwrap(); // A1
     model.set_user_input(0, 1, 2, "=A1+1").unwrap(); // B1 = 2
     model.set_user_input(0, 1, 3, "10").unwrap(); // C1 (independent)
