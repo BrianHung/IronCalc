@@ -638,25 +638,33 @@ impl Model<'_> {
         seeds: &[Position],
         order: Vec<Position>,
     ) -> Vec<Position> {
-        self.recompute_scope = Some(affected);
+        let before: HashMap<Position, Option<ChangeKey>> =
+            affected.iter().map(|&p| (p, self.change_key(p))).collect();
+        self.recompute_scope = Some(affected.clone());
         let seeded: HashSet<Position> = seeds.iter().copied().collect();
         let mut stale = seeded.clone();
-        let mut changed = Vec::new();
+        let mut changed = HashSet::new();
         for position in order {
             if !stale.contains(&position) {
                 continue;
             }
-            let before = self.change_key(position);
             self.invalidate(position);
             let (sheet, row, column) = position;
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
-            if seeded.contains(&position) || self.change_key(position) != before {
-                changed.push(position);
+            if seeded.contains(&position) || self.change_key(position) != before[&position] {
+                changed.insert(position);
                 stale.extend(self.graph.dependents_of(position));
             }
         }
         self.recompute_scope = None;
-        changed
+        // OFFSET/INDIRECT can recompute a helper via evaluate_cell before this
+        // loop reaches it; that cell never entered `stale`.
+        for &position in &affected {
+            if seeded.contains(&position) || self.change_key(position) != before[&position] {
+                changed.insert(position);
+            }
+        }
+        changed.into_iter().collect()
     }
 
     /// Recomputes the whole affected set, used when a cycle prevents ordering.
