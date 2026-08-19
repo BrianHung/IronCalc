@@ -216,7 +216,6 @@ impl Model<'_> {
         }
         self.graph.replace_volatile(volatile_cells);
         self.graph.replace_nondeterministic(nondeterministic_cells);
-        self.graph.replace_dynamic_refs(HashSet::new());
         self.formula_cell_count = formula_cell_count;
     }
 
@@ -482,7 +481,7 @@ impl Model<'_> {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
         self.recompute_scope = None;
-        self.graph.after_incremental();
+        self.graph.after_pass();
         self.evaluate_conditional_formatting();
         EvalPass::Incremental
     }

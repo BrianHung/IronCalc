@@ -10,7 +10,7 @@ use crate::expressions::types::CellReferenceRC;
 use crate::expressions::utils;
 use crate::language::get_default_language;
 use crate::locale::get_default_locale;
-use crate::model::{CellStructure, DisplacementToken, Model};
+use crate::model::{CellStructure, Model};
 use crate::types::{ArrayKind, Cell, Link, Worksheet};
 
 /// Applies `map` to the (row, column) key of every link in the worksheet, so
@@ -321,13 +321,7 @@ impl<'a> Model<'a> {
                 // recompute. `record_structural_edit` shifts the existing edges
                 // (and falls back to full for edits the shift cannot model), so
                 // the next pass can run incrementally.
-                self.write_displaced_formula(
-                    DisplacementToken::structural(),
-                    sheet,
-                    row,
-                    column,
-                    format!("={formula_displaced}"),
-                )?;
+                self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
             };
         }
         Ok(())
@@ -515,13 +509,7 @@ impl<'a> Model<'a> {
             // otherwise identical. The rewritten formula holds no cached value, so
             // mark it dirty at the pre-shift position; the later shift moves that
             // mark to the target, ensuring the incremental pass evaluates it.
-            self.write_displaced_formula(
-                DisplacementToken::structural(),
-                sheet,
-                target_row,
-                target_column,
-                format!("={formula}"),
-            )?;
+            self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
             self.graph.mark_dirty((sheet, source_row, source_column));
         } else {
             self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
@@ -537,11 +525,10 @@ impl<'a> Model<'a> {
     }
 
     /// Keeps the dependency graph in step with a structural edit. A row or column
-    /// insert or delete shifts every stored position (edges, volatiles, arrays,
-    /// dynamic refs) and formula `HYPERLINK` results in one pass. A move or cell
-    /// displacement, which the shift does not model, forces a full recompute. The
-    /// match is exhaustive so a new `DisplaceData` variant cannot silently skip
-    /// graph maintenance.
+    /// insert or delete shifts stored positions and formula `HYPERLINK` results.
+    /// A move or cell displacement, which the shift does not model, forces a full
+    /// recompute. The match is exhaustive so a new `DisplaceData` variant cannot
+    /// silently skip graph maintenance.
     fn record_structural_edit(&mut self, disp: &DisplaceData) {
         let (sheet, axis, boundary, delta) = match *disp {
             DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
@@ -560,7 +547,7 @@ impl<'a> Model<'a> {
             DisplaceData::None => return,
         };
         self.shift_dynamic_links(sheet, axis, boundary, delta);
-        let _ = self.graph.structural_edit(sheet, axis, boundary, delta);
+        self.graph.structural_edit(sheet, axis, boundary, delta);
     }
 
     /// Moves formula `HYPERLINK` results with their cells. Worksheet links are

@@ -242,17 +242,6 @@ pub struct Model<'a> {
     pub(crate) formula_cell_count: usize,
 }
 
-/// Crate-private token required to rewrite a formula without rebuilding the graph.
-pub(crate) struct DisplacementToken {
-    _priv: (),
-}
-
-impl DisplacementToken {
-    pub(crate) fn structural() -> Self {
-        Self { _priv: () }
-    }
-}
-
 // FIXME: Maybe this should be the same as CellReference
 /// A struct pointing to a cell
 pub struct CellIndex {
@@ -2294,10 +2283,9 @@ impl<'a> Model<'a> {
         self.write_formula_bytes(sheet, row, column, formula)
     }
 
-    /// Rewrite a formula after a structural displacement.
+    /// Rewrite a formula after a structural displacement. Does not rebuild the graph.
     pub(crate) fn write_displaced_formula(
         &mut self,
-        DisplacementToken { .. }: DisplacementToken,
         sheet: u32,
         row: i32,
         column: i32,
@@ -3147,8 +3135,8 @@ impl<'a> Model<'a> {
         self
     }
 
-    /// Forces the next evaluation to be a full recompute. Callers use this after
-    /// a change the incremental graph does not model (a structural edit).
+    /// Forces the next evaluation to be a full recompute. Used by undo, clipboard,
+    /// and sheet ops the graph does not model.
     pub(crate) fn force_full_recompute(&mut self) {
         self.graph.force_full();
     }
@@ -3222,7 +3210,7 @@ impl<'a> Model<'a> {
             self.collect_volatile_cells();
             self.build_dependency_graph();
         }
-        self.graph.after_full();
+        self.graph.after_pass();
     }
 
     /// Removes the content of every cell in the range but leaves the style.

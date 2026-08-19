@@ -195,21 +195,13 @@ impl SheetRanges {
     }
 }
 
-/// Walkability of the stored edges. One enum so built/forced/eligible flags
-/// cannot disagree.
+/// Walkability of the stored edges. One enum so built/forced flags cannot disagree.
 #[derive(Default)]
 enum GraphState {
-    #[default]
-    Empty,
     Ready {
         dirty: HashSet<Position>,
     },
-    MustRebuild,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum StructuralOutcome {
-    Shifted,
+    #[default]
     MustRebuild,
 }
 
@@ -235,13 +227,9 @@ impl Positions {
     }
 }
 
-/// Array/spill cells. Not [`DynamicRefs`]: `OFFSET` is not an array formula.
+/// Array/spill cells. `OFFSET` is not stored here.
 #[derive(Default)]
 pub(crate) struct ArrayCells(Positions);
-
-/// Cells whose static edges miss their target (`OFFSET`, `INDIRECT`).
-#[derive(Default)]
-pub(crate) struct DynamicRefs(Positions);
 
 /// Cells that re-roll every pass (`RAND`, `NOW`, …).
 #[derive(Default)]
@@ -257,16 +245,6 @@ impl ArrayCells {
     }
 
     fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-}
-
-impl DynamicRefs {
-    pub(crate) fn replace(&mut self, cells: HashSet<Position>) {
         self.0.replace(cells);
     }
 
@@ -322,7 +300,6 @@ pub(crate) struct DependencyGraph {
     state: GraphState,
     pub(crate) volatile: VolatileCells,
     pub(crate) arrays: ArrayCells,
-    pub(crate) dynamic_refs: DynamicRefs,
     pub(crate) nondeterministic: NondeterministicCells,
 }
 
@@ -350,7 +327,7 @@ impl DependencyGraph {
     }
 
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
-    /// incremental; `Empty` / `MustRebuild` stay full.
+    /// incremental; `MustRebuild` stays full.
     pub(crate) fn mark_dirty(&mut self, cell: Position) {
         if let GraphState::Ready { dirty } = &mut self.state {
             dirty.insert(cell);
@@ -368,8 +345,7 @@ impl DependencyGraph {
         !matches!(&self.state, GraphState::Ready { dirty } if !dirty.is_empty())
     }
 
-    /// True when this full pass is rebuilding after a shape change (or the first
-    /// pass), so its result is not expressible as a delta.
+    /// True when the graph is not ready: first pass or an unmodeled edit.
     #[cfg(test)]
     pub(crate) fn full_reflects_change(&self) -> bool {
         !matches!(self.state, GraphState::Ready { .. })
@@ -391,10 +367,6 @@ impl DependencyGraph {
 
     pub(crate) fn replace_arrays(&mut self, cells: HashSet<Position>) {
         self.arrays.replace(cells);
-    }
-
-    pub(crate) fn replace_dynamic_refs(&mut self, cells: HashSet<Position>) {
-        self.dynamic_refs.replace(cells);
     }
 
     pub(crate) fn replace_nondeterministic(&mut self, cells: HashSet<Position>) {
@@ -432,27 +404,19 @@ impl DependencyGraph {
     }
 
     /// Applies a row/column insert (`delta > 0`) or delete (`delta < 0`): marks
-    /// the dependents the edit can change, then shifts every stored position
-    /// (edges, dirty, volatiles, arrays, dynamic refs) in one pass.
-    pub(crate) fn structural_edit(
-        &mut self,
-        sheet: u32,
-        axis: Axis,
-        boundary: i32,
-        delta: i32,
-    ) -> StructuralOutcome {
+    /// the dependents the edit can change, then shifts every stored position.
+    pub(crate) fn structural_edit(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
         // A delete that shrinks a tracked range would need the range clamped.
         if delta < 0 && self.range_overlaps_band(sheet, axis, boundary, delta) {
             self.state = GraphState::MustRebuild;
-            return StructuralOutcome::MustRebuild;
+            return;
         }
         if !matches!(self.state, GraphState::Ready { .. }) {
             self.state = GraphState::MustRebuild;
-            return StructuralOutcome::MustRebuild;
+            return;
         }
         self.mark_structural_dependents(sheet, axis, boundary);
         self.shift(sheet, axis, boundary, delta);
-        StructuralOutcome::Shifted
     }
 
     /// Marks the dependents a structural edit at `boundary` can change: those
@@ -526,19 +490,11 @@ impl DependencyGraph {
         }
         self.volatile.shift(shift_pos);
         self.arrays.shift(shift_pos);
-        self.dynamic_refs.shift(shift_pos);
         self.nondeterministic.shift(shift_pos);
     }
 
-    /// Resets pending state after a full pass, which rebuilt the edges.
-    pub(crate) fn after_full(&mut self) {
-        self.state = GraphState::Ready {
-            dirty: HashSet::new(),
-        };
-    }
-
-    /// Resets pending state after an incremental pass.
-    pub(crate) fn after_incremental(&mut self) {
+    /// Marks the graph ready after a pass that left the edges valid.
+    pub(crate) fn after_pass(&mut self) {
         self.state = GraphState::Ready {
             dirty: HashSet::new(),
         };
@@ -559,7 +515,7 @@ mod tests {
         assert!(graph.full_reflects_change());
         assert!(graph.should_recompute_full());
 
-        graph.after_full();
+        graph.after_pass();
         assert!(!graph.full_reflects_change());
         assert!(graph.should_recompute_full()); // Ready, nothing dirty
 
