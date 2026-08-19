@@ -582,14 +582,16 @@ impl Model<'_> {
         };
         // OFFSET/INDIRECT run after the static frontier so they read updated
         // targets, then their dependents pick up the new value. They have no
-        // static edges through a helper, so invalidate the whole cone first:
-        // otherwise A1=OFFSET(...) can read D2=E2 while D2 is still Evaluated.
+        // static edges through a helper, so drop the eval memo on the whole
+        // cone first: otherwise A1=OFFSET(...) can read D2=E2 while D2 is still
+        // Evaluated. Keep links: a HYPERLINK dependent that the frontier then
+        // skips would otherwise lose its URL.
         if !dyn_seeds.is_empty() {
             // Phase 1 may have memoized SUM over a range that still held a
             // stale OFFSET value. Drop those memos before OFFSET runs.
             self.range_reduce_cache.clear();
             for &position in &dyn_cone {
-                self.invalidate(position);
+                self.cells.remove(&position);
             }
             let dyn_changed = match self.graph.topo_order(&dyn_cone) {
                 Some(order) => self.recompute_frontier(dyn_cone, &dyn_seeds, order),
