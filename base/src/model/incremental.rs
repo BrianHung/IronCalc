@@ -13,6 +13,8 @@ use super::{CellOrRange, ParsedDefinedName};
 #[cfg(feature = "recalc_verify")]
 use crate::cell::CellValue;
 use crate::dependency_graph::Position;
+#[cfg(feature = "recalc_verify")]
+use crate::dependency_graph::RecalcMode;
 use crate::expressions::parser::Node;
 use crate::expressions::types::CellReferenceIndex;
 use crate::functions::Function;
@@ -455,9 +457,8 @@ impl Model<'_> {
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
-        if self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
-            && affected.len() * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
-        {
+        // Verify skips this: it is a performance fallback, not a correctness one.
+        if self.should_fallback_fanout(affected.len()) {
             self.evaluate_full();
             return EvalPass::Full;
         }
@@ -484,5 +485,16 @@ impl Model<'_> {
         self.graph.after_pass();
         self.evaluate_conditional_formatting();
         EvalPass::Incremental
+    }
+
+    /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
+    /// the incremental path so the oracle still compares the two.
+    fn should_fallback_fanout(&self, fanout: usize) -> bool {
+        #[cfg(feature = "recalc_verify")]
+        if self.recalc_mode == RecalcMode::Verify {
+            return false;
+        }
+        self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
+            && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
     }
 }

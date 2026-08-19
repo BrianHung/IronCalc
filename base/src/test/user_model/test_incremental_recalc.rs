@@ -419,6 +419,24 @@ fn incremental_tracks_dynamic_range_operator() {
 }
 
 #[test]
+fn incremental_insert_below_dynamic_array_rebuilds_spill() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("B2", "2");
+    model._set("A1", "=B1:B2"); // spills A1:A2
+    model._set("Z1", "0");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2");
+
+    model._set("Z1", "1"); // dirty an unrelated cell
+    model.insert_rows(0, 6, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2"); // spill restored, not #ERROR!
+}
+
+#[test]
 fn incremental_undo_under_pause_stays_correct() {
     let mut model = UserModel::new_empty("m", "en", "UTC", "en")
         .unwrap()
