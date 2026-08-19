@@ -341,7 +341,7 @@ impl<'a> Model<'a> {
             self.language,
         );
         if formula != formula_displaced {
-            self.update_cell_with_formula(sheet, row, column, format!("={formula_displaced}"))?;
+            self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
         }
         Ok(())
     }

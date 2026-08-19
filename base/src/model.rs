@@ -2256,6 +2256,31 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// Rewrite a formula after a structural displacement. Same write as
+    /// [`Self::update_cell_with_formula`], but kept as a separate path so a later
+    /// incremental graph can `force_full` only on user edits.
+    pub(crate) fn write_displaced_formula(
+        &mut self,
+        sheet: u32,
+        row: i32,
+        column: i32,
+        formula: String,
+    ) -> Result<(), String> {
+        let mut style_index = self.get_cell_style_index(sheet, row, column)?;
+        if self.workbook.styles.style_is_quote_prefix(style_index) {
+            style_index = self
+                .workbook
+                .styles
+                .get_style_without_quote_prefix(style_index)?;
+        }
+        if let Some(new_formula) = self.formula_without_prefix(&formula) {
+            self.set_cell_with_formula(sheet, row, column, new_formula, style_index)?;
+            Ok(())
+        } else {
+            Err(format!("\"{formula}\" is not a valid formula"))
+        }
+    }
+
     // If we are writing in (sheet, row, column). If it is:
     // - A single cell => do nothing
     // - Part of an array formula => we bail
