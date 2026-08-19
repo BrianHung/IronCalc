@@ -397,6 +397,31 @@ fn incremental_offset_does_not_force_full_on_unrelated_edit() {
 }
 
 #[test]
+fn incremental_hyperlink_over_offset_keeps_link_on_unrelated_edit() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "http://a.com");
+    model._set("A1", "=OFFSET(C1,0,0)");
+    model._set("B1", "=HYPERLINK(A1,\"click\")");
+    model._set("Z1", "1");
+    model.evaluate();
+    let dynamic_at = |model: &crate::Model| {
+        model
+            .get_links_list(0)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.dynamic)
+            .map(|l| (l.row, l.column))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dynamic_at(&model), vec![(1, 2)]); // B1
+
+    model._set("Z1", "2"); // A1 unchanged; B1 must not lose its URL
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "click");
+    assert_eq!(dynamic_at(&model), vec![(1, 2)]);
+}
+
+#[test]
 fn incremental_set_locale_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
