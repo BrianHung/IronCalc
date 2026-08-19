@@ -2,7 +2,7 @@
 #![allow(clippy::panic)]
 
 use crate::test::util::{incremental_mode, new_empty_model};
-use crate::{ChangedSinceRead, RecalcMode, UserModel};
+use crate::{ChangedSinceRead, UserModel};
 
 #[test]
 fn incremental_matches_full_on_a_chain() {
@@ -337,6 +337,42 @@ fn incremental_chained_offset_reads_updated_target() {
 }
 
 #[test]
+fn incremental_offset_through_helper_reads_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("F2", "=C1");
+    model._set("E2", "=OFFSET(F1,1,0)"); // reads F2
+    model._set("D2", "=E2"); // static helper — in the cone, not a seed
+    model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+
+    model._set("C1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("E2"), "20");
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A1"), "20");
+}
+
+#[test]
+fn incremental_indirect_through_helper_reads_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("F2", "=C1");
+    model._set("E2", "=INDIRECT(\"F2\")");
+    model._set("D2", "=E2");
+    model._set("A1", "=INDIRECT(\"D2\")");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+
+    model._set("C1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("E2"), "20");
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A1"), "20");
+}
+
+#[test]
 fn incremental_offset_does_not_force_full_on_unrelated_edit() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("C1", "10");
@@ -480,6 +516,24 @@ fn incremental_tracks_dynamic_range_operator() {
 }
 
 #[test]
+fn incremental_insert_below_dynamic_array_rebuilds_spill() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("B2", "2");
+    model._set("A1", "=B1:B2"); // spills A1:A2
+    model._set("Z1", "0");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2");
+
+    model._set("Z1", "1"); // dirty an unrelated cell
+    model.insert_rows(0, 6, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2"); // spill restored, not #ERROR!
+}
+
+#[test]
 fn incremental_undo_under_pause_stays_correct() {
     let mut model = UserModel::new_empty("m", "en", "UTC", "en")
         .unwrap()
@@ -553,8 +607,7 @@ fn take_changed_cells_reports_structural_edit_delta() {
 
 #[test]
 fn take_changed_cells_survives_redundant_evaluate() {
-    // Delta API: a second evaluate under Verify resets the per-pass record.
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
     model._set("B1", "=A1*2");
     model.evaluate();
@@ -718,8 +771,16 @@ fn incremental_propagates_error_to_text_transition() {
     assert_eq!(model._get_text("B1"), "#DIV/0!");
     assert_eq!(model._get_text("C1"), "TRUE");
 
+    let _ = model.take_changed_cells();
     model._set("A1", "0"); // falsy: B1 becomes the literal text "#DIV/0!"
     model.evaluate();
     assert_eq!(model._get_text("B1"), "#DIV/0!"); // same string, now text
     assert_eq!(model._get_text("C1"), "FALSE"); // dependent must flip
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(1, 2))); // B1 type-only
+    assert!(changed.contains(&(1, 3))); // C1 dependent
 }

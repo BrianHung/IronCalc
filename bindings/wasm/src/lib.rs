@@ -203,24 +203,28 @@ impl Model {
     }
 
     /// Returns the cells recomputed by incremental evaluations since the last
-    /// call, and clears the record. Returns `null` when a full recompute has
-    /// run, meaning every cell may have changed. Only meaningful for a model
-    /// constructed with `RecalcMode.Incremental`.
+    /// call, and clears the record. `{ kind: "everything" }` after a full
+    /// recompute; `{ kind: "cells", cells: [...] }` for an incremental delta
+    /// (possibly empty). These are not the same answer, so this is not `null`.
+    /// Only meaningful for a model constructed with `RecalcMode.Incremental`.
     #[wasm_bindgen(
         js_name = "takeChangedCells",
-        unchecked_return_type = "CellReferenceIndex[] | null"
+        unchecked_return_type = "{ kind: 'everything' } | { kind: 'cells', cells: CellReferenceIndex[] }"
     )]
     pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
-        // JS keeps `null` for a full pass and an array for an incremental delta.
-        let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
-        match self.model.take_changed_cells() {
-            ChangedSinceRead::Everything => {
-                Option::<Vec<ironcalc_base::expressions::types::CellReferenceIndex>>::None
-                    .serialize(&serializer)
-            }
-            ChangedSinceRead::Cells(cells) => cells.serialize(&serializer),
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "camelCase")]
+        enum ChangedSinceReadJs {
+            Everything,
+            Cells {
+                cells: Vec<ironcalc_base::expressions::types::CellReferenceIndex>,
+            },
         }
-        .map_err(|e| to_js_error(e.to_string()))
+        let payload = match self.model.take_changed_cells() {
+            ChangedSinceRead::Everything => ChangedSinceReadJs::Everything,
+            ChangedSinceRead::Cells(cells) => ChangedSinceReadJs::Cells { cells },
+        };
+        serde_wasm_bindgen::to_value(&payload).map_err(|e| to_js_error(e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "resumeEvaluation")]

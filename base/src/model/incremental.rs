@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use super::{CellOrRange, ChangedCells, ChangedSinceRead, ParsedDefinedName};
 use crate::cell::CellValue;
 use crate::dependency_graph::Position;
+#[cfg(feature = "recalc_verify")]
+use crate::dependency_graph::RecalcMode;
 use crate::expressions::parser::Node;
 use crate::expressions::types::CellReferenceIndex;
 use crate::functions::Function;
@@ -432,47 +434,45 @@ impl Model<'_> {
     /// Backs [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn verify_incremental_matches_full(&mut self) {
-        // Only meaningful when the run was actually incremental: a full fallback
-        // has nothing to check, and a second full re-rolls volatiles into false diffs.
         let before = self.render_snapshot();
-        // Arm delta tracking for this pass so the completeness check below runs on
-        // every evaluate, not only after a consumer has called `take_changed_cells`.
-        // Scoped to the verify build, so it never affects the shipped delta.
-        // Fresh delta for this pass. Accumulating across evaluates would hide a
-        // miss on pass 2 if the cell was recorded on pass 1.
-        self.changed_cells = ChangedCells::Delta(HashSet::new());
-        if !matches!(self.evaluate_selective(), EvalPass::Incremental) {
-            return;
-        }
-        let incremental = self.render_snapshot();
-        // Volatiles (RAND, NOW) re-roll every pass and are always seeded into the
-        // delta, so exclude them from both checks.
-        let tainted = self
-            .graph
-            .reachable(self.graph.nondeterministic.iter().collect());
-        // Delta completeness: every non-volatile cell whose observable state
-        // (value, type, link, conditional format) moved must be in the delta.
-        if let ChangedCells::Delta(delta) = &self.changed_cells {
-            for position in before.keys().chain(incremental.keys()) {
-                let changed = before.get(position) != incremental.get(position);
-                assert!(
-                    tainted.contains(position) || !changed || delta.contains(position),
-                    "cell {position:?} changed but is missing from the delta"
-                );
+        // Completeness must run even if no consumer called take_changed_cells;
+        // a fresh delta so a miss on this pass cannot hide behind an earlier one.
+        let consumer = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
+        let pass = self.evaluate_selective();
+        let this_pass =
+            std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
+        if matches!(pass, EvalPass::Incremental) {
+            let incremental = self.render_snapshot();
+            // RAND/NOW/TODAY re-roll. OFFSET/INDIRECT are volatile but deterministic.
+            let tainted = self
+                .graph
+                .reachable(self.graph.nondeterministic.iter().collect());
+            if let ChangedCells::Delta(delta) = &this_pass {
+                for position in before.keys().chain(incremental.keys()) {
+                    let changed = before.get(position) != incremental.get(position);
+                    assert!(
+                        tainted.contains(position) || !changed || delta.contains(position),
+                        "cell {position:?} changed but is missing from the delta"
+                    );
+                }
             }
+            self.changed_cells = merge_changed_cells(consumer, this_pass);
+            self.evaluate_full();
+            let full = self.render_snapshot();
+            let strip = |mut snapshot: RenderSnapshot| {
+                snapshot.retain(|position, _| !tainted.contains(position));
+                snapshot
+            };
+            assert_eq!(
+                strip(incremental),
+                strip(full),
+                "incremental recalc diverged from full recompute"
+            );
+        } else {
+            // A full fallback has nothing to compare; a second full re-rolls RAND/NOW.
+            // Still restore the consumer delta so a redundant evaluate is not a miss.
+            self.changed_cells = merge_changed_cells(consumer, this_pass);
         }
-        // Value equivalence: incremental and full must agree on the same state.
-        self.evaluate_full();
-        let full = self.render_snapshot();
-        let strip = |mut snapshot: RenderSnapshot| {
-            snapshot.retain(|position, _| !tainted.contains(position));
-            snapshot
-        };
-        assert_eq!(
-            strip(incremental),
-            strip(full),
-            "incremental recalc diverged from full recompute"
-        );
     }
 
     /// Every cell's full observable state (value/type/link + conditional format),
@@ -555,10 +555,8 @@ impl Model<'_> {
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
-        let fanout = affected.len().max(dyn_cone.len());
-        if self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
-            && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
-        {
+        // Verify skips this: it is a performance fallback, not a correctness one.
+        if self.should_fallback_fanout(affected.len().max(dyn_cone.len())) {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
@@ -582,11 +580,10 @@ impl Model<'_> {
         };
         // OFFSET/INDIRECT run after the static frontier so they read updated
         // targets, then their dependents pick up the new value. They have no
-        // static edges to each other, so invalidate every dynamic ref first:
-        // otherwise A1=OFFSET(...) can read D2=OFFSET(...) while D2 is still
-        // Evaluated from the last pass.
+        // static edges through a helper, so invalidate the whole cone first:
+        // otherwise A1=OFFSET(...) can read D2=E2 while D2 is still Evaluated.
         if !dyn_seeds.is_empty() {
-            for &position in &dyn_seeds {
+            for &position in &dyn_cone {
                 self.invalidate(position);
             }
             let dyn_changed = match self.graph.topo_order(&dyn_cone) {
@@ -709,5 +706,28 @@ impl Model<'_> {
                 .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })
                 .collect(),
         )
+    }
+
+    /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
+    /// the incremental path so the oracle still compares the two.
+    fn should_fallback_fanout(&self, fanout: usize) -> bool {
+        #[cfg(feature = "recalc_verify")]
+        if self.recalc_mode == RecalcMode::Verify {
+            return false;
+        }
+        self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
+            && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
+    }
+}
+
+/// Unions two change records. `All` wins; otherwise the cells are merged.
+#[cfg(feature = "recalc_verify")]
+fn merge_changed_cells(consumer: ChangedCells, this_pass: ChangedCells) -> ChangedCells {
+    match (consumer, this_pass) {
+        (ChangedCells::All, _) | (_, ChangedCells::All) => ChangedCells::All,
+        (ChangedCells::Delta(mut a), ChangedCells::Delta(b)) => {
+            a.extend(b);
+            ChangedCells::Delta(a)
+        }
     }
 }
