@@ -3455,6 +3455,13 @@ impl<'a> Model<'a> {
             result
         };
 
+        // Insert/delete always tear the spill down. The incremental path can
+        // skip those Unevaluated anchors when something else is dirty, so force
+        // the next pass to rebuild them in the full spill order.
+        if !anchors.is_empty() {
+            self.graph.force_full();
+        }
+
         for (row, column, f, s, width, height) in anchors {
             let ws = self.workbook.worksheet_mut(sheet)?;
             // Reset the anchor cell to DynamicFormula with r = (1, 1)

@@ -15,11 +15,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CellOrRange, Model};
 use crate::calc_result::CalcResult;
+use crate::dependency_graph::Area;
 use crate::expressions::types::CellReferenceIndex;
-
-/// `(sheet, row1, column1, row2, column2)`, normalized so `row1 <= row2` and
-/// `column1 <= column2`, matching how references are collected.
-pub(crate) type Area = (u32, i32, i32, i32, i32);
 
 /// Per-pass memo of range reductions, keyed by range and reducer.
 pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), RangeAgg>;
