@@ -4,7 +4,6 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,6 +38,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Rust Tests
         run: make test-rust
+      # Runs every evaluate both incrementally and fully and checks the two
+      # match, so a missing dependency shows up here as a failure.
+      - name: Incremental recalc check (Verify)
+        run: IRONCALC_RECALC=verify cargo test -p ironcalc_base --features recalc_verify
   test-js:
     runs-on: ubuntu-latest
     steps:

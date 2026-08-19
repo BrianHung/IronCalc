@@ -14,11 +14,31 @@ use ironcalc_base::{
     },
     types::{CellType, Color, Link, Style, StyleIncludes},
     worksheet::NavigationDirection,
-    BorderArea, ClipboardData, UserModel as BaseModel,
+    BorderArea, ClipboardData, RecalcMode as BaseRecalcMode, UserModel as BaseModel,
 };
 
 fn to_js_error(error: String) -> JsError {
     JsError::new(&error.to_string())
+}
+
+/// How a model recomputes on [`Model::evaluate`]: `Full` recomputes every cell
+/// (the default and original behavior); `Incremental` recomputes only the cells
+/// an edit affects, falling back to full for edits it does not yet model. Chosen
+/// per model at construction and fixed for its lifetime.
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum RecalcMode {
+    Full,
+    Incremental,
+}
+
+impl From<RecalcMode> for BaseRecalcMode {
+    fn from(mode: RecalcMode) -> Self {
+        match mode {
+            RecalcMode::Full => BaseRecalcMode::Full,
+            RecalcMode::Incremental => BaseRecalcMode::Incremental,
+        }
+    }
 }
 
 /// Return an array with a list of all the tokens from a formula
@@ -113,6 +133,13 @@ fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_owned().into_boxed_str())
 }
 
+fn apply_recalc_mode(model: BaseModel<'static>, mode: Option<RecalcMode>) -> BaseModel<'static> {
+    match mode {
+        Some(mode) => model.with_recalc_mode(mode.into()),
+        None => model,
+    }
+}
+
 #[wasm_bindgen]
 pub struct Model {
     model: BaseModel<'static>,
@@ -126,6 +153,7 @@ impl Model {
         locale: &str,
         timezone: &str,
         language_id: &str,
+        recalc_mode: Option<RecalcMode>,
     ) -> Result<Model, JsError> {
         let name = leak_str(name);
         let locale = leak_str(locale);
@@ -133,13 +161,21 @@ impl Model {
         let language_id = leak_str(language_id);
         let model =
             BaseModel::new_empty(name, locale, timezone, language_id).map_err(to_js_error)?;
-        Ok(Model { model })
+        Ok(Model {
+            model: apply_recalc_mode(model, recalc_mode),
+        })
     }
 
-    pub fn from_bytes(bytes: &[u8], language_id: &str) -> Result<Model, JsError> {
+    pub fn from_bytes(
+        bytes: &[u8],
+        language_id: &str,
+        recalc_mode: Option<RecalcMode>,
+    ) -> Result<Model, JsError> {
         let language_id = leak_str(language_id);
         let model = BaseModel::from_bytes(bytes, language_id).map_err(to_js_error)?;
-        Ok(Model { model })
+        Ok(Model {
+            model: apply_recalc_mode(model, recalc_mode),
+        })
     }
 
     pub fn undo(&mut self) -> Result<(), JsError> {

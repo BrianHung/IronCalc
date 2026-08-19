@@ -1,6 +1,7 @@
 use crate::cf_types::{CfRule, Cfvo};
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
+use crate::dependency_graph::Axis;
 use crate::expressions::parser::displace::displace_node;
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::expressions::parser::stringify::{
@@ -553,6 +554,17 @@ impl<'a> Model<'a> {
                 height,
                 &formula_or_value,
             )?;
+        } else if let Some(formula) = formula_or_value.strip_prefix('=') {
+            // Relocating a formula only moves it; its references are shifted by
+            // the surrounding displacement. Write it graph-neutrally (rather than
+            // through `set_user_input`, which forces a full recompute for any
+            // formula) so the structural edit's edge shift can keep the next pass
+            // incremental. The source style is re-applied below, so the cell is
+            // otherwise identical. The rewritten formula holds no cached value, so
+            // mark it dirty at the pre-shift position; the later shift moves that
+            // mark to the target, ensuring the incremental pass evaluates it.
+            self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
+            self.graph.mark_dirty((sheet, source_row, source_column));
         } else {
             self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
         }
@@ -564,6 +576,44 @@ impl<'a> Model<'a> {
         // delete source cell content and style
         worksheet.remove_cell(source_row, source_column)?;
         Ok(())
+    }
+
+    /// Keeps the dependency graph in step with a structural edit. A row or column
+    /// insert or delete shifts stored positions and formula `HYPERLINK` results.
+    /// A move or cell displacement, which the shift does not model, forces a full
+    /// recompute. The match is exhaustive so a new `DisplaceData` variant cannot
+    /// silently skip graph maintenance.
+    fn record_structural_edit(&mut self, disp: &DisplaceData) {
+        let (sheet, axis, boundary, delta) = match *disp {
+            DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
+            DisplaceData::Column {
+                sheet,
+                column,
+                delta,
+            } => (sheet, Axis::Column, column, delta),
+            DisplaceData::RowMove { .. }
+            | DisplaceData::ColumnMove { .. }
+            | DisplaceData::CellHorizontal { .. }
+            | DisplaceData::CellVertical { .. } => {
+                self.graph.force_full();
+                return;
+            }
+            DisplaceData::None => return,
+        };
+        self.shift_dynamic_links(sheet, axis, boundary, delta);
+        self.graph.structural_edit(sheet, axis, boundary, delta);
+    }
+
+    /// Moves formula `HYPERLINK` results with their cells. Worksheet links are
+    /// displaced separately; this map is not on the graph.
+    fn shift_dynamic_links(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        self.links = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter_map(|(pos, link)| {
+                crate::dependency_graph::shift_position(sheet, axis, boundary, delta, pos)
+                    .map(|pos| (pos, link))
+            })
+            .collect();
     }
 
     /// Inserts one or more new columns into the model at the specified index.
@@ -630,6 +680,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         // In the list of columns:
         // * Keep all the columns to the left
@@ -732,6 +783,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
 
         // deletes all the column styles
@@ -984,6 +1036,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         Ok(())
     }
@@ -1065,6 +1118,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1221,6 +1275,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1367,6 +1422,7 @@ impl<'a> Model<'a> {
         let disp = DisplaceData::RowMove { sheet, row, delta };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 

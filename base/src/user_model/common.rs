@@ -385,6 +385,14 @@ impl<'a> UserModel<'a> {
         self.model.evaluate()
     }
 
+    /// Chooses the recalculation strategy for the model's lifetime. See
+    /// [`RecalcMode`](crate::RecalcMode). Meant to be chained onto a constructor.
+    #[must_use]
+    pub fn with_recalc_mode(mut self, mode: crate::RecalcMode) -> Self {
+        self.model = self.model.with_recalc_mode(mode);
+        self
+    }
+
     /// Returns the list of pending diffs and removes them from the queue
     ///
     /// This is used together with [apply_external_diffs](UserModel::apply_external_diffs) to keep two remote models
@@ -1264,6 +1272,8 @@ impl<'a> UserModel<'a> {
         column_count: i32,
         delta: i32,
     ) -> Result<(), String> {
+        // Structural changes move formulas, invalidating the dependency graph.
+        self.model.force_full_recompute();
         if delta == 0 || column_count <= 0 {
             return Ok(());
         }
@@ -1305,6 +1315,8 @@ impl<'a> UserModel<'a> {
         row_count: i32,
         delta: i32,
     ) -> Result<(), String> {
+        // Structural changes move formulas, invalidating the dependency graph.
+        self.model.force_full_recompute();
         if delta == 0 || row_count <= 0 {
             return Ok(());
         }
