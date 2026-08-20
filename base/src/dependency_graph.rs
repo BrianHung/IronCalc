@@ -232,7 +232,8 @@ impl Positions {
 #[derive(Default)]
 pub(crate) struct ArrayCells(Positions);
 
-/// Cells that re-roll every pass (`RAND`, `NOW`, …).
+/// Volatile formulas (`RAND`, `NOW`, `OFFSET`, …). Only RAND/NOW/TODAY re-roll;
+/// `OFFSET` recomputes because static edges miss the cell it actually reads.
 #[derive(Default)]
 pub(crate) struct VolatileCells(Positions);
 
@@ -375,8 +376,9 @@ impl DependencyGraph {
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
-    /// not touch the dirty set. Verify uses it on the RAND/NOW/TODAY cone only;
-    /// `OFFSET`/`INDIRECT` are deterministic and stay in the compare.
+    /// not touch the dirty set. Verify uses it on the RAND/NOW/TODAY cone only.
+    /// `OFFSET` is not stripped (it is compared when the pass is Incremental).
+    /// `INDIRECT` is a 1×1 dynamic array, so that cone is Full and is not compared.
     pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
         let mut affected = HashSet::new();
         let mut stack = seeds;
