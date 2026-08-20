@@ -172,6 +172,8 @@ fn incremental_structural_edit_below_volatile_stays_incremental() {
     // incremental.
     model.insert_rows(0, 5, 1).unwrap();
     assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("C11"), "2");
 }
 
 #[test]
@@ -316,6 +318,42 @@ fn incremental_offset_reads_dynamic_target() {
 }
 
 #[test]
+fn incremental_offset_through_helper_reads_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("F2", "=C1");
+    model._set("E2", "=OFFSET(F1,1,0)"); // reads F2
+    model._set("D2", "=E2"); // static helper — in the cone, not a seed
+    model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+
+    model._set("C1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("E2"), "20");
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A1"), "20");
+}
+
+#[test]
+fn incremental_indirect_through_helper_reads_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("F2", "=C1");
+    model._set("E2", "=INDIRECT(\"F2\")");
+    model._set("D2", "=E2");
+    model._set("A1", "=INDIRECT(\"D2\")");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+
+    model._set("C1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("E2"), "20");
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A1"), "20");
+}
+
+#[test]
 fn incremental_set_locale_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
@@ -431,9 +469,27 @@ fn incremental_insert_below_dynamic_array_rebuilds_spill() {
 
     model._set("Z1", "1"); // dirty an unrelated cell
     model.insert_rows(0, 6, 1).unwrap();
+    assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2"); // spill restored, not #ERROR!
+    assert_eq!(model._get_text("A2"), "2"); // spill left intact, not #ERROR!
+}
+
+#[test]
+fn incremental_insert_below_dynamic_array_and_volatile_stays_incremental() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("B2", "2");
+    model._set("A1", "=B1:B2"); // spills A1:A2, entirely above the insert
+    model._set("C10", "=1+1");
+    model.evaluate();
+
+    model.insert_rows(0, 5, 1).unwrap();
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2");
+    assert_eq!(model._get_text("C11"), "2");
 }
 
 #[test]

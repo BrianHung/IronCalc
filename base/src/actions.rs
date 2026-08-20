@@ -594,7 +594,7 @@ impl<'a> Model<'a> {
                     .to_string(),
             );
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, column)?;
         let worksheet = self.workbook.worksheet(sheet)?;
         let all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
         for row in all_rows {
@@ -686,7 +686,7 @@ impl<'a> Model<'a> {
             );
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, column)?;
         // first column being deleted
         let column_start = column;
         // last column being deleted
@@ -931,7 +931,7 @@ impl<'a> Model<'a> {
             );
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, row)?;
         // Move cells
         let worksheet = &self.workbook.worksheet(sheet)?;
         let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
@@ -1008,7 +1008,7 @@ impl<'a> Model<'a> {
             return Err("Cannot delete rows because that would break an array formula".to_string());
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, row)?;
         // Move cells
         let worksheet = &self.workbook.worksheet(sheet)?;
         let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
@@ -1565,7 +1565,7 @@ impl<'a> Model<'a> {
                 "Cannot move columns because that would split an array formula".to_string(),
             );
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, 1)?;
 
         // Move columns in the correct order
         if delta > 0 {
@@ -1608,7 +1608,7 @@ impl<'a> Model<'a> {
         if !self.can_move_rows_action(sheet, row, row_count, delta)? {
             return Err("Cannot move rows because that would split an array formula".to_string());
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, 1)?;
 
         // Move rows in the correct order
         if delta > 0 {
