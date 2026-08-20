@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CellOrRange, Model};
 use crate::calc_result::CalcResult;
-use crate::dependency_graph::Area;
+use crate::dependency_graph::{Area, RecalcMode};
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 
@@ -148,6 +148,19 @@ impl Model<'_> {
         column2: i32,
         reducer: RangeReducer,
     ) -> RangeAgg {
+        // Default Full must match pre-composition fn_sum: one accumulator,
+        // left-to-right then down. Per-row subtotals re-associate floats.
+        if self.recalc_mode == RecalcMode::Full {
+            return self.reduce_range_direct(
+                sheet,
+                row1,
+                column1,
+                row2,
+                column2,
+                reducer,
+                reducer.identity(),
+            );
+        }
         let key = ((sheet, row1, column1, row2, column2), reducer);
         if let Some(agg) = self.cached_agg(&key) {
             return agg;
@@ -169,17 +182,20 @@ impl Model<'_> {
         }
         // Reuse the cached prefix for `row1..=base`, or scan that block directly.
         let base_key = ((sheet, row1, column1, base, column2), reducer);
+        let mut circ_seen = false;
         let mut acc = if let Some(agg) = self.cached_agg(&base_key) {
             agg
         } else {
             let mut acc = reducer.identity();
             for row in row1..=base {
-                acc = reducer.combine(acc, self.reduce_row(sheet, row, column1, column2, reducer));
+                let (row_agg, row_circ) = self.reduce_row(sheet, row, column1, column2, reducer);
+                circ_seen |= row_circ;
+                acc = reducer.combine(acc, row_agg);
                 if matches!(acc, RangeAgg::Error(_)) {
                     break;
                 }
             }
-            self.cache_agg(base_key, acc.clone());
+            self.cache_agg(base_key, acc.clone(), circ_seen);
             acc
         };
         // Fold the remaining rows one at a time, caching every prefix so that
@@ -188,11 +204,63 @@ impl Model<'_> {
         for row in (base + 1)..=row2 {
             let prefix_key = ((sheet, row1, column1, row, column2), reducer);
             if matches!(acc, RangeAgg::Error(_)) {
-                self.cache_agg(prefix_key, acc.clone());
+                self.cache_agg(prefix_key, acc.clone(), circ_seen);
                 continue;
             }
-            acc = reducer.combine(acc, self.reduce_row(sheet, row, column1, column2, reducer));
-            self.cache_agg(prefix_key, acc.clone());
+            let (row_agg, row_circ) = self.reduce_row(sheet, row, column1, column2, reducer);
+            circ_seen |= row_circ;
+            acc = reducer.combine(acc, row_agg);
+            self.cache_agg(prefix_key, acc.clone(), circ_seen);
+        }
+        acc
+    }
+
+    /// Streams the range into `acc` in Full, or combines `acc` with a composed
+    /// subtotal in Incremental. Full callers pass the outer SUM/MIN/COUNT
+    /// accumulator so `=SUM(5, A1:A3)` keeps pre-composition association.
+    pub(crate) fn fold_range(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        column1: i32,
+        row2: i32,
+        column2: i32,
+        reducer: RangeReducer,
+        acc: RangeAgg,
+    ) -> RangeAgg {
+        if self.recalc_mode == RecalcMode::Full {
+            return self.reduce_range_direct(sheet, row1, column1, row2, column2, reducer, acc);
+        }
+        reducer.combine(acc, self.reduce_range(sheet, row1, column1, row2, column2, reducer))
+    }
+
+    /// Pre-composition scan: one accumulator in row-major order. Used in Full
+    /// so default-mode users keep main's floating-point association.
+    fn reduce_range_direct(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        column1: i32,
+        row2: i32,
+        column2: i32,
+        reducer: RangeReducer,
+        mut acc: RangeAgg,
+    ) -> RangeAgg {
+        for row in row1..=row2 {
+            for column in column1..=column2 {
+                match self.evaluate_cell(CellReferenceIndex { sheet, row, column }) {
+                    CalcResult::Number(value) => {
+                        acc = reducer.combine(
+                            acc,
+                            RangeAgg::Number(reducer.contribution(value)),
+                        );
+                    }
+                    error @ CalcResult::Error { .. } if reducer.propagates_errors() => {
+                        return RangeAgg::Error(error);
+                    }
+                    _ => {}
+                }
+            }
         }
         acc
     }
@@ -204,8 +272,10 @@ impl Model<'_> {
             .cloned()
     }
 
-    fn cache_agg(&mut self, key: (Area, RangeReducer), agg: RangeAgg) {
-        if agg.cacheable() {
+    fn cache_agg(&mut self, key: (Area, RangeReducer), agg: RangeAgg, circ_seen: bool) {
+        // COUNT ignores errors, so a mid-cycle `#CIRC` becomes a Number.
+        // Caching that poisons later scans of the same range.
+        if !circ_seen && agg.cacheable() {
             self.range_reduce_cache.insert(key, agg);
         }
     }
@@ -227,17 +297,26 @@ impl Model<'_> {
         column1: i32,
         column2: i32,
         reducer: RangeReducer,
-    ) -> RangeAgg {
+    ) -> (RangeAgg, bool) {
         let mut acc = reducer.identity_value();
+        let mut circ_seen = false;
         for column in column1..=column2 {
             match self.evaluate_cell(CellReferenceIndex { sheet, row, column }) {
                 CalcResult::Number(value) => acc = reducer.merge(acc, reducer.contribution(value)),
+                error @ CalcResult::Error {
+                    error: Error::CIRC, ..
+                } => {
+                    circ_seen = true;
+                    if reducer.propagates_errors() {
+                        return (RangeAgg::Error(error), true);
+                    }
+                }
                 error @ CalcResult::Error { .. } if reducer.propagates_errors() => {
-                    return RangeAgg::Error(error);
+                    return (RangeAgg::Error(error), circ_seen);
                 }
                 _ => {}
             }
         }
-        RangeAgg::Number(acc)
+        (RangeAgg::Number(acc), circ_seen)
     }
 }

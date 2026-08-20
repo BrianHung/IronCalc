@@ -24,15 +24,16 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    match self.reduce_range(
+                    match self.fold_range(
                         left.sheet,
                         left.row,
                         left.column,
                         right.row,
                         right.column,
                         RangeReducer::Min,
+                        RangeAgg::Number(result),
                     ) {
-                        RangeAgg::Number(value) => result = value.min(result),
+                        RangeAgg::Number(value) => result = value,
                         RangeAgg::Error(error) => return error,
                     }
                 }
@@ -78,15 +79,16 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    match self.reduce_range(
+                    match self.fold_range(
                         left.sheet,
                         left.row,
                         left.column,
                         right.row,
                         right.column,
                         RangeReducer::Max,
+                        RangeAgg::Number(result),
                     ) {
-                        RangeAgg::Number(value) => result = value.max(result),
+                        RangeAgg::Number(value) => result = value,
                         RangeAgg::Error(error) => return error,
                     }
                 }
@@ -314,15 +316,16 @@ impl<'a> Model<'a> {
                             }
                         };
                     }
-                    match self.reduce_range(
+                    match self.fold_range(
                         left.sheet,
                         row1,
                         column1,
                         row2,
                         column2,
                         RangeReducer::Sum,
+                        RangeAgg::Number(result),
                     ) {
-                        RangeAgg::Number(value) => result += value,
+                        RangeAgg::Number(value) => result = value,
                         RangeAgg::Error(error) => return error,
                     }
                 }

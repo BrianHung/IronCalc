@@ -3187,7 +3187,8 @@ impl<'a> Model<'a> {
     fn evaluate_full(&mut self) {
         self.collect_spill_cells();
         // Range composition is Incremental/Verify only. Default Full skips the
-        // second AST walk and does not re-associate SUM vs. pre-composition.
+        // referenced-range walk; `reduce_range` streams into one accumulator
+        // so SUM/COUNT stay bit-identical to pre-composition.
         if self.recalc_mode != RecalcMode::Full {
             self.collect_referenced_ranges();
         }

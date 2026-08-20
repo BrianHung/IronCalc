@@ -1056,3 +1056,36 @@ fn range_composition_does_not_memoize_transient_circ() {
         assert_eq!(model._get_text("B1"), "6", "incremental={incremental}");
     }
 }
+
+#[test]
+fn full_mode_sum_matches_precomposition_association() {
+    let mut model = new_empty_model();
+    model.update_cell_with_number(0, 1, 1, 1e16).unwrap();
+    model.update_cell_with_number(0, 1, 2, 1.0).unwrap();
+    model.update_cell_with_number(0, 2, 1, -1e16).unwrap();
+    model.update_cell_with_number(0, 2, 2, 1.0).unwrap();
+    model._set("C1", "=SUM(A1:B2)");
+    model.evaluate();
+    // Row-major 1e16+1-1e16+1 = 1. Per-row composition yields 0.
+    assert_eq!(
+        model.get_cell_value_by_index(0, 1, 3).unwrap(),
+        crate::cell::CellValue::Number(1.0)
+    );
+}
+
+#[test]
+fn range_composition_does_not_memoize_transient_count_circ() {
+    for incremental in [false, true] {
+        let mut model = if incremental {
+            new_empty_model().with_recalc_mode(incremental_mode())
+        } else {
+            new_empty_model()
+        };
+        model._set("A1", "1");
+        model._set("A2", "=COUNT(A1:A2)");
+        model._set("B1", "=COUNT(A1:A2)");
+        model.evaluate();
+        assert_eq!(model._get_text("A2"), "1", "incremental={incremental}");
+        assert_eq!(model._get_text("B1"), "2", "incremental={incremental}");
+    }
+}
