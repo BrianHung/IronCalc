@@ -3,7 +3,7 @@ use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
 use crate::dependency_graph::Axis;
 use crate::expressions::parser::displace::displace_node;
-use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
+use crate::expressions::parser::static_analysis::{run_static_analysis_on_node, StaticResult};
 use crate::expressions::parser::stringify::{
     to_localized_string, to_rc_format, to_string_displaced, DisplaceData,
 };
@@ -358,6 +358,13 @@ impl<'a> Model<'a> {
         rc: String,
     ) -> Result<(), String> {
         let static_result = run_static_analysis_on_node(&node);
+        // Gated on CellFormula: displacement cannot grow a 1×1 range into a
+        // dynamic array, so this write skips the is_dynamic branch the parse
+        // path uses. Fail loud if that implicit chain ever breaks.
+        debug_assert!(
+            matches!(static_result, StaticResult::Scalar),
+            "in-place displace is CellFormula-only; a 1×1 cannot grow under displacement"
+        );
         let style = self.workbook.worksheet(sheet)?.get_style(row, column);
         let existing = self
             .workbook

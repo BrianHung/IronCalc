@@ -308,7 +308,7 @@ pub(crate) fn displace_resolved_coordinates(
             row: move_row,
             delta,
         } => {
-            if sheet_index == *sheet {
+            if sheet_index == *sheet && !full_row {
                 if row == *move_row {
                     row += *delta;
                 } else if *delta > 0 {
@@ -331,7 +331,7 @@ pub(crate) fn displace_resolved_coordinates(
             column: move_column,
             delta,
         } => {
-            if sheet_index == *sheet {
+            if sheet_index == *sheet && !full_column {
                 if column == *move_column {
                     column += *delta;
                 } else if *delta > 0 {

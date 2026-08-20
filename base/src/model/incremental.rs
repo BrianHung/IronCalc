@@ -85,6 +85,32 @@ fn is_nondeterministic_function(kind: &Function) -> bool {
     )
 }
 
+/// `A1:expr` at any depth. A root-only check misses `=SUM((A1):(A10))`.
+fn node_has_op_range(node: &Node) -> bool {
+    match node {
+        Node::OpRangeKind { .. } => true,
+        Node::FunctionKind { args, .. } | Node::NamedFunctionKind { args, .. } => {
+            args.iter().any(node_has_op_range)
+        }
+        Node::LambdaCallKind { lambda, args } => {
+            node_has_op_range(lambda) || args.iter().any(node_has_op_range)
+        }
+        Node::LambdaDefKind { body, .. } => node_has_op_range(body),
+        Node::OpConcatenateKind { left, right }
+        | Node::OpSumKind { left, right, .. }
+        | Node::OpProductKind { left, right, .. }
+        | Node::OpPowerKind { left, right }
+        | Node::CompareKind { left, right, .. } => {
+            node_has_op_range(left) || node_has_op_range(right)
+        }
+        Node::UnaryKind { right, .. } => node_has_op_range(right),
+        Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
+            node_has_op_range(child)
+        }
+        _ => false,
+    }
+}
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -120,8 +146,9 @@ impl Model<'_> {
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
         // A surviving `A1:expr` has a dynamic endpoint and is volatile even
-        // when `expr` itself is not a volatile function.
-        matches!(node, Node::OpRangeKind { .. })
+        // when `expr` itself is not a volatile function. Check every depth:
+        // `=SUM(A1:name)` nests `OpRangeKind` under `SUM`.
+        node_has_op_range(node)
             || self.node_matches_function(node, sheet, seen_names, is_volatile_function)
     }
 

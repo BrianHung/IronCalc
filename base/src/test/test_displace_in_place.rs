@@ -114,3 +114,21 @@ fn serialize_round_trip_after_structural_edit() {
     assert_eq!(reloaded._get_formula("B4"), "=A4+A5");
     assert_eq!(reloaded._get_formula("C4"), "=SUM(A4:A5)*$A$4");
 }
+
+#[test]
+fn move_rows_keeps_whole_column_sum() {
+    let mut model = new_empty_model();
+    model._set("A1", "1");
+    model._set("A2", "2");
+    model._set("A3", "3");
+    model._set("B5", "=SUM(A:A)");
+    model.evaluate();
+    assert_eq!(model._get_text("B5"), "6");
+
+    // Moving row 1 used to persist =SUM(A3:A1048576) on the AST path.
+    model.move_rows_action(0, 1, 1, 2).unwrap();
+    model.evaluate();
+
+    assert_eq!(model._get_formula("B5"), "=SUM(A:A)");
+    assert_eq!(model._get_text("B5"), "6");
+}

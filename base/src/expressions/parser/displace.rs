@@ -452,6 +452,19 @@ mod tests {
             },
             // Moves can shift the two endpoints of a range by different amounts
             // and cross them, exercising endpoint normalization.
+            // Boundary: moving row 1 / column 1 used to shift A:A / 1:1
+            // endpoints. The string path hid that by omitting the axis at
+            // render time; the AST path persisted it.
+            DisplaceData::RowMove {
+                sheet: 0,
+                row: 1,
+                delta: 2,
+            },
+            DisplaceData::ColumnMove {
+                sheet: 0,
+                column: 1,
+                delta: 2,
+            },
             DisplaceData::RowMove {
                 sheet: 0,
                 row: 3,
