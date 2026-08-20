@@ -326,6 +326,9 @@ pub(crate) struct DependencyGraph {
     pub(crate) arrays: ArrayCells,
     pub(crate) dynamic_refs: DynamicRefs,
     pub(crate) nondeterministic: NondeterministicCells,
+    /// Insert/delete can move data cells the dirty cone does not name. The next
+    /// incremental pass reports `Everything` instead of a cell list.
+    pub(crate) structural_unknown: bool,
 }
 
 impl DependencyGraph {
@@ -356,6 +359,15 @@ impl DependencyGraph {
     pub(crate) fn mark_dirty(&mut self, cell: Position) {
         if let GraphState::Ready { dirty } = &mut self.state {
             dirty.insert(cell);
+        }
+    }
+
+    /// Cells already marked dirty for the next Incremental pass (user edits).
+    #[cfg(feature = "recalc_verify")]
+    pub(crate) fn pending_dirty(&self) -> HashSet<Position> {
+        match &self.state {
+            GraphState::Ready { dirty } => dirty.clone(),
+            GraphState::MustRebuild => HashSet::new(),
         }
     }
 
@@ -506,6 +518,9 @@ impl DependencyGraph {
         }
         self.mark_structural_dependents(sheet, axis, boundary);
         self.shift(sheet, axis, boundary, delta);
+        // Data cells in the shift band are not dirty. The cell-list delta cannot
+        // name them, so `take_changed_cells` reports Everything after this pass.
+        self.structural_unknown = true;
     }
 
     /// Marks the dependents a structural edit at `boundary` can change: those
@@ -581,6 +596,12 @@ impl DependencyGraph {
         self.arrays.shift(shift_pos);
         self.dynamic_refs.shift(shift_pos);
         self.nondeterministic.shift(shift_pos);
+    }
+
+    /// Whether this pass follows an insert/delete whose delta cannot name every
+    /// moved cell. Clears the flag.
+    pub(crate) fn take_structural_unknown(&mut self) -> bool {
+        std::mem::replace(&mut self.structural_unknown, false)
     }
 
     /// Marks the graph ready after a pass that left the edges valid.

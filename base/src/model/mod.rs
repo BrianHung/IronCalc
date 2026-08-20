@@ -123,7 +123,8 @@ pub(crate) enum ChangedCells {
 /// an `Option`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangedSinceRead {
-    /// A full pass ran: every cell may have changed; rescan the workbook.
+    /// A full pass ran, or an insert/delete moved cells the dirty cone cannot
+    /// name. Rescan the workbook.
     Everything,
     /// The incremental delta since the last read, possibly empty.
     Cells(Vec<CellReferenceIndex>),
