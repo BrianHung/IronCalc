@@ -218,6 +218,7 @@ impl Model<'_> {
     /// Streams the range into `acc` in Full, or combines `acc` with a composed
     /// subtotal in Incremental. Full callers pass the outer SUM/MIN/COUNT
     /// accumulator so `=SUM(5, A1:A3)` keeps pre-composition association.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn fold_range(
         &mut self,
         sheet: u32,
@@ -231,11 +232,15 @@ impl Model<'_> {
         if self.recalc_mode == RecalcMode::Full {
             return self.reduce_range_direct(sheet, row1, column1, row2, column2, reducer, acc);
         }
-        reducer.combine(acc, self.reduce_range(sheet, row1, column1, row2, column2, reducer))
+        reducer.combine(
+            acc,
+            self.reduce_range(sheet, row1, column1, row2, column2, reducer),
+        )
     }
 
     /// Pre-composition scan: one accumulator in row-major order. Used in Full
     /// so default-mode users keep main's floating-point association.
+    #[allow(clippy::too_many_arguments)]
     fn reduce_range_direct(
         &mut self,
         sheet: u32,
@@ -250,10 +255,7 @@ impl Model<'_> {
             for column in column1..=column2 {
                 match self.evaluate_cell(CellReferenceIndex { sheet, row, column }) {
                     CalcResult::Number(value) => {
-                        acc = reducer.combine(
-                            acc,
-                            RangeAgg::Number(reducer.contribution(value)),
-                        );
+                        acc = reducer.combine(acc, RangeAgg::Number(reducer.contribution(value)));
                     }
                     error @ CalcResult::Error { .. } if reducer.propagates_errors() => {
                         return RangeAgg::Error(error);
