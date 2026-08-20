@@ -545,11 +545,9 @@ impl Model<'_> {
             }
             return EvalPass::Full;
         }
-        // RAND/NOW re-roll every full pass, so seed them (and their dependents)
-        // on every incremental pass too. OFFSET/INDIRECT are also volatile, but
-        // their static edges miss the cell they actually read: if they run in
-        // this frontier they can see a stale target. They are evaluated after
-        // the static pass instead.
+        // RAND/NOW/TODAY re-roll, so seed them each Incremental pass. OFFSET
+        // and INDIRECT are also volatile but do not re-roll; they run after the
+        // static frontier so they do not read a stale target.
         let volatiles: Vec<Position> = self.graph.volatile.iter().collect();
         for cell in volatiles {
             if !self.graph.dynamic_refs.contains(&cell) {
