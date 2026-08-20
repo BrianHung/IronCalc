@@ -795,6 +795,27 @@ fn take_changed_cells_survives_redundant_evaluate() {
 }
 
 #[test]
+fn take_changed_cells_survives_redundant_evaluate_with_offset() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "10");
+    model._set("A1", "=OFFSET(C1,0,0)");
+    model._set("B1", "=C1+1");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("C1", "20");
+    model.evaluate();
+    model.evaluate(); // OFFSET does not re-roll; must keep the incremental delta
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("OFFSET must not wipe the delta to Everything");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(1, 3))); // C1
+    assert!(changed.contains(&(1, 2))); // B1
+}
+
+#[test]
 fn redundant_evaluate_with_volatile_reports_full_change() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
