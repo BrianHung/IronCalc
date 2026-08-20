@@ -518,6 +518,7 @@ fn incremental_offset_does_not_force_full_on_unrelated_edit() {
     let changed: std::collections::HashSet<(i32, i32)> =
         cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 26))); // Z1
+    assert!(!changed.contains(&(1, 1))); // A1 OFFSET ran; value did not move
 }
 
 #[test]
