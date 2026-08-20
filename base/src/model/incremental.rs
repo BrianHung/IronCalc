@@ -429,9 +429,10 @@ impl Model<'_> {
         }
     }
 
-    /// Runs the incremental pass, then a full pass, and asserts they agree, and
-    /// that the recorded delta names every cell whose observable state moved.
-    /// Backs [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
+    /// When the pass stayed Incremental, runs a full pass and asserts they agree,
+    /// and that the recorded delta names every cell whose observable state moved.
+    /// A Full fallback has nothing to compare. Backs
+    /// [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn verify_incremental_matches_full(&mut self) {
         let before = self.render_snapshot();
@@ -696,8 +697,7 @@ impl Model<'_> {
     }
 
     /// Full recompute whose result is not expressible as a delta: it may have
-    /// changed any cell, so the change record is cleared and the next
-    /// `take_changed_cells` reports "no delta" until incremental passes rebuild it.
+    /// changed any cell, so the next `take_changed_cells` reports `Everything`.
     pub(crate) fn evaluate_full_untracked(&mut self) {
         self.evaluate_full();
         self.changed_cells = ChangedCells::All;
