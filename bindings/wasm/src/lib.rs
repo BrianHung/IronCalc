@@ -202,9 +202,10 @@ impl Model {
         self.model.pause_evaluation()
     }
 
-    /// Returns the cells recomputed by incremental evaluations since the last
-    /// call, and clears the record. `{ kind: "everything" }` after a full
-    /// recompute; `{ kind: "cells", cells: [...] }` for an incremental delta
+    /// Returns the cells whose observable state moved on incremental
+    /// evaluations since the last call, and clears the record.
+    /// `{ kind: "everything" }` after a full recompute;
+    /// `{ kind: "cells", cells: [...] }` for an incremental delta
     /// (possibly empty). These are not the same answer, so this is not `null`.
     /// Only meaningful for a model constructed with `RecalcMode.Incremental`.
     #[wasm_bindgen(

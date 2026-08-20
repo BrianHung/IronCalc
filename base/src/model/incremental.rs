@@ -226,8 +226,9 @@ impl Model<'_> {
     }
 
     /// Records volatile formulas. RAND/NOW/TODAY re-roll every pass; OFFSET
-    /// recomputes because static edges miss its target. Incremental seeds this
-    /// set so it matches a full pass.
+    /// recomputes because static edges miss its target. Incremental marks
+    /// RAND/NOW/TODAY dirty each pass. OFFSET/INDIRECT are skipped at
+    /// `mark_dirty` and run in phase 2 instead.
     pub(crate) fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
         // Cells reading a precedent through a dynamic reference the static edges
@@ -581,7 +582,7 @@ impl Model<'_> {
         // back to recomputing the whole set, where `evaluate_cell`'s recursion
         // still reports `#CIRC!`.
         let mut changed = match self.graph.topo_order(&affected) {
-            Some(order) => self.recompute_frontier(affected, &seeds, order),
+            Some(order) => self.recompute_frontier(affected, &seeds, &seeds, order),
             None => self.recompute_all(affected, &seeds),
         };
         // OFFSET/INDIRECT run after the static frontier so they read updated
@@ -589,14 +590,15 @@ impl Model<'_> {
         // static edges through a helper, so drop the eval memo on the whole
         // cone first: otherwise A1=OFFSET(...) can read D2=E2 while D2 is still
         // Evaluated. Keep links: a HYPERLINK dependent that the frontier then
-        // skips would otherwise lose its URL.
+        // skips would otherwise lose its URL. They must run, but they are not
+        // user edits: only report them when observable state moved.
         if !dyn_seeds.is_empty() {
             for &position in &dyn_cone {
                 self.cells.remove(&position);
             }
             let dyn_changed = match self.graph.topo_order(&dyn_cone) {
-                Some(order) => self.recompute_frontier(dyn_cone, &dyn_seeds, order),
-                None => self.recompute_all(dyn_cone, &dyn_seeds),
+                Some(order) => self.recompute_frontier(dyn_cone, &dyn_seeds, &[], order),
+                None => self.recompute_all(dyn_cone, &[]),
             };
             changed.extend(dyn_changed);
         }
@@ -635,21 +637,22 @@ impl Model<'_> {
         self.links.remove(&position);
     }
 
-    /// Recomputes the affected set in topological order, propagating to a cell's
-    /// dependents only when its value moved. Seeds are the edited cells, so they
-    /// always count as changed and propagate; an unchanged non-seed stops the
-    /// fanout there. Returns the changed cells.
+    /// Recomputes `must_run` in topological order. `always_report` (user edits,
+    /// RAND) always counts as changed and propagates. Phase 2 OFFSET/INDIRECT
+    /// must run but only report when observable state moved. An unchanged
+    /// non-report cell stops the fanout there.
     fn recompute_frontier(
         &mut self,
         affected: HashSet<Position>,
-        seeds: &[Position],
+        must_run: &[Position],
+        always_report: &[Position],
         order: Vec<Position>,
     ) -> Vec<Position> {
         let before: HashMap<Position, Option<ChangeKey>> =
             affected.iter().map(|&p| (p, self.change_key(p))).collect();
         self.recompute_scope = Some(affected.clone());
-        let seeded: HashSet<Position> = seeds.iter().copied().collect();
-        let mut stale = seeded.clone();
+        let report: HashSet<Position> = always_report.iter().copied().collect();
+        let mut stale: HashSet<Position> = must_run.iter().copied().collect();
         let mut changed = HashSet::new();
         for position in order {
             if !stale.contains(&position) {
@@ -658,7 +661,7 @@ impl Model<'_> {
             self.invalidate(position);
             let (sheet, row, column) = position;
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
-            if seeded.contains(&position) || self.change_key(position) != before[&position] {
+            if report.contains(&position) || self.change_key(position) != before[&position] {
                 changed.insert(position);
                 stale.extend(self.graph.dependents_of(position));
             }
@@ -667,7 +670,7 @@ impl Model<'_> {
         // OFFSET/INDIRECT can recompute a helper via evaluate_cell before this
         // loop reaches it; that cell never entered `stale`.
         for &position in &affected {
-            if seeded.contains(&position) || self.change_key(position) != before[&position] {
+            if report.contains(&position) || self.change_key(position) != before[&position] {
                 changed.insert(position);
             }
         }
@@ -675,8 +678,12 @@ impl Model<'_> {
     }
 
     /// Recomputes the whole affected set, used when a cycle prevents ordering.
-    /// Returns the seeds plus every other cell whose value moved.
-    fn recompute_all(&mut self, affected: HashSet<Position>, seeds: &[Position]) -> Vec<Position> {
+    /// Returns `always_report` plus every other cell whose value moved.
+    fn recompute_all(
+        &mut self,
+        affected: HashSet<Position>,
+        always_report: &[Position],
+    ) -> Vec<Position> {
         let mut order: Vec<Position> = affected.iter().copied().collect();
         order.sort_unstable();
         let before: HashMap<Position, Option<ChangeKey>> =
@@ -689,10 +696,10 @@ impl Model<'_> {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
         self.recompute_scope = None;
-        let seeded: HashSet<Position> = seeds.iter().copied().collect();
+        let report: HashSet<Position> = always_report.iter().copied().collect();
         order
             .into_iter()
-            .filter(|p| seeded.contains(p) || self.change_key(*p) != before[p])
+            .filter(|p| report.contains(p) || self.change_key(*p) != before[p])
             .collect()
     }
 
