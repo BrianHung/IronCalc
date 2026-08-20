@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use crate::test::util::{incremental_mode, new_empty_model};
-use crate::types::CellType;
+use crate::types::{Cell, CellType};
 use crate::UserModel;
 
 #[test]
@@ -550,6 +550,38 @@ fn incremental_ref_error_fallback_stays_incremental() {
     model.evaluate();
     assert!(model._get_formula("B1").contains("#REF!"));
     assert_eq!(model._get_text("B1"), "#REF!");
+}
+
+#[test]
+fn displace_imported_defined_name_plain_formula_does_not_panic() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    let sheet = model.workbook.worksheets[0].get_name();
+    model
+        .new_defined_name("MyName", None, &format!("{sheet}!$C$1"))
+        .unwrap();
+    model._set("C1", "10");
+    model._set("B1", "1");
+    model._set("A1", "=MyName+B1");
+    // Excel stores this as a plain formula. Import without array metadata
+    // leaves CellFormula even though static analysis is non-Scalar.
+    let cell = model.workbook.worksheets[0]
+        .sheet_data
+        .get_mut(&1)
+        .unwrap()
+        .get_mut(&1)
+        .unwrap();
+    if let Cell::ArrayFormula { f, s, v, .. } = cell.clone() {
+        *cell = Cell::CellFormula { f, s, v };
+    } else {
+        assert!(
+            matches!(cell, Cell::CellFormula { .. }),
+            "expected a formula cell to coerce"
+        );
+    }
+    model.evaluate();
+    model.insert_rows(0, 2, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "11");
 }
 
 #[test]

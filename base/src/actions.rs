@@ -320,7 +320,15 @@ impl<'a> Model<'a> {
                 {
                     return Ok(());
                 }
-                return self.set_displaced_formula(sheet, row, column, new_node, new_rc);
+                // Imported plain formulas can static-analyze non-Scalar (defined
+                // names, A1:expr, spill). The string path upgrades those to
+                // dynamic; asserting Scalar panics in debug and diverges in release.
+                if matches!(
+                    run_static_analysis_on_node(&new_node),
+                    StaticResult::Scalar
+                ) {
+                    return self.set_displaced_formula(sheet, row, column, new_node, new_rc);
+                }
             }
         }
 
@@ -358,13 +366,6 @@ impl<'a> Model<'a> {
         rc: String,
     ) -> Result<(), String> {
         let static_result = run_static_analysis_on_node(&node);
-        // Gated on CellFormula: displacement cannot grow a 1×1 range into a
-        // dynamic array, so this write skips the is_dynamic branch the parse
-        // path uses. Fail loud if that implicit chain ever breaks.
-        debug_assert!(
-            matches!(static_result, StaticResult::Scalar),
-            "in-place displace is CellFormula-only; a 1×1 cannot grow under displacement"
-        );
         let style = self.workbook.worksheet(sheet)?.get_style(row, column);
         let existing = self
             .workbook
