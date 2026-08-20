@@ -260,6 +260,28 @@ fn incremental_tracks_defined_name_references() {
 }
 
 #[test]
+fn incremental_nested_dynamic_range_tracks_interior() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A5", "0");
+    model._set("A10", "1");
+    // Parentheses keep the colon as OpRangeKind under SUM. Static edges are
+    // only the endpoints; A5 is missed unless the SUM is marked volatile.
+    model._set("B1", "=SUM((A1):(A10))");
+    model.evaluate();
+    assert!(
+        model.graph.volatile.contains(&(0, 1, 2)),
+        "SUM((A1):(A10)) nests OpRangeKind; it must be volatile"
+    );
+    assert_eq!(model._get_text("B1"), "2");
+
+    model._set("A5", "10");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "12");
+}
+
+#[test]
 fn incremental_defined_name_retarget_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
