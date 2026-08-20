@@ -819,6 +819,25 @@ fn take_changed_cells_reports_everything_for_data_only_shift() {
 }
 
 #[test]
+fn take_changed_cells_reports_everything_for_trailing_delete() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "10");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    // Last populated row, nothing below, no formulas. Dirty stays empty so
+    // evaluate would take the Full keep-delta branch; the emptied cell must
+    // still be Everything, not Cells([]).
+    model.delete_rows(0, 1, 1).unwrap();
+    // Ready + empty dirty: the Full keep-delta branch, not MustRebuild.
+    assert!(model.graph.should_recompute_full());
+    assert!(!model.graph.full_reflects_change());
+    model.evaluate();
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    assert_eq!(model._get_text("A1"), "");
+}
+
+#[test]
 fn take_changed_cells_survives_redundant_evaluate() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
