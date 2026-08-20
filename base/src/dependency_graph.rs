@@ -18,8 +18,9 @@ pub enum RecalcMode {
     Full,
     /// Recompute only the cells reachable from the dirty set.
     Incremental,
-    /// Run incremental then full and `assert_eq!` the two agree. Test-only,
-    /// gated behind the `recalc_verify` feature so it never ships.
+    /// On Incremental passes, run full as well and `assert_eq!` the two agree.
+    /// Formula, first-eval, and array/spill fallbacks are Full and are not
+    /// compared. Test-only, gated behind `recalc_verify` so it never ships.
     #[cfg(feature = "recalc_verify")]
     Verify,
 }
