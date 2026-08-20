@@ -69,8 +69,8 @@ fn is_volatile_function(kind: &Function) -> bool {
 
 /// Values that are not a function of the sheet. Incremental then full will
 /// disagree even when both paths are correct, so Verify strips only this cone.
-/// `OFFSET` is deterministic and is not stripped. `INDIRECT` is also not in
-/// this set, but that cone is a 1×1 dynamic array and Verify never compares it.
+/// `OFFSET` is deterministic and is not stripped. A top-level `INDIRECT` is a
+/// 1×1 dynamic array (Full, not compared). `SUM(INDIRECT(...))` stays Incremental.
 fn is_nondeterministic_function(kind: &Function) -> bool {
     matches!(
         kind,
@@ -448,7 +448,8 @@ impl Model<'_> {
         if matches!(pass, EvalPass::Incremental) {
             let incremental = self.render_snapshot();
             // RAND/NOW/TODAY re-roll. OFFSET stays in the compare when Incremental.
-            // INDIRECT is a 1×1 dynamic array, so that cone is Full and skipped.
+            // A top-level INDIRECT is a 1×1 dynamic array (Full, skipped).
+            // SUM/PRODUCT(INDIRECT) stay Incremental and are compared.
             let tainted = self
                 .graph
                 .reachable(self.graph.nondeterministic.iter().collect());

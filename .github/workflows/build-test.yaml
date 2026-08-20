@@ -42,7 +42,8 @@ jobs:
       # The snapshot is type + numeric bits + link + CF (not value text alone).
       # RAND/NOW/TODAY cones are stripped (they differ by design). Formula,
       # first-eval, and array/spill fallbacks are Full and are not compared.
-      # INDIRECT is a 1×1 dynamic array, so that cone is Full and is skipped.
+      # A top-level INDIRECT is a 1×1 dynamic array (Full, skipped).
+      # SUM/PRODUCT(INDIRECT) stay Incremental and are compared.
       - name: Incremental recalc check (Verify)
         run: IRONCALC_RECALC=verify cargo test -p ironcalc_base --features recalc_verify
   test-js:
