@@ -20,6 +20,8 @@ use crate::expressions::types::CellReferenceIndex;
 use crate::functions::Function;
 use crate::model::Model;
 use crate::types::Cell;
+#[cfg(feature = "recalc_verify")]
+use crate::types::CellType;
 
 /// Below this many formula cells, incremental never falls back on fanout: the
 /// bookkeeping is cheap in absolute terms and full has no edge to exploit.
@@ -29,6 +31,25 @@ const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
 /// formula cells: `2` means half, past which full is cheaper than the
 /// incremental bookkeeping it would save.
 const INCREMENTAL_FANOUT_RATIO: usize = 2;
+
+/// Value + type + link + CF. Numbers are bits so `+0.0`/`-0.0` and `NaN` compare.
+#[cfg(feature = "recalc_verify")]
+type VerifySnapshot = HashMap<
+    Position,
+    (
+        Option<(CellType, VerifyValue, Option<crate::types::Link>)>,
+        Vec<crate::cf_types::CfCellResult>,
+    ),
+>;
+
+#[cfg(feature = "recalc_verify")]
+#[derive(PartialEq, Debug)]
+enum VerifyValue {
+    None,
+    Boolean(bool),
+    Number(u64),
+    String(String),
+}
 
 /// Functions whose result can change without any input changing: random and
 /// clock functions, and the reference functions whose target our static edges do
@@ -409,7 +430,7 @@ impl Model<'_> {
         let tainted = self
             .graph
             .reachable(self.graph.nondeterministic.iter().collect());
-        let strip = |mut values: HashMap<Position, (CellValue, Option<crate::types::Link>)>| {
+        let strip = |mut values: VerifySnapshot| {
             values.retain(|position, _| !tainted.contains(position));
             values
         };
@@ -420,24 +441,35 @@ impl Model<'_> {
         );
     }
 
-    /// Snapshot of every populated cell (value + formula `HYPERLINK`), plus any
-    /// leftover dynamic-link keys, so a ghost link after a structural edit fails
-    /// Verify. Used by `RecalcMode::Verify`.
+    /// Snapshot of every populated cell: type (error vs same-text literal),
+    /// value, formula `HYPERLINK`, and conditional format. Leftover dynamic-link
+    /// and CF keys are included so a ghost after a structural edit fails Verify.
     #[cfg(feature = "recalc_verify")]
-    fn snapshot_workbook(&self) -> HashMap<Position, (CellValue, Option<crate::types::Link>)> {
-        let mut positions: HashSet<Position> = self
-            .get_all_cells()
-            .into_iter()
-            .map(|c| (c.index, c.row, c.column))
-            .collect();
+    fn snapshot_workbook(&self) -> VerifySnapshot {
+        let mut positions: HashSet<Position> = self.cf_cache.keys().copied().collect();
+        for c in self.get_all_cells() {
+            positions.insert((c.index, c.row, c.column));
+        }
         positions.extend(self.links.keys().copied());
         positions
             .into_iter()
             .map(|position @ (sheet, row, column)| {
-                let value = self
-                    .get_cell_value_by_index(sheet, row, column)
-                    .unwrap_or(CellValue::None);
-                (position, (value, self.links.get(&position).cloned()))
+                let value = self.get_cell_value_by_index(sheet, row, column).ok().map(
+                    |value| match value {
+                        CellValue::None => VerifyValue::None,
+                        CellValue::Boolean(b) => VerifyValue::Boolean(b),
+                        CellValue::Number(n) => VerifyValue::Number(n.to_bits()),
+                        CellValue::String(s) => VerifyValue::String(s),
+                    },
+                );
+                let key = value.and_then(|value| {
+                    let cell_type = self.get_cell_type(sheet, row, column).ok()?;
+                    Some((cell_type, value, self.links.get(&position).cloned()))
+                });
+                (
+                    position,
+                    (key, self.cf_cache.get(&position).cloned().unwrap_or_default()),
+                )
             })
             .collect()
     }
