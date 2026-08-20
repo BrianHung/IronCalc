@@ -789,6 +789,24 @@ fn take_changed_cells_survives_redundant_evaluate_with_offset() {
 }
 
 #[test]
+fn phase_two_restores_memo_for_skipped_cone_cells() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("E2", "5");
+    model._set("D2", "=E2");
+    model._set("A1", "=OFFSET(D2,0,0)");
+    model.evaluate();
+    model._set("Z1", "1");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert!(
+        model.cells.contains_key(&(0, 2, 4)),
+        "D2 must stay Evaluated after phase 2 skips it"
+    );
+    assert_eq!(model._get_text("A1"), "5");
+    assert_eq!(model._get_text("D2"), "5");
+}
+
+#[test]
 fn redundant_evaluate_with_volatile_reports_full_change() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
@@ -944,4 +962,112 @@ fn incremental_propagates_error_to_text_transition() {
         cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 2))); // B1 type-only
     assert!(changed.contains(&(1, 3))); // C1 dependent
+}
+
+#[test]
+fn incremental_sumifs_reads_resized_criteria() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A2", "1");
+    model._set("A3", "1");
+    model._set("B1", "1");
+    model._set("B2", "1");
+    model._set("B3", "1");
+    model._set("C1", "=SUMIFS(A1:A3,B1:B1,\">0\")");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "3");
+
+    model._set("B2", "0");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "2");
+}
+
+#[test]
+fn incremental_cell_name_survives_insert() {
+    // Verify's interleaved full pass rebuilds the graph and hides this class.
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    let sheet = model.workbook.worksheets[0].get_name();
+    model._set("A10", "42");
+    model
+        .new_defined_name("MyRef", None, &format!("{sheet}!$A$10"))
+        .unwrap();
+    model._set("B1", "=MyRef");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "42");
+
+    // Insert between the formula and the name target so B1 stays put while
+    // the old A10 shifts to A11. The name still reads $A$10.
+    model.insert_rows(0, 5, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "0");
+
+    model._set("A10", "99");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "99");
+}
+
+#[test]
+fn incremental_argless_row_updates_after_insert() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=ROW()");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert!(model.graph.structure_dependent.contains(&(0, 1, 1)));
+
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("A2"), "2");
+}
+
+#[test]
+fn incremental_formulatext_sees_displaced_formula() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("A1", "=SUM(B1)");
+    model._set("C1", "=FORMULATEXT(A1)");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "=SUM(B1)");
+
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("C2"), "=SUM(B2)");
+}
+
+#[test]
+fn incremental_subtotal_sees_hidden_row() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A2", "2");
+    model._set("A3", "3");
+    model._set("B1", "=SUBTOTAL(109,A1:A3)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "6");
+
+    model.set_row_hidden(0, 2, true).unwrap();
+    model._set("D9", "1");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "4");
+}
+
+#[test]
+fn incremental_overwrite_rand_clears_volatile() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=RAND()");
+    model.evaluate();
+    assert!(model.graph.volatile.contains(&(0, 1, 1)));
+
+    model._set("A1", "5");
+    model.evaluate();
+    assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "5");
+
+    model._set("B1", "1");
+    model.evaluate();
+    model._set("B1", "2");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "5");
+    assert!(!model.graph.volatile.contains(&(0, 1, 1)));
 }
