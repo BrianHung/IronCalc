@@ -394,6 +394,8 @@ impl<'a> UserModel<'a> {
     }
 
     /// See [`Model::take_changed_cells`](crate::Model::take_changed_cells).
+    /// An empty `Cells` list means no incremental change; that is not
+    /// [`ChangedSinceRead::Everything`](crate::ChangedSinceRead::Everything).
     pub fn take_changed_cells(&mut self) -> crate::ChangedSinceRead {
         self.model.take_changed_cells()
     }

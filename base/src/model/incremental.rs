@@ -702,6 +702,7 @@ impl Model<'_> {
     /// Returns the cells recomputed by incremental evaluations since the last
     /// call, sorted, and clears the record. `Everything` means a full recompute
     /// has run, so every cell should be treated as potentially changed.
+    /// An empty `Cells` delta is not `Everything`: nothing incremental changed.
     pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
         // Reading re-arms tracking: the record resets to an empty delta, so
         // subsequent incremental passes accumulate afresh.

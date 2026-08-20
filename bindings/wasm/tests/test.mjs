@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert'
-import { Model } from "../pkg/wasm.js";
+import { Model, RecalcMode } from "../pkg/wasm.js";
 
 const DEFAULT_ROW_HEIGHT = 25;
 
@@ -250,4 +250,19 @@ test('Cell link label and style are one undo step', () => {
     assert.strictEqual(model.getFormattedCellValue(0, 2, 2), "IronCalc");
     assert.strictEqual(model.getCellStyle(0, 2, 2).style.font.u, true);
     assert.strictEqual(model.getCellLink(0, 2, 2).target, "https://www.ironcalc.com/");
+});
+
+test('takeChangedCells reports incremental delta', () => {
+    const model = new Model('Workbook1', 'en', 'UTC', 'en', RecalcMode.Incremental);
+    model.setUserInput(0, 1, 1, "1");
+    model.setUserInput(0, 1, 2, "=A1*2");
+    assert.deepEqual(model.takeChangedCells(), { kind: "everything" });
+
+    model.setUserInput(0, 1, 1, "5");
+    const delta = model.takeChangedCells();
+    assert.strictEqual(delta.kind, "cells");
+    const keys = new Set(delta.cells.map((c) => `${c.row},${c.column}`));
+    assert.ok(keys.has("1,1")); // A1
+    assert.ok(keys.has("1,2")); // B1
+    assert.deepEqual(model.takeChangedCells(), { kind: "cells", cells: [] });
 });

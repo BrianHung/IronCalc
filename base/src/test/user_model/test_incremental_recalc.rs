@@ -348,12 +348,20 @@ fn incremental_offset_through_helper_reads_updated_target() {
     model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
+    let _ = model.take_changed_cells();
 
     model._set("C1", "20");
     model.evaluate();
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(2, 4))); // D2 helper
+    assert!(changed.contains(&(1, 1))); // A1 OFFSET
 }
 
 #[test]
@@ -366,12 +374,16 @@ fn incremental_indirect_through_helper_reads_updated_target() {
     model._set("A1", "=INDIRECT(\"D2\")");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
+    let _ = model.take_changed_cells();
 
     model._set("C1", "20");
     model.evaluate();
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
+    // INDIRECT is stored as a 1×1 dynamic array, so the cone takes the
+    // array/spill full path. That is Everything, not an incremental delta.
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 #[test]
@@ -421,42 +433,6 @@ fn incremental_hyperlink_over_offset_keeps_link_on_unrelated_edit() {
     model.evaluate();
     assert_eq!(model._get_text("B1"), "click");
     assert_eq!(dynamic_at(&model), vec![(1, 2)]);
-}
-
-#[test]
-fn incremental_offset_through_helper_reads_updated_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("F2", "=C1");
-    model._set("E2", "=OFFSET(F1,1,0)"); // reads F2
-    model._set("D2", "=E2"); // static helper — in the cone, not a seed
-    model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-
-    model._set("C1", "20");
-    model.evaluate();
-    assert_eq!(model._get_text("E2"), "20");
-    assert_eq!(model._get_text("D2"), "20");
-    assert_eq!(model._get_text("A1"), "20");
-}
-
-#[test]
-fn incremental_indirect_through_helper_reads_updated_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("F2", "=C1");
-    model._set("E2", "=INDIRECT(\"F2\")");
-    model._set("D2", "=E2");
-    model._set("A1", "=INDIRECT(\"D2\")");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-
-    model._set("C1", "20");
-    model.evaluate();
-    assert_eq!(model._get_text("E2"), "20");
-    assert_eq!(model._get_text("D2"), "20");
-    assert_eq!(model._get_text("A1"), "20");
 }
 
 #[test]
