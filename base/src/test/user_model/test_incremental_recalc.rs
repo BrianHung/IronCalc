@@ -176,6 +176,8 @@ fn incremental_structural_edit_below_volatile_stays_incremental() {
     // incremental.
     model.insert_rows(0, 5, 1).unwrap();
     assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("C11"), "2");
 }
 
 #[test]
@@ -397,12 +399,20 @@ fn incremental_offset_through_helper_reads_updated_target() {
     model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
+    let _ = model.take_changed_cells();
 
     model._set("C1", "20");
     model.evaluate();
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(2, 4))); // D2 helper
+    assert!(changed.contains(&(1, 1))); // A1 OFFSET
 }
 
 #[test]
@@ -415,12 +425,16 @@ fn incremental_indirect_through_helper_reads_updated_target() {
     model._set("A1", "=INDIRECT(\"D2\")");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
+    let _ = model.take_changed_cells();
 
     model._set("C1", "20");
     model.evaluate();
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
+    // INDIRECT is stored as a 1×1 dynamic array, so the cone takes the
+    // array/spill full path. That is Everything, not an incremental delta.
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 #[test]
@@ -604,9 +618,27 @@ fn incremental_insert_below_dynamic_array_rebuilds_spill() {
 
     model._set("Z1", "1"); // dirty an unrelated cell
     model.insert_rows(0, 6, 1).unwrap();
+    assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2"); // spill restored, not #ERROR!
+    assert_eq!(model._get_text("A2"), "2"); // spill left intact, not #ERROR!
+}
+
+#[test]
+fn incremental_insert_below_dynamic_array_and_volatile_stays_incremental() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("B2", "2");
+    model._set("A1", "=B1:B2"); // spills A1:A2, entirely above the insert
+    model._set("C10", "=1+1");
+    model.evaluate();
+
+    model.insert_rows(0, 5, 1).unwrap();
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    assert_eq!(model._get_text("A2"), "2");
+    assert_eq!(model._get_text("C11"), "2");
 }
 
 #[test]
