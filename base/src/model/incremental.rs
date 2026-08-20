@@ -72,7 +72,8 @@ fn is_volatile_function(kind: &Function) -> bool {
 
 /// Values that are not a function of the sheet. Incremental then full will
 /// disagree even when both paths are correct, so Verify strips only this cone.
-/// `OFFSET`/`INDIRECT` are volatile but deterministic and stay in the compare.
+/// `OFFSET` is deterministic and is not stripped. `INDIRECT` is also not in
+/// this set, but that cone is a 1×1 dynamic array and Verify never compares it.
 fn is_nondeterministic_function(kind: &Function) -> bool {
     matches!(
         kind,
@@ -426,7 +427,9 @@ impl Model<'_> {
         self.evaluate_full();
         let full = self.snapshot_workbook();
         // RAND/NOW/TODAY re-roll each pass even when both paths are correct.
-        // OFFSET/INDIRECT are volatile but deterministic: keep them in the compare.
+        // OFFSET is volatile but deterministic and stays in the compare when the
+        // pass is Incremental. INDIRECT is a 1×1 dynamic array, so that cone is
+        // Full and this compare does not run.
         let tainted = self
             .graph
             .reachable(self.graph.nondeterministic.iter().collect());
@@ -454,21 +457,25 @@ impl Model<'_> {
         positions
             .into_iter()
             .map(|position @ (sheet, row, column)| {
-                let value = self.get_cell_value_by_index(sheet, row, column).ok().map(
-                    |value| match value {
+                let value = self
+                    .get_cell_value_by_index(sheet, row, column)
+                    .ok()
+                    .map(|value| match value {
                         CellValue::None => VerifyValue::None,
                         CellValue::Boolean(b) => VerifyValue::Boolean(b),
                         CellValue::Number(n) => VerifyValue::Number(n.to_bits()),
                         CellValue::String(s) => VerifyValue::String(s),
-                    },
-                );
+                    });
                 let key = value.and_then(|value| {
                     let cell_type = self.get_cell_type(sheet, row, column).ok()?;
                     Some((cell_type, value, self.links.get(&position).cloned()))
                 });
                 (
                     position,
-                    (key, self.cf_cache.get(&position).cloned().unwrap_or_default()),
+                    (
+                        key,
+                        self.cf_cache.get(&position).cloned().unwrap_or_default(),
+                    ),
                 )
             })
             .collect()
