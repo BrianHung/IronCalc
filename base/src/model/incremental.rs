@@ -214,9 +214,9 @@ impl Model<'_> {
         }
     }
 
-    /// Records the cells whose formula calls a volatile function. A full pass
-    /// re-rolls these on every evaluation; recording them lets the incremental
-    /// path recompute them on every edit so it matches that behavior.
+    /// Records volatile formulas. RAND/NOW/TODAY re-roll every pass; OFFSET
+    /// recomputes because static edges miss its target. Incremental seeds this
+    /// set so it matches a full pass.
     pub(crate) fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
         let mut nondeterministic_cells = HashSet::new();
@@ -419,7 +419,7 @@ impl Model<'_> {
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn verify_incremental_matches_full(&mut self) {
         // Only meaningful when the run was actually incremental: a full fallback
-        // has nothing to check, and a second full re-rolls volatiles into false diffs.
+        // has nothing to check, and a second full re-rolls RAND/NOW/TODAY.
         if !matches!(self.evaluate_selective(), EvalPass::Incremental) {
             return;
         }
@@ -487,8 +487,8 @@ impl Model<'_> {
             self.evaluate_full();
             return EvalPass::Full;
         }
-        // Volatile cells re-roll on every full pass, so mark them dirty to
-        // recompute them (and their dependents) on every incremental pass too.
+        // Seed volatiles each Incremental pass: RAND/NOW/TODAY re-roll; OFFSET
+        // has no static edge to the cell it actually reads.
         let volatiles: Vec<Position> = self.graph.volatile.iter().collect();
         for cell in volatiles {
             self.graph.mark_dirty(cell);
