@@ -806,6 +806,16 @@ fn take_changed_cells_reports_everything_for_data_only_shift() {
     assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
     assert_eq!(model._get_text("A2"), "10");
     assert_eq!(model._get_text("A3"), "20");
+
+    // The flag dies with the pass. A later value edit is a cell list again.
+    model._set("Z1", "2");
+    model.evaluate();
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("structural Everything must not leak into the next pass");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(1, 26)));
 }
 
 #[test]

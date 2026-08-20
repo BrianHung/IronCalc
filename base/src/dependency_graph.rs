@@ -356,9 +356,9 @@ pub(crate) struct DependencyGraph {
     pub(crate) dynamic_refs: DynamicRefs,
     pub(crate) nondeterministic: NondeterministicCells,
     pub(crate) referenced: ReferencedRanges,
-    /// Insert/delete can move data cells the dirty cone does not name. The next
-    /// incremental pass reports `Everything` instead of a cell list.
-    pub(crate) structural_unknown: bool,
+    /// Insert/delete can move data cells the dirty cone does not name. Cleared
+    /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
+    structural_unknown: bool,
 }
 
 impl DependencyGraph {
@@ -392,13 +392,20 @@ impl DependencyGraph {
         }
     }
 
-    /// Cells already marked dirty for the next Incremental pass (user edits).
+    /// Seeds Verify allows in the delta even when the snapshot did not move:
+    /// user edits plus RAND/NOW/TODAY. OFFSET is a dynamic ref, not a seed.
     #[cfg(feature = "recalc_verify")]
-    pub(crate) fn pending_dirty(&self) -> HashSet<Position> {
-        match &self.state {
+    pub(crate) fn always_report_seeds(&self) -> HashSet<Position> {
+        let mut seeds = match &self.state {
             GraphState::Ready { dirty } => dirty.clone(),
             GraphState::MustRebuild => HashSet::new(),
+        };
+        for cell in self.volatile.iter() {
+            if !self.dynamic_refs.contains(&cell) {
+                seeds.insert(cell);
+            }
         }
+        seeds
     }
 
     /// Forces the next evaluation to be full and rebuild the graph.
@@ -641,6 +648,7 @@ impl DependencyGraph {
 
     /// Marks the graph ready after a pass that left the edges valid.
     pub(crate) fn after_pass(&mut self) {
+        self.structural_unknown = false;
         self.state = GraphState::Ready {
             dirty: HashSet::new(),
         };
