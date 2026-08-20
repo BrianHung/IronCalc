@@ -85,32 +85,6 @@ fn is_nondeterministic_function(kind: &Function) -> bool {
     )
 }
 
-/// `A1:expr` at any depth. A root-only check misses `=SUM((A1):(A10))`.
-fn node_has_op_range(node: &Node) -> bool {
-    match node {
-        Node::OpRangeKind { .. } => true,
-        Node::FunctionKind { args, .. } | Node::NamedFunctionKind { args, .. } => {
-            args.iter().any(node_has_op_range)
-        }
-        Node::LambdaCallKind { lambda, args } => {
-            node_has_op_range(lambda) || args.iter().any(node_has_op_range)
-        }
-        Node::LambdaDefKind { body, .. } => node_has_op_range(body),
-        Node::OpConcatenateKind { left, right }
-        | Node::OpSumKind { left, right, .. }
-        | Node::OpProductKind { left, right, .. }
-        | Node::OpPowerKind { left, right }
-        | Node::CompareKind { left, right, .. } => {
-            node_has_op_range(left) || node_has_op_range(right)
-        }
-        Node::UnaryKind { right, .. } => node_has_op_range(right),
-        Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
-            node_has_op_range(child)
-        }
-        _ => false,
-    }
-}
-
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -145,11 +119,7 @@ impl Model<'_> {
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
-        // A surviving `A1:expr` has a dynamic endpoint and is volatile even
-        // when `expr` itself is not a volatile function. Check every depth:
-        // `=SUM(A1:name)` nests `OpRangeKind` under `SUM`.
-        node_has_op_range(node)
-            || self.node_matches_function(node, sheet, seen_names, is_volatile_function)
+        self.node_matches_function(node, sheet, seen_names, is_volatile_function, true)
     }
 
     fn node_is_nondeterministic(
@@ -158,69 +128,79 @@ impl Model<'_> {
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
-        self.node_matches_function(node, sheet, seen_names, is_nondeterministic_function)
+        self.node_matches_function(node, sheet, seen_names, is_nondeterministic_function, false)
     }
 
+    /// Exhaustive so a new `Node` variant must be classified. `op_range` is
+    /// whether a surviving `A1:expr` itself counts (volatile / dynamic-ref);
+    /// RAND/NOW do not.
     fn node_matches_function(
         &self,
         node: &Node,
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
         pred: fn(&Function) -> bool,
+        op_range: bool,
     ) -> bool {
         match node {
             Node::FunctionKind { kind, args } => {
                 pred(kind)
-                    || args
-                        .iter()
-                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
+                    || args.iter().any(|arg| {
+                        self.node_matches_function(arg, sheet, seen_names, pred, op_range)
+                    })
             }
             Node::NamedFunctionKind { name, args, id } => {
                 if args
                     .iter()
-                    .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
+                    .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred, op_range))
                 {
                     return true;
                 }
                 if id.is_none() {
                     if let Some((scope, body)) = self.resolve_named_lambda(name, sheet) {
                         if seen_names.insert((name.clone(), scope)) {
-                            return self.node_matches_function(&body, sheet, seen_names, pred);
+                            return self
+                                .node_matches_function(&body, sheet, seen_names, pred, op_range);
                         }
                     }
                 }
                 false
             }
             Node::LambdaCallKind { lambda, args } => {
-                self.node_matches_function(lambda, sheet, seen_names, pred)
-                    || args
-                        .iter()
-                        .any(|arg| self.node_matches_function(arg, sheet, seen_names, pred))
+                self.node_matches_function(lambda, sheet, seen_names, pred, op_range)
+                    || args.iter().any(|arg| {
+                        self.node_matches_function(arg, sheet, seen_names, pred, op_range)
+                    })
             }
             Node::LambdaDefKind { body, .. } => {
-                self.node_matches_function(body, sheet, seen_names, pred)
+                self.node_matches_function(body, sheet, seen_names, pred, op_range)
             }
-            Node::OpRangeKind { left, right }
-            | Node::OpConcatenateKind { left, right }
+            Node::OpRangeKind { left, right } => {
+                op_range
+                    || self.node_matches_function(left, sheet, seen_names, pred, op_range)
+                    || self.node_matches_function(right, sheet, seen_names, pred, op_range)
+            }
+            Node::OpConcatenateKind { left, right }
             | Node::OpSumKind { left, right, .. }
             | Node::OpProductKind { left, right, .. }
             | Node::OpPowerKind { left, right }
             | Node::CompareKind { left, right, .. } => {
-                self.node_matches_function(left, sheet, seen_names, pred)
-                    || self.node_matches_function(right, sheet, seen_names, pred)
+                self.node_matches_function(left, sheet, seen_names, pred, op_range)
+                    || self.node_matches_function(right, sheet, seen_names, pred, op_range)
             }
             Node::UnaryKind { right, .. } => {
-                self.node_matches_function(right, sheet, seen_names, pred)
+                self.node_matches_function(right, sheet, seen_names, pred, op_range)
             }
             Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
-                self.node_matches_function(child, sheet, seen_names, pred)
+                self.node_matches_function(child, sheet, seen_names, pred, op_range)
             }
             Node::DefinedNameKind((name, scope, _)) => {
                 if seen_names.insert((name.clone(), *scope)) {
                     if let Ok(Some(ParsedDefinedName::LambdaDefinition(_, body))) =
                         self.get_parsed_defined_name(name, *scope)
                     {
-                        return self.node_matches_function(&body, sheet, seen_names, pred);
+                        return self
+                            .node_matches_function(&body, sheet, seen_names, pred, op_range);
                     }
                 }
                 false
