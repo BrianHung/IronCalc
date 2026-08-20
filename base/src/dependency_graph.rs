@@ -377,8 +377,9 @@ impl DependencyGraph {
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
     /// not touch the dirty set. Verify uses it on the RAND/NOW/TODAY cone only.
-    /// `OFFSET` is not stripped (it is compared when the pass is Incremental).
-    /// `INDIRECT` is a 1×1 dynamic array, so that cone is Full and is not compared.
+    /// `OFFSET` is not stripped (compared when Incremental). A top-level
+    /// `INDIRECT` is a 1×1 dynamic array (Full, not compared). Wrapped
+    /// `INDIRECT` (`SUM`/`PRODUCT`) stays Incremental.
     pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
         let mut affected = HashSet::new();
         let mut stack = seeds;
