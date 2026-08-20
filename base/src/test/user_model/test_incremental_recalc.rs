@@ -350,12 +350,20 @@ fn incremental_sum_over_offset_sees_updated_target() {
     model._set("C1", "=SUM(A1:A3)");
     model.evaluate();
     assert_eq!(model._get_text("C1"), "20");
+    let _ = model.take_changed_cells();
 
     model._set("A1", "20");
     model.evaluate();
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A3"), "20");
     assert_eq!(model._get_text("C1"), "40");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(3, 1))); // A3 OFFSET
+    assert!(changed.contains(&(1, 3))); // C1 SUM
 }
 
 #[test]
@@ -382,11 +390,44 @@ fn incremental_running_totals_compose_after_offset_and_insert() {
     assert_eq!(model._get_text("C1"), "5");
 
     model.insert_rows(0, 2, 1).unwrap();
+    model._set("A2", "4"); // new row must change every prefix that covers it
     model.evaluate();
     assert_eq!(model._get_formula("B4"), "=SUM(A1:A4)");
     assert_eq!(model._get_text("B1"), "1");
-    assert_eq!(model._get_text("B4"), "9"); // 1 + 0 + 5 + 3
+    assert_eq!(model._get_text("B3"), "10"); // 1 + 4 + 5
+    assert_eq!(model._get_text("B4"), "13"); // 1 + 4 + 5 + 3
     assert_eq!(model._get_text("C1"), "0"); // still OFFSET(D1,1,0); D2 is the new blank
+}
+
+#[test]
+fn incremental_running_totals_see_offset_inside_range() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A2", "2");
+    model._set("D2", "3");
+    model._set("A3", "=OFFSET(D1,1,0)"); // inside the running-total range
+    model._set("B1", "=SUM(A1:A1)");
+    model._set("B2", "=SUM(A1:A2)");
+    model._set("B3", "=SUM(A1:A3)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B2"), "3");
+    assert_eq!(model._get_text("B3"), "6");
+    let _ = model.take_changed_cells();
+
+    model._set("D2", "10"); // OFFSET target; A3 and B3 must not read a stale memo
+    model.evaluate();
+    assert_eq!(model._get_text("A3"), "10");
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B2"), "3");
+    assert_eq!(model._get_text("B3"), "13");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(3, 1))); // A3
+    assert!(changed.contains(&(3, 2))); // B3
 }
 
 #[test]
