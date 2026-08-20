@@ -11,9 +11,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CellOrRange, ChangedCells, ChangedSinceRead, ParsedDefinedName};
 use crate::cell::CellValue;
-use crate::dependency_graph::Position;
 #[cfg(feature = "recalc_verify")]
 use crate::dependency_graph::RecalcMode;
+use crate::dependency_graph::{Area, NameTarget, Position};
 use crate::expressions::parser::Node;
 use crate::expressions::types::CellReferenceIndex;
 use crate::functions::Function;
@@ -52,7 +52,7 @@ enum ChangeValue {
 /// clock functions, and the reference functions whose target our static edges do
 /// not capture. A cell calling one must be recomputed on every pass.
 // Add new volatile functions here, or their cells will not refresh incrementally.
-fn is_volatile_function(kind: &Function) -> bool {
+fn is_volatile_function(kind: &Function, _args: &[Node]) -> bool {
     matches!(
         kind,
         Function::Rand
@@ -71,7 +71,7 @@ fn is_volatile_function(kind: &Function) -> bool {
 /// disagree even when both paths are correct, so Verify strips only this cone.
 /// `OFFSET` is deterministic and is not stripped. A top-level `INDIRECT` is a
 /// 1×1 dynamic array (Full, not compared). `SUM(INDIRECT(...))` stays Incremental.
-fn is_nondeterministic_function(kind: &Function) -> bool {
+fn is_nondeterministic_function(kind: &Function, _args: &[Node]) -> bool {
     matches!(
         kind,
         Function::Rand
@@ -82,8 +82,35 @@ fn is_nondeterministic_function(kind: &Function) -> bool {
     )
 }
 
-fn is_dynamic_ref_function(kind: &Function) -> bool {
+fn is_dynamic_ref_function(kind: &Function, _args: &[Node]) -> bool {
     matches!(kind, Function::Offset | Function::Indirect)
+}
+
+fn is_structure_dependent_function(kind: &Function, args: &[Node]) -> bool {
+    match kind {
+        Function::Row | Function::Column => args.is_empty(),
+        Function::Formulatext => true,
+        _ => false,
+    }
+}
+
+/// Criteria cells `run_ifs` actually reads: the walk range's height/width,
+/// starting at the criteria origin (Excel's implicit resize).
+fn expand_ifs_criteria(walk: Area, criteria: Area) -> Area {
+    let (_, wr1, wc1, wr2, wc2) = walk;
+    let (cs, cr1, cc1, _, _) = criteria;
+    (cs, cr1, cc1, cr1 + (wr2 - wr1), cc1 + (wc2 - wc1))
+}
+
+fn is_visibility_dependent_function(kind: &Function, args: &[Node]) -> bool {
+    match kind {
+        Function::Subtotal => match args.first() {
+            Some(Node::NumberKind(n)) => *n >= 100.0,
+            Some(_) => true,
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// Whether an evaluate stayed incremental or fell back to a full pass.
@@ -132,6 +159,36 @@ impl Model<'_> {
         self.node_matches_function(node, sheet, seen_names, is_nondeterministic_function, false)
     }
 
+    fn node_is_structure_dependent(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+    ) -> bool {
+        self.node_matches_function(
+            node,
+            sheet,
+            seen_names,
+            is_structure_dependent_function,
+            false,
+        )
+    }
+
+    fn node_is_visibility_dependent(
+        &self,
+        node: &Node,
+        sheet: u32,
+        seen_names: &mut HashSet<(String, Option<u32>)>,
+    ) -> bool {
+        self.node_matches_function(
+            node,
+            sheet,
+            seen_names,
+            is_visibility_dependent_function,
+            false,
+        )
+    }
+
     /// Exhaustive so a new `Node` variant must be classified. `op_range` is
     /// whether a surviving `A1:expr` itself counts (volatile / dynamic-ref);
     /// RAND/NOW do not.
@@ -140,12 +197,12 @@ impl Model<'_> {
         node: &Node,
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
-        pred: fn(&Function) -> bool,
+        pred: fn(&Function, &[Node]) -> bool,
         op_range: bool,
     ) -> bool {
         match node {
             Node::FunctionKind { kind, args } => {
-                pred(kind)
+                pred(kind, args)
                     || args.iter().any(|arg| {
                         self.node_matches_function(arg, sheet, seen_names, pred, op_range)
                     })
@@ -241,6 +298,8 @@ impl Model<'_> {
         // miss. Stored on their own type so they cannot be treated as arrays.
         let mut dynamic_reference_cells = HashSet::new();
         let mut nondeterministic_cells = HashSet::new();
+        let mut structure_cells = HashSet::new();
+        let mut visibility_cells = HashSet::new();
         let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
@@ -258,6 +317,12 @@ impl Model<'_> {
                         if self.node_is_nondeterministic(node, sheet, &mut HashSet::new()) {
                             nondeterministic_cells.insert((sheet, *row, *col));
                         }
+                        if self.node_is_structure_dependent(node, sheet, &mut HashSet::new()) {
+                            structure_cells.insert((sheet, *row, *col));
+                        }
+                        if self.node_is_visibility_dependent(node, sheet, &mut HashSet::new()) {
+                            visibility_cells.insert((sheet, *row, *col));
+                        }
                     }
                 }
             }
@@ -265,6 +330,8 @@ impl Model<'_> {
         self.graph.replace_volatile(volatile_cells);
         self.graph.replace_dynamic_refs(dynamic_reference_cells);
         self.graph.replace_nondeterministic(nondeterministic_cells);
+        self.graph.replace_structure_dependent(structure_cells);
+        self.graph.replace_visibility_dependent(visibility_cells);
         self.formula_cell_count = formula_cell_count;
     }
 
@@ -327,17 +394,12 @@ impl Model<'_> {
                 if seen_names.insert((name.clone(), *scope)) {
                     if let Ok(Some(parsed)) = self.get_parsed_defined_name(name, *scope) {
                         match parsed {
-                            ParsedDefinedName::CellReference(r) => {
-                                out.push(CellOrRange::Cell((r.sheet, r.row, r.column)));
-                            }
-                            ParsedDefinedName::RangeReference(range) => {
-                                out.push(CellOrRange::Range((
-                                    range.left.sheet,
-                                    range.left.row.min(range.right.row),
-                                    range.left.column.min(range.right.column),
-                                    range.left.row.max(range.right.row),
-                                    range.left.column.max(range.right.column),
-                                )));
+                            ParsedDefinedName::CellReference(_)
+                            | ParsedDefinedName::RangeReference(_) => {
+                                out.push(CellOrRange::Name {
+                                    name: name.clone(),
+                                    scope: *scope,
+                                });
                             }
                             ParsedDefinedName::LambdaDefinition(_, body) => {
                                 self.collect_references(&body, context, out, seen_names);
@@ -347,7 +409,8 @@ impl Model<'_> {
                     }
                 }
             }
-            Node::FunctionKind { args, .. } => {
+            Node::FunctionKind { kind, args } => {
+                self.collect_ifs_expanded_criteria(kind, args, context, out);
                 for arg in args {
                     self.collect_references(arg, context, out, seen_names);
                 }
@@ -433,8 +496,114 @@ impl Model<'_> {
                 match reference {
                     CellOrRange::Cell(precedent) => self.graph.add_cell_edge(precedent, dependent),
                     CellOrRange::Range(area) => self.graph.add_range_edge(area, dependent),
+                    CellOrRange::Name { name, scope } => {
+                        if let Some(target) = self.name_target(&name, scope) {
+                            self.graph.add_name_edge(name, scope, dependent, target);
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    fn name_target(&self, name: &str, scope: Option<u32>) -> Option<NameTarget> {
+        match self.get_parsed_defined_name(name, scope).ok()?? {
+            ParsedDefinedName::CellReference(r) => {
+                Some(NameTarget::Cell((r.sheet, r.row, r.column)))
+            }
+            ParsedDefinedName::RangeReference(range) => Some(NameTarget::Range((
+                range.left.sheet,
+                range.left.row.min(range.right.row),
+                range.left.column.min(range.right.column),
+                range.left.row.max(range.right.row),
+                range.left.column.max(range.right.column),
+            ))),
+            _ => None,
+        }
+    }
+
+    /// `*IFS` reads criteria cells at parallel offsets spanning the walk range,
+    /// not only the declared criteria rectangle. Record the expanded area.
+    fn collect_ifs_expanded_criteria(
+        &self,
+        kind: &Function,
+        args: &[Node],
+        context: CellReferenceIndex,
+        out: &mut Vec<CellOrRange>,
+    ) {
+        let (walk, criteria) = match kind {
+            Function::Sumifs | Function::Averageifs | Function::Minifs | Function::Maxifs => {
+                (args.first(), (1..args.len()).step_by(2).collect::<Vec<_>>())
+            }
+            Function::Countifs => (args.first(), (0..args.len()).step_by(2).collect()),
+            Function::Sumif | Function::Averageif => {
+                let walk = if args.len() == 3 {
+                    args.get(2)
+                } else {
+                    args.first()
+                };
+                (walk, vec![0])
+            }
+            Function::Countif => (args.first(), vec![0]),
+            _ => return,
+        };
+        let Some(walk) = walk.and_then(|node| self.static_area(node, context)) else {
+            return;
+        };
+        for index in criteria {
+            if let Some(declared) = args
+                .get(index)
+                .and_then(|node| self.static_area(node, context))
+            {
+                out.push(CellOrRange::Range(expand_ifs_criteria(walk, declared)));
+            }
+        }
+    }
+
+    fn static_area(&self, node: &Node, context: CellReferenceIndex) -> Option<Area> {
+        let absolute_coord = |absolute: bool, value: i32, offset: i32| {
+            if absolute {
+                value
+            } else {
+                value + offset
+            }
+        };
+        match node {
+            Node::ReferenceKind {
+                sheet_index,
+                absolute_row,
+                absolute_column,
+                row,
+                column,
+                ..
+            } => {
+                let r = absolute_coord(*absolute_row, *row, context.row);
+                let c = absolute_coord(*absolute_column, *column, context.column);
+                Some((*sheet_index, r, c, r, c))
+            }
+            Node::RangeKind {
+                sheet_index,
+                absolute_row1,
+                absolute_column1,
+                row1,
+                column1,
+                absolute_row2,
+                absolute_column2,
+                row2,
+                column2,
+                ..
+            } => {
+                let r1 = absolute_coord(*absolute_row1, *row1, context.row);
+                let c1 = absolute_coord(*absolute_column1, *column1, context.column);
+                let r2 = absolute_coord(*absolute_row2, *row2, context.row);
+                let c2 = absolute_coord(*absolute_column2, *column2, context.column);
+                Some((*sheet_index, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
+            }
+            Node::DefinedNameKind((name, scope, _)) => match self.name_target(name, *scope)? {
+                NameTarget::Cell((sheet, row, column)) => Some((sheet, row, column, row, column)),
+                NameTarget::Range(area) => Some(area),
+            },
+            _ => None,
         }
     }
 
@@ -620,13 +789,27 @@ impl Model<'_> {
             // Phase 1 may have memoized SUM over a range that still held a
             // stale OFFSET value. Drop those memos before OFFSET runs.
             self.range_reduce_cache.clear();
+            // Drop memo so OFFSET cannot read a stale Evaluated helper, then
+            // restore Evaluated on cone cells the frontier skipped. Otherwise a
+            // CF Formula rule re-evaluates them unscoped (RAND re-rolls).
+            let saved: HashMap<Position, _> = dyn_cone
+                .iter()
+                .filter_map(|&p| self.cells.get(&p).cloned().map(|state| (p, state)))
+                .collect();
             for &position in &dyn_cone {
                 self.cells.remove(&position);
             }
             let dyn_changed = match self.graph.topo_order(&dyn_cone) {
-                Some(order) => self.recompute_frontier(dyn_cone, &dyn_seeds, &[], order),
-                None => self.recompute_all(dyn_cone, &[]),
+                Some(order) => self.recompute_frontier(dyn_cone.clone(), &dyn_seeds, &[], order),
+                None => self.recompute_all(dyn_cone.clone(), &[]),
             };
+            for &position in &dyn_cone {
+                if !self.cells.contains_key(&position) {
+                    if let Some(state) = saved.get(&position) {
+                        self.cells.insert(position, state.clone());
+                    }
+                }
+            }
             changed.extend(dyn_changed);
         }
         // Record only the changed cells for `take_changed_cells`, unless a full
