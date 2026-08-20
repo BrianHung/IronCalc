@@ -549,11 +549,15 @@ impl Model<'_> {
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
-            // cell, so drop the delta. A redundant full with nothing pending is a
-            // no-op and keeps the delta, unless RAND/NOW/TODAY are present: a
-            // full pass re-rolls those, so treat that as Everything. OFFSET does
-            // not re-roll and must not wipe the delta.
-            if self.graph.full_reflects_change()
+            // cell, so drop the delta. A trailing delete can leave dirty empty
+            // (nothing below to shift) while still emptying cells; catch that
+            // before the CF-diff branch, which would run evaluate_full, clear
+            // the flag in after_pass, and report Cells([]).
+            // A redundant full with nothing pending keeps the delta, unless
+            // RAND/NOW/TODAY are present: a full pass re-rolls those.
+            // OFFSET does not re-roll and must not wipe the delta.
+            if self.graph.take_structural_unknown()
+                || self.graph.full_reflects_change()
                 || self.graph.nondeterministic.iter().next().is_some()
             {
                 self.evaluate_full_untracked();
