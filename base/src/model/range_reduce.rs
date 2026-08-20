@@ -19,16 +19,6 @@ use crate::dependency_graph::Area;
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 
-fn is_circ(agg: &RangeAgg) -> bool {
-    matches!(
-        agg,
-        RangeAgg::Error(CalcResult::Error {
-            error: Error::CIRC,
-            ..
-        })
-    )
-}
-
 /// Per-pass memo of range reductions, keyed by range and reducer.
 pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), RangeAgg>;
 
@@ -49,6 +39,20 @@ pub(crate) enum RangeReducer {
 pub(crate) enum RangeAgg {
     Number(f64),
     Error(CalcResult),
+}
+
+impl RangeAgg {
+    /// Mid-cycle `#CIRC` is not a real aggregate. Caching it makes a later
+    /// `SUM` of the same range depend on evaluation order.
+    fn cacheable(&self) -> bool {
+        !matches!(
+            self,
+            RangeAgg::Error(CalcResult::Error {
+                error: Error::CIRC,
+                ..
+            })
+        )
+    }
 }
 
 impl RangeReducer {
@@ -145,12 +149,8 @@ impl Model<'_> {
         reducer: RangeReducer,
     ) -> RangeAgg {
         let key = ((sheet, row1, column1, row2, column2), reducer);
-        if let Some(agg) = self.range_reduce_cache.get(&key) {
-            // A mid-cycle cell returns transient #CIRC. Memoizing it makes
-            // B1=SUM(A1:A2) depend on whether A2=IFERROR(SUM(A1:A2),5) ran first.
-            if !is_circ(agg) {
-                return agg.clone();
-            }
+        if let Some(agg) = self.cached_agg(&key) {
+            return agg;
         }
         // Descend to the deepest reusable sub-range: a cached prefix, the first
         // row, or the point where the one-shorter range stops being referenced
@@ -158,20 +158,19 @@ impl Model<'_> {
         let mut base = row2;
         while base > row1 {
             let base_key = ((sheet, row1, column1, base, column2), reducer);
-            if self.range_reduce_cache.contains_key(&base_key) {
+            if self.cached_agg(&base_key).is_some() {
                 break;
             }
             let shorter = (sheet, row1, column1, base - 1, column2);
-            let shorter_referenced = self.graph.referenced.contains(&shorter);
-            if !shorter_referenced {
+            if !self.graph.referenced.contains(&shorter) {
                 break;
             }
             base -= 1;
         }
         // Reuse the cached prefix for `row1..=base`, or scan that block directly.
         let base_key = ((sheet, row1, column1, base, column2), reducer);
-        let mut acc = if let Some(agg) = self.range_reduce_cache.get(&base_key) {
-            agg.clone()
+        let mut acc = if let Some(agg) = self.cached_agg(&base_key) {
+            agg
         } else {
             let mut acc = reducer.identity();
             for row in row1..=base {
@@ -180,29 +179,35 @@ impl Model<'_> {
                     break;
                 }
             }
-            if !is_circ(&acc) {
-                self.range_reduce_cache.insert(base_key, acc.clone());
-            }
+            self.cache_agg(base_key, acc.clone());
             acc
         };
         // Fold the remaining rows one at a time, caching every prefix so that
         // overlapping ranges reuse them. Once an error is seen it wins for every
-        // longer prefix, so stop scanning and just record it. Do not cache
-        // transient #CIRC.
+        // longer prefix, so stop scanning and just record it.
         for row in (base + 1)..=row2 {
             let prefix_key = ((sheet, row1, column1, row, column2), reducer);
             if matches!(acc, RangeAgg::Error(_)) {
-                if !is_circ(&acc) {
-                    self.range_reduce_cache.insert(prefix_key, acc.clone());
-                }
+                self.cache_agg(prefix_key, acc.clone());
                 continue;
             }
             acc = reducer.combine(acc, self.reduce_row(sheet, row, column1, column2, reducer));
-            if !is_circ(&acc) {
-                self.range_reduce_cache.insert(prefix_key, acc.clone());
-            }
+            self.cache_agg(prefix_key, acc.clone());
         }
         acc
+    }
+
+    fn cached_agg(&self, key: &(Area, RangeReducer)) -> Option<RangeAgg> {
+        self.range_reduce_cache
+            .get(key)
+            .filter(|agg| agg.cacheable())
+            .cloned()
+    }
+
+    fn cache_agg(&mut self, key: (Area, RangeReducer), agg: RangeAgg) {
+        if agg.cacheable() {
+            self.range_reduce_cache.insert(key, agg);
+        }
     }
 
     /// Reduces a single row of a range across `column1..=column2`, evaluating each
