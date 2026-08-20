@@ -69,6 +69,8 @@ fn is_volatile_function(kind: &Function) -> bool {
 
 /// Values that are not a function of the sheet. Incremental then full will
 /// disagree even when both paths are correct, so Verify strips only this cone.
+/// `OFFSET` is deterministic and is not stripped. `INDIRECT` is also not in
+/// this set, but that cone is a 1×1 dynamic array and Verify never compares it.
 fn is_nondeterministic_function(kind: &Function) -> bool {
     matches!(
         kind,
