@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
 
-use crate::dependency_graph::{DependencyGraph, Position, RecalcMode};
+use crate::dependency_graph::{Axis, DependencyGraph, Position, RecalcMode};
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -3394,10 +3394,16 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
-    // Finds all the dynamic array formulas that spills:
-    // * Delete the spilled cells
-    // * Update the formula cell to be DynamicFormula with r = (1,1)
-    pub(crate) fn reset_dynamic_array_spills(&mut self, sheet: u32) -> Result<(), String> {
+    /// Tears down dynamic-array spills that reach `boundary` on `axis`.
+    /// Spills entirely above/left of the edit are left alone so an insert
+    /// below a spill can stay incremental. Reset anchors are marked dirty;
+    /// `evaluate_selective` then takes the array/spill full path.
+    pub(crate) fn reset_dynamic_array_spills(
+        &mut self,
+        sheet: u32,
+        axis: Axis,
+        boundary: i32,
+    ) -> Result<(), String> {
         // Collect anchor info first — can't mutate sheet_data while iterating over it.
         let anchors: Vec<(i32, i32, i32, i32, i32, i32)> = {
             let ws = self.workbook.worksheet(sheet)?;
@@ -3413,18 +3419,21 @@ impl<'a> Model<'a> {
                     } = cell
                     {
                         let (width, height) = *r;
-                        result.push((*row, *column, *f, *s, width, height));
+                        let reaches = match axis {
+                            Axis::Row => *row + height > boundary,
+                            Axis::Column => *column + width > boundary,
+                        };
+                        if reaches {
+                            result.push((*row, *column, *f, *s, width, height));
+                        }
                     }
                 }
             }
             result
         };
 
-        // Insert/delete always tear the spill down. The incremental path can
-        // skip those Unevaluated anchors when something else is dirty, so force
-        // the next pass to rebuild them in the full spill order.
-        if !anchors.is_empty() {
-            self.graph.force_full();
+        for &(row, column, _, _, _, _) in &anchors {
+            self.graph.mark_dirty((sheet, row, column));
         }
 
         for (row, column, f, s, width, height) in anchors {

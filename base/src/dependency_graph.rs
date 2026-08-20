@@ -227,7 +227,7 @@ impl Positions {
     }
 }
 
-/// Array/spill cells. `OFFSET` is not stored here.
+/// Array/spill cells.
 #[derive(Default)]
 pub(crate) struct ArrayCells(Positions);
 
@@ -235,7 +235,7 @@ pub(crate) struct ArrayCells(Positions);
 #[derive(Default)]
 pub(crate) struct VolatileCells(Positions);
 
-/// RAND/NOW/TODAY. Verify strips this cone; `OFFSET` stays in the compare.
+/// RAND/NOW/TODAY. Verify strips this cone.
 #[derive(Default)]
 pub(crate) struct NondeterministicCells(Positions);
 
