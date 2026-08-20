@@ -22,12 +22,14 @@ fn incremental_matches_full_on_a_chain() {
 fn incremental_error_is_not_a_same_text_literal() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
-    model._set("B1", "=A1");
+    model._set("B1", "=1/A1");
     model.evaluate();
+    assert_eq!(model._get_cell("B1").get_type(), CellType::Number);
 
-    // Second pass is Incremental. Verify must see ErrorValue, not a "#DIV/0!"
-    // string: CellValue stores errors as text, so type is the only distinction.
-    model._set("A1", "=1/0");
+    // Value edit, not a formula write: `=…` would force_full and skip Verify.
+    // CellValue stores errors as text, so type is the only Error vs "#DIV/0!" distinction.
+    model._set("A1", "0");
+    assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_cell("B1").get_type(), CellType::ErrorValue);
     assert_eq!(model._get_text("B1"), "#DIV/0!");
