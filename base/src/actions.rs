@@ -323,10 +323,7 @@ impl<'a> Model<'a> {
                 // Imported plain formulas can static-analyze non-Scalar (defined
                 // names, A1:expr, spill). The string path upgrades those to
                 // dynamic; asserting Scalar panics in debug and diverges in release.
-                if matches!(
-                    run_static_analysis_on_node(&new_node),
-                    StaticResult::Scalar
-                ) {
+                if matches!(run_static_analysis_on_node(&new_node), StaticResult::Scalar) {
                     return self.set_displaced_formula(sheet, row, column, new_node, new_rc);
                 }
             }
