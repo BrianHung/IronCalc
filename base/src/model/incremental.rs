@@ -391,8 +391,9 @@ impl Model<'_> {
         }
     }
 
-    /// Runs the incremental pass, then a full pass, and asserts they agree.
-    /// Backs [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
+    /// When the pass stayed Incremental, runs a full pass and asserts they agree.
+    /// A Full fallback has nothing to compare. Backs
+    /// [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn verify_incremental_matches_full(&mut self) {
         // Only meaningful when the run was actually incremental: a full fallback
