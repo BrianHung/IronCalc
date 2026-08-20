@@ -494,8 +494,8 @@ impl DependencyGraph {
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
-    /// not touch the dirty set, so `Verify` can use it to find the cells a
-    /// volatile can taint.
+    /// not touch the dirty set. Verify uses it on the RAND/NOW/TODAY cone only;
+    /// `OFFSET`/`INDIRECT` are deterministic and stay in the compare.
     pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
         let mut affected = HashSet::new();
         let mut stack = seeds;
