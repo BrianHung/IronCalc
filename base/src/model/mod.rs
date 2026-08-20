@@ -177,6 +177,12 @@ pub(crate) enum CellOrRange {
     Cell((u32, i32, i32)),
     // (sheet, start_row, start_column, end_row, end_column)
     Range((u32, i32, i32, i32, i32)),
+    /// A defined name, stored as a vertex so a structural shift cannot move the
+    /// edge while the name definition stays put.
+    Name {
+        name: String,
+        scope: Option<u32>,
+    },
 }
 
 /// A dynamical IronCalc model.
@@ -2437,8 +2443,20 @@ impl<'a> Model<'a> {
     ) -> Result<(), String> {
         // A plain value edit keeps the graph valid and opts into incremental;
         // a formula, clear, or quote-prefixed literal forces a full recompute.
+        let was_formula = self
+            .workbook
+            .worksheet(sheet)
+            .ok()
+            .and_then(|ws| ws.cell(row, column))
+            .and_then(Cell::get_formula)
+            .is_some();
         if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') {
             self.graph.mark_dirty((sheet, row, column));
+            if was_formula {
+                let position = (sheet, row, column);
+                self.graph.remove_dependent(position);
+                self.graph.clear_cell_roles(position);
+            }
         } else {
             self.graph.force_full();
         }
@@ -3107,6 +3125,35 @@ impl<'a> Model<'a> {
                         return true;
                     }
                 }
+                CellOrRange::Name { ref name, scope } => {
+                    if let Ok(Some(parsed)) = self.get_parsed_defined_name(name, scope) {
+                        match parsed {
+                            ParsedDefinedName::CellReference(r) => {
+                                if positions.iter().any(|p| {
+                                    p.sheet == r.sheet && p.row == r.row && p.column == r.column
+                                }) {
+                                    return true;
+                                }
+                            }
+                            ParsedDefinedName::RangeReference(range) => {
+                                let r1 = range.left.row.min(range.right.row);
+                                let r2 = range.left.row.max(range.right.row);
+                                let c1 = range.left.column.min(range.right.column);
+                                let c2 = range.left.column.max(range.right.column);
+                                if positions.iter().any(|p| {
+                                    p.sheet == range.left.sheet
+                                        && p.row >= r1
+                                        && p.row <= r2
+                                        && p.column >= c1
+                                        && p.column <= c2
+                                }) {
+                                    return true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         false
@@ -3644,7 +3691,9 @@ impl<'a> Model<'a> {
     ) -> Result<(), String> {
         self.workbook
             .worksheet_mut(sheet)?
-            .set_column_hidden(column, hidden)
+            .set_column_hidden(column, hidden)?;
+        self.graph.mark_visibility_dirty();
+        Ok(())
     }
 
     /// Sets whether a row is hidden
@@ -3652,7 +3701,9 @@ impl<'a> Model<'a> {
     pub fn set_row_hidden(&mut self, sheet: u32, row: i32, hidden: bool) -> Result<(), String> {
         self.workbook
             .worksheet_mut(sheet)?
-            .set_row_hidden(row, hidden)
+            .set_row_hidden(row, hidden)?;
+        self.graph.mark_visibility_dirty();
+        Ok(())
     }
 
     /// Returns whether a column is hidden
