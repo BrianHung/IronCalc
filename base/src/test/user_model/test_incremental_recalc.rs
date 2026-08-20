@@ -264,6 +264,28 @@ fn incremental_tracks_defined_name_references() {
 }
 
 #[test]
+fn incremental_nested_dynamic_range_tracks_interior() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A5", "0");
+    model._set("A10", "1");
+    // Parentheses keep the colon as OpRangeKind under SUM. Static edges are
+    // only the endpoints; A5 is missed unless the SUM is marked volatile.
+    model._set("B1", "=SUM((A1):(A10))");
+    model.evaluate();
+    assert!(
+        model.graph.volatile.contains(&(0, 1, 2)),
+        "SUM((A1):(A10)) nests OpRangeKind; it must be volatile"
+    );
+    assert_eq!(model._get_text("B1"), "2");
+
+    model._set("A5", "10");
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "12");
+}
+
+#[test]
 fn incremental_defined_name_retarget_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     let sheet = model.workbook.worksheets[0].get_name();
@@ -757,20 +779,33 @@ fn take_changed_cells_reports_structural_edit_delta() {
     model.evaluate();
     let _ = model.take_changed_cells(); // clear the mode-switch full
 
-    // Delete row 1: A1 is removed so B10's reference dangles, and B10 shifts up to
-    // B9. Its value moves 11 -> #REF!. This is an incremental structural edit, so
-    // the delta must name the changed cell at its new position.
+    // Delete row 1: A1 is removed so B10's reference dangles, and B10 shifts up
+    // to B9. Data cells in the shift band are not in the dirty cone, so the
+    // delta cannot name every moved cell. Report Everything.
     model.delete_rows(0, 1, 1).unwrap();
     model.evaluate();
 
-    let ChangedSinceRead::Cells(changed) = model.take_changed_cells() else {
-        panic!("expected incremental delta");
-    };
-    assert!(
-        changed.iter().any(|c| (c.row, c.column) == (9, 2)),
-        "B9 (was B10) became #REF! and must appear in the delta, got {changed:?}"
-    );
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
     assert_eq!(model._get_text("B9"), "#REF!");
+}
+
+#[test]
+fn take_changed_cells_reports_everything_for_data_only_shift() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "10");
+    model._set("A2", "20");
+    model._set("Z1", "1");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    // Insert above two data cells. Nothing is a formula dependent, so a cell
+    // list would be empty while A1/A2 visibly moved.
+    model.insert_rows(0, 1, 1).unwrap();
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    assert_eq!(model._get_text("A2"), "10");
+    assert_eq!(model._get_text("A3"), "20");
 }
 
 #[test]
@@ -972,4 +1007,23 @@ fn incremental_propagates_error_to_text_transition() {
         cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 2))); // B1 type-only
     assert!(changed.contains(&(1, 3))); // C1 dependent
+}
+
+#[test]
+fn range_composition_does_not_memoize_transient_circ() {
+    // A2's SUM sees A2 mid-cycle (#CIRC → IFERROR → 5). That must not be
+    // cached for B1, which should see A2 after it settles.
+    for incremental in [false, true] {
+        let mut model = if incremental {
+            new_empty_model().with_recalc_mode(incremental_mode())
+        } else {
+            new_empty_model()
+        };
+        model._set("A1", "1");
+        model._set("A2", "=IFERROR(SUM(A1:A2),5)");
+        model._set("B1", "=SUM(A1:A2)");
+        model.evaluate();
+        assert_eq!(model._get_text("A2"), "5", "incremental={incremental}");
+        assert_eq!(model._get_text("B1"), "6", "incremental={incremental}");
+    }
 }

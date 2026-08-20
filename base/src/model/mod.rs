@@ -126,7 +126,8 @@ pub(crate) enum ChangedCells {
 /// an `Option`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangedSinceRead {
-    /// A full pass ran: every cell may have changed; rescan the workbook.
+    /// A full pass ran, or an insert/delete moved cells the dirty cone cannot
+    /// name. Rescan the workbook.
     Everything,
     /// The incremental delta since the last read, possibly empty.
     Cells(Vec<CellReferenceIndex>),
@@ -3185,7 +3186,11 @@ impl<'a> Model<'a> {
     /// circular spill dependencies. Phase 2 evaluates the remaining cells.
     fn evaluate_full(&mut self) {
         self.collect_spill_cells();
-        self.collect_referenced_ranges();
+        // Range composition is Incremental/Verify only. Default Full skips the
+        // second AST walk and does not re-associate SUM vs. pre-composition.
+        if self.recalc_mode != RecalcMode::Full {
+            self.collect_referenced_ranges();
+        }
 
         let n = self.spill_cells.len();
         // Each restart fixes at least one pair; O(N*N) restarts suffice.

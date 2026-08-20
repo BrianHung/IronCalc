@@ -16,7 +16,18 @@ use std::collections::{HashMap, HashSet};
 use super::{CellOrRange, Model};
 use crate::calc_result::CalcResult;
 use crate::dependency_graph::Area;
+use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
+
+fn is_circ(agg: &RangeAgg) -> bool {
+    matches!(
+        agg,
+        RangeAgg::Error(CalcResult::Error {
+            error: Error::CIRC,
+            ..
+        })
+    )
+}
 
 /// Per-pass memo of range reductions, keyed by range and reducer.
 pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), RangeAgg>;
@@ -89,9 +100,9 @@ impl RangeReducer {
 
 impl Model<'_> {
     /// Records the ranges referenced by formulas, per sheet, so range composition
-    /// knows when reusing a one-row-shorter range is worthwhile. Stored on the
-    /// graph and shifted with it, so an incremental insert or delete keeps the
-    /// set without a full rebuild.
+    /// knows when reusing a one-row-shorter range is worthwhile. Incremental and
+    /// Verify only; default Full skips the walk. Stored on the graph and shifted
+    /// with it, so an incremental insert or delete keeps the set without a rebuild.
     pub(crate) fn collect_referenced_ranges(&mut self) {
         let mut referenced: HashMap<u32, HashSet<Area>> = HashMap::new();
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
@@ -135,7 +146,11 @@ impl Model<'_> {
     ) -> RangeAgg {
         let key = ((sheet, row1, column1, row2, column2), reducer);
         if let Some(agg) = self.range_reduce_cache.get(&key) {
-            return agg.clone();
+            // A mid-cycle cell returns transient #CIRC. Memoizing it makes
+            // B1=SUM(A1:A2) depend on whether A2=IFERROR(SUM(A1:A2),5) ran first.
+            if !is_circ(agg) {
+                return agg.clone();
+            }
         }
         // Descend to the deepest reusable sub-range: a cached prefix, the first
         // row, or the point where the one-shorter range stops being referenced
@@ -165,20 +180,27 @@ impl Model<'_> {
                     break;
                 }
             }
-            self.range_reduce_cache.insert(base_key, acc.clone());
+            if !is_circ(&acc) {
+                self.range_reduce_cache.insert(base_key, acc.clone());
+            }
             acc
         };
         // Fold the remaining rows one at a time, caching every prefix so that
         // overlapping ranges reuse them. Once an error is seen it wins for every
-        // longer prefix, so stop scanning and just record it.
+        // longer prefix, so stop scanning and just record it. Do not cache
+        // transient #CIRC.
         for row in (base + 1)..=row2 {
             let prefix_key = ((sheet, row1, column1, row, column2), reducer);
             if matches!(acc, RangeAgg::Error(_)) {
-                self.range_reduce_cache.insert(prefix_key, acc.clone());
+                if !is_circ(&acc) {
+                    self.range_reduce_cache.insert(prefix_key, acc.clone());
+                }
                 continue;
             }
             acc = reducer.combine(acc, self.reduce_row(sheet, row, column1, column2, reducer));
-            self.range_reduce_cache.insert(prefix_key, acc.clone());
+            if !is_circ(&acc) {
+                self.range_reduce_cache.insert(prefix_key, acc.clone());
+            }
         }
         acc
     }

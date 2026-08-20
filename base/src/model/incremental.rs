@@ -86,6 +86,32 @@ fn is_dynamic_ref_function(kind: &Function) -> bool {
     matches!(kind, Function::Offset | Function::Indirect)
 }
 
+/// `A1:expr` at any depth. A root-only check misses `=SUM((A1):(A10))`.
+fn node_has_op_range(node: &Node) -> bool {
+    match node {
+        Node::OpRangeKind { .. } => true,
+        Node::FunctionKind { args, .. } | Node::NamedFunctionKind { args, .. } => {
+            args.iter().any(node_has_op_range)
+        }
+        Node::LambdaCallKind { lambda, args } => {
+            node_has_op_range(lambda) || args.iter().any(node_has_op_range)
+        }
+        Node::LambdaDefKind { body, .. } => node_has_op_range(body),
+        Node::OpConcatenateKind { left, right }
+        | Node::OpSumKind { left, right, .. }
+        | Node::OpProductKind { left, right, .. }
+        | Node::OpPowerKind { left, right }
+        | Node::CompareKind { left, right, .. } => {
+            node_has_op_range(left) || node_has_op_range(right)
+        }
+        Node::UnaryKind { right, .. } => node_has_op_range(right),
+        Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
+            node_has_op_range(child)
+        }
+        _ => false,
+    }
+}
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -121,8 +147,9 @@ impl Model<'_> {
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
         // A surviving `A1:expr` has a dynamic endpoint and is volatile even
-        // when `expr` itself is not a volatile function.
-        matches!(node, Node::OpRangeKind { .. })
+        // when `expr` itself is not a volatile function. Check every depth:
+        // `=SUM(A1:name)` nests `OpRangeKind` under `SUM`.
+        node_has_op_range(node)
             || self.node_matches_function(node, sheet, seen_names, is_volatile_function)
     }
 
@@ -221,7 +248,7 @@ impl Model<'_> {
         sheet: u32,
         seen_names: &mut HashSet<(String, Option<u32>)>,
     ) -> bool {
-        matches!(node, Node::OpRangeKind { .. })
+        node_has_op_range(node)
             || self.node_matches_function(node, sheet, seen_names, is_dynamic_ref_function)
     }
 
@@ -443,6 +470,14 @@ impl Model<'_> {
         // a fresh delta so a miss on this pass cannot hide behind an earlier one.
         let consumer =
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
+        // Capture before evaluate: after_pass clears dirty. User edits plus
+        // RAND/NOW/TODAY (seeded each Incremental pass). OFFSET is not a seed.
+        let mut seeds = self.graph.pending_dirty();
+        for cell in self.graph.volatile.iter() {
+            if !self.graph.dynamic_refs.contains(&cell) {
+                seeds.insert(cell);
+            }
+        }
         let pass = self.evaluate_selective();
         let this_pass =
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
@@ -460,6 +495,17 @@ impl Model<'_> {
                     assert!(
                         tainted.contains(position) || !changed || delta.contains(position),
                         "cell {position:?} changed but is missing from the delta"
+                    );
+                }
+                // Soundness: delta ⊆ (moved ∪ user/RAND seeds ∪ RAND cone).
+                // `_set` writes the new value before evaluate, so a seed's
+                // snapshot may not move even though the API reports it.
+                // OFFSET is not a seed; it must not appear unless it moved.
+                for position in delta {
+                    let changed = before.get(position) != incremental.get(position);
+                    assert!(
+                        tainted.contains(position) || changed || seeds.contains(position),
+                        "cell {position:?} is in the delta but did not change"
                     );
                 }
             }
@@ -607,8 +653,11 @@ impl Model<'_> {
             changed.extend(dyn_changed);
         }
         // Record only the changed cells for `take_changed_cells`, unless a full
-        // pass has already marked everything changed since the last read.
-        if let ChangedCells::Delta(delta) = &mut self.changed_cells {
+        // pass has already marked everything changed since the last read, or an
+        // insert/delete moved cells the dirty cone does not name.
+        if self.graph.take_structural_unknown() {
+            self.changed_cells = ChangedCells::All;
+        } else if let ChangedCells::Delta(delta) = &mut self.changed_cells {
             delta.extend(changed);
         }
         self.graph.after_pass();
@@ -716,8 +765,8 @@ impl Model<'_> {
 
     /// Returns the cells whose observable state moved on incremental evaluations
     /// since the last call, sorted, and clears the record. `Everything` means a
-    /// full recompute has run, so every cell should be treated as potentially
-    /// changed. An empty `Cells` delta is not `Everything`.
+    /// full recompute has run, or an insert/delete moved cells the dirty cone
+    /// cannot name. An empty `Cells` delta is not `Everything`.
     pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
         // Reading re-arms tracking: the record resets to an empty delta, so
         // subsequent incremental passes accumulate afresh.

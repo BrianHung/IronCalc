@@ -315,7 +315,7 @@ pub(crate) fn stringify_reference(
                     row: move_row,
                     delta,
                 } => {
-                    if sheet_index == *sheet {
+                    if sheet_index == *sheet && !full_row {
                         if row == *move_row {
                             row += *delta;
                         } else if *delta > 0 {
@@ -338,7 +338,7 @@ pub(crate) fn stringify_reference(
                     column: move_column,
                     delta,
                 } => {
-                    if sheet_index == *sheet {
+                    if sheet_index == *sheet && !full_column {
                         if column == *move_column {
                             column += *delta;
                         } else if *delta > 0 {
