@@ -800,9 +800,10 @@ impl Model<'_> {
                 None => self.recompute_all(dyn_cone.clone(), &[]),
             };
             for &position in &dyn_cone {
-                if !self.cells.contains_key(&position) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = self.cells.entry(position)
+                {
                     if let Some(state) = saved.get(&position) {
-                        self.cells.insert(position, state.clone());
+                        entry.insert(state.clone());
                     }
                 }
             }
