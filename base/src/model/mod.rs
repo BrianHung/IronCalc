@@ -108,8 +108,8 @@ pub(crate) enum CellState {
 /// What cells changed since the last [`Model::take_changed_cells`], backing the
 /// incremental delta API.
 pub(crate) enum ChangedCells {
-    /// A full recompute ran: no delta is available and every cell may have
-    /// changed.
+    /// A full recompute ran: the next `take_changed_cells` is `Everything`,
+    /// not an empty `Cells` list.
     All,
     /// The exact cells incremental passes recomputed since the last read.
     Delta(HashSet<Position>),
