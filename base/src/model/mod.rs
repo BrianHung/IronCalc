@@ -111,7 +111,8 @@ pub(crate) enum ChangedCells {
     /// A full recompute ran: the next `take_changed_cells` is `Everything`,
     /// not an empty `Cells` list.
     All,
-    /// The exact cells incremental passes recomputed since the last read.
+    /// Cells whose observable state moved on an incremental pass since the last
+    /// read (not every cell that ran).
     Delta(HashSet<Position>),
 }
 

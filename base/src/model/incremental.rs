@@ -225,9 +225,9 @@ impl Model<'_> {
             || self.node_matches_function(node, sheet, seen_names, is_dynamic_ref_function)
     }
 
-    /// Records the cells whose formula calls a volatile function. A full pass
-    /// re-rolls these on every evaluation; recording them lets the incremental
-    /// path recompute them on every edit so it matches that behavior.
+    /// Records volatile formulas. RAND/NOW/TODAY re-roll every pass; OFFSET
+    /// recomputes because static edges miss its target. Incremental seeds this
+    /// set so it matches a full pass.
     pub(crate) fn collect_volatile_cells(&mut self) {
         let mut volatile_cells = HashSet::new();
         // Cells reading a precedent through a dynamic reference the static edges
@@ -529,10 +529,12 @@ impl Model<'_> {
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A redundant full with nothing pending is a
-            // no-op and keeps the delta, unless volatiles are present: a full pass
-            // re-rolls them, so their new values would be missed. Treat that as an
-            // everything-changed delta too.
-            if self.graph.full_reflects_change() || self.graph.volatile.iter().next().is_some() {
+            // no-op and keeps the delta, unless RAND/NOW/TODAY are present: a
+            // full pass re-rolls those, so treat that as Everything. OFFSET does
+            // not re-roll and must not wipe the delta.
+            if self.graph.full_reflects_change()
+                || self.graph.nondeterministic.iter().next().is_some()
+            {
                 self.evaluate_full_untracked();
             } else {
                 // A redundant full preserves the delta, but a conditional-format
@@ -702,10 +704,10 @@ impl Model<'_> {
         self.changed_cells = ChangedCells::All;
     }
 
-    /// Returns the cells recomputed by incremental evaluations since the last
-    /// call, sorted, and clears the record. `Everything` means a full recompute
-    /// has run, so every cell should be treated as potentially changed.
-    /// An empty `Cells` delta is not `Everything`: nothing incremental changed.
+    /// Returns the cells whose observable state moved on incremental evaluations
+    /// since the last call, sorted, and clears the record. `Everything` means a
+    /// full recompute has run, so every cell should be treated as potentially
+    /// changed. An empty `Cells` delta is not `Everything`.
     pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
         // Reading re-arms tracking: the record resets to an empty delta, so
         // subsequent incremental passes accumulate afresh.
