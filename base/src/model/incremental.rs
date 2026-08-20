@@ -445,7 +445,8 @@ impl Model<'_> {
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
         if matches!(pass, EvalPass::Incremental) {
             let incremental = self.render_snapshot();
-            // RAND/NOW/TODAY re-roll. OFFSET/INDIRECT are volatile but deterministic.
+            // RAND/NOW/TODAY re-roll. OFFSET stays in the compare when Incremental.
+            // INDIRECT is a 1×1 dynamic array, so that cone is Full and skipped.
             let tainted = self
                 .graph
                 .reachable(self.graph.nondeterministic.iter().collect());
