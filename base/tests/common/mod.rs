@@ -207,9 +207,7 @@ impl Op {
                 row,
                 col,
                 value,
-            } if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') => {
-                Some((*sheet, *row, *col))
-            }
+            } if !value.is_empty() && !value.starts_with('\'') => Some((*sheet, *row, *col)),
             Op::SetNumber {
                 sheet, row, col, ..
             }
@@ -217,6 +215,9 @@ impl Op {
                 sheet, row, col, ..
             }
             | Op::SetBool {
+                sheet, row, col, ..
+            }
+            | Op::ArrayFormula {
                 sheet, row, col, ..
             } => Some((*sheet, *row, *col)),
             _ => None,

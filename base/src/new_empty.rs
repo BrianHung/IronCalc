@@ -1,6 +1,6 @@
 use chrono::DateTime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     calc_result::Range,
@@ -706,6 +706,7 @@ impl<'a> Model<'a> {
             formula_cell_count: 0,
             read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
+            write_seeds: HashSet::new(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

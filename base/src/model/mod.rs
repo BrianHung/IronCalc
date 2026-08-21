@@ -273,6 +273,10 @@ pub struct Model<'a> {
     /// What cells changed since the last [`Model::take_changed_cells`], backing
     /// the incremental delta API. See [`ChangedCells`].
     pub(crate) changed_cells: ChangedCells,
+    /// Cell writes drained from the journal since the last incremental pass.
+    /// These always-report in the delta; FormulaText/Hidden readers are dirty
+    /// but only reported if their observable value moved.
+    pub(crate) write_seeds: HashSet<Position>,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -864,7 +868,11 @@ impl<'a> Model<'a> {
                             format!("Error with Spill Range Operator in cell {cell:?}"),
                         );
                     }
-                    //
+                    // The `#` operator reads the anchor's spill geometry. Evaluate
+                    // (and therefore trace) the anchor even when it is empty, so a
+                    // later write there re-runs this formula (`=E15#` after E15 is
+                    // filled, COUNT(F15#) after F15 is filled).
+                    let _ = self.evaluate_cell(left);
                     let sheet = left.sheet;
                     let row = left.row;
                     let column = left.column;
@@ -1936,6 +1944,7 @@ impl<'a> Model<'a> {
             formula_cell_count: 0,
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
+            write_seeds: HashSet::new(),
         };
 
         model.parse_formulas();
@@ -3345,12 +3354,13 @@ impl<'a> Model<'a> {
                         self.graph.remove_dependent(p);
                     }
                     self.graph.mark_dirty(p);
+                    self.write_seeds.insert(p);
                     // FORMULATEXT/ISFORMULA read formula-ness, not the value.
                     // A number-to-number write does not change that.
                     if was_formula || is_formula {
-                        let text_readers = self.graph.dependents_of_inputs(|i| {
-                            matches!(i, crate::recalc::Input::FormulaText(q) if *q == p)
-                        });
+                        let text_readers = self.graph.dependents_of_inputs(
+                            |i| matches!(i, crate::recalc::Input::FormulaText(q) if *q == p),
+                        );
                         for r in text_readers {
                             self.graph.mark_dirty(r);
                         }

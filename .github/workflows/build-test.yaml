@@ -49,7 +49,7 @@ jobs:
       # ubuntu-latest is x86_64; macos-latest is arm64. Signed-zero and other
       # IEEE quirks are compared on both. The fuzzer is time-bounded.
       - name: Bounded incremental differential fuzz
-        run: FUZZ_NO_MINIMIZE=1 FUZZ_AVOID_OPS=InsertRows,DeleteRows,InsertCols,DeleteCols,MoveRows,MoveCols,AddSheet,DeleteSheet,RenameSheet cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
+        run: FUZZ_NO_MINIMIZE=1 FUZZ_SEEDS=40 FUZZ_STEPS=120 FUZZ_AVOID_OPS=InsertRows,DeleteRows,InsertCols,DeleteCols,MoveRows,MoveCols,AddSheet,DeleteSheet,RenameSheet cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
   test-js:
     runs-on: ubuntu-latest
     steps:

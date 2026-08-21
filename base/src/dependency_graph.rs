@@ -249,7 +249,7 @@ impl ArrayCells {
     }
 
     pub(crate) fn snapshot(&self) -> HashSet<Position> {
-        self.0.0.clone()
+        self.0 .0.clone()
     }
 
     fn replace(&mut self, cells: HashSet<Position>) {
@@ -403,14 +403,6 @@ impl DependencyGraph {
     pub(crate) fn mark_dirty(&mut self, cell: Position) {
         if let GraphState::Ready { dirty } = &mut self.state {
             dirty.insert(cell);
-        }
-    }
-
-    /// The dirty set before this pass seeds always-dirty inputs.
-    pub(crate) fn peek_dirty(&self) -> Vec<Position> {
-        match &self.state {
-            GraphState::Ready { dirty } => dirty.iter().copied().collect(),
-            GraphState::MustRebuild => Vec::new(),
         }
     }
 

@@ -15,7 +15,7 @@ use crate::dependency_graph::Position;
 use crate::dependency_graph::RecalcMode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::model::Model;
-use crate::types::{Cell, CellType};
+use crate::types::{ArrayKind, Cell, CellType};
 
 /// Below this many formula cells, incremental never falls back on fanout: the
 /// bookkeeping is cheap in absolute terms and full has no edge to exploit.
@@ -60,13 +60,19 @@ impl Model<'_> {
         let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
-            for (row, row_data) in &worksheet.sheet_data {
-                for (col, cell) in row_data {
+            let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+            sorted_rows.sort_unstable();
+            for row in sorted_rows {
+                let row_data = &worksheet.sheet_data[&row];
+                let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
+                sorted_cols.sort_unstable();
+                for col in sorted_cols {
+                    let cell = &row_data[&col];
                     if cell.get_formula().is_some() {
                         formula_cell_count += 1;
                     }
                     if matches!(cell, Cell::ArrayFormula { .. } | Cell::SpillCell { .. }) {
-                        array_cells.insert((sheet, *row, *col));
+                        array_cells.insert((sheet, row, col));
                     }
                 }
             }
@@ -145,6 +151,7 @@ impl Model<'_> {
             self.links = saved_links;
             self.cf_cache = saved_cf;
             self.support = saved_support;
+            self.assert_stored_matches_live();
         } else {
             // A full fallback has nothing to compare; a second full re-rolls RAND/NOW.
             // Still restore the consumer delta so a redundant evaluate is not a miss.
@@ -176,6 +183,61 @@ impl Model<'_> {
             .collect()
     }
 
+    /// Out-of-scope incremental reads return the stored value. Re-evaluating a
+    /// non-volatile formula in a one-cell scratch frame must agree with that
+    /// store (class C: `FormulaValue::Empty` vs a live blank).
+    #[cfg(feature = "recalc_verify")]
+    fn assert_stored_matches_live(&mut self) {
+        let skip = self.graph.always_dirty_cells();
+        let cells = self.get_all_cells();
+        let saved_cells = self.cells.clone();
+        let saved_graph = self.graph.clone();
+        let saved_workbook = self.workbook.clone();
+        let saved_scope = self.recompute_scope.clone();
+        for c in cells {
+            let position = (c.index, c.row, c.column);
+            if skip.contains(&position) {
+                continue;
+            }
+            if self
+                .get_cell_formula(c.index, c.row, c.column)
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                continue;
+            }
+            // Spills rewrite a rectangle; a one-cell scratch frame is not a
+            // faithful re-eval of an array formula.
+            if matches!(
+                self.workbook
+                    .worksheet(c.index)
+                    .ok()
+                    .and_then(|ws| ws.cell(c.row, c.column)),
+                Some(Cell::ArrayFormula { .. } | Cell::SpillCell { .. })
+            ) {
+                continue;
+            }
+            let before = self.change_key(position);
+            self.recompute_scope = Some(HashSet::from([position]));
+            self.cells.remove(&position);
+            let _ = self.evaluate_cell(CellReferenceIndex {
+                sheet: c.index,
+                row: c.row,
+                column: c.column,
+            });
+            let after = self.change_key(position);
+            assert_eq!(
+                before, after,
+                "stored value diverged from a live re-eval at {position:?}"
+            );
+        }
+        self.cells = saved_cells;
+        self.graph = saved_graph;
+        self.workbook = saved_workbook;
+        self.recompute_scope = saved_scope;
+    }
+
     /// Adds to the delta any cell whose conditional-format result moved between
     /// `cf_before` and the rebuilt `cf_cache`. CF has no dependency edges, so a
     /// value or CF-rule change can move a cell's format with no value change.
@@ -198,6 +260,7 @@ impl Model<'_> {
     }
 
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
+        let write_seeds = std::mem::take(&mut self.write_seeds);
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
@@ -255,7 +318,7 @@ impl Model<'_> {
         // reported. OFFSET/INDIRECT are not always-dirty: their actual targets
         // are traced edges, so they re-run only when a precedent moves.
         let always_dirty: Vec<Position> = self.graph.always_dirty_cells().into_iter().collect();
-        let mut always_report: Vec<Position> = self.graph.peek_dirty();
+        let mut always_report: Vec<Position> = write_seeds.into_iter().collect();
         always_report.extend(always_dirty.iter().copied());
         for &cell in &always_dirty {
             self.graph.mark_dirty(cell);
@@ -270,7 +333,14 @@ impl Model<'_> {
             return EvalPass::Full;
         }
         // Array and spill cells need the full pass's two-phase ordering.
-        if affected.iter().any(|cell| self.graph.arrays.contains(cell)) {
+        // Parse-time dynamic formulas (`=SEQUENCE`, `=E15#`) are ArrayFormula
+        // before the first eval, but are not in `graph.arrays` until we see
+        // them. Treating them as scalar Incremental is a *second* spill pass
+        // (recursive evaluate_cell) and diverges from a cold Full first pass.
+        if affected
+            .iter()
+            .any(|cell| self.graph.arrays.contains(cell) || self.is_dynamic_array_anchor(*cell))
+        {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
@@ -422,6 +492,21 @@ impl Model<'_> {
             .into_iter()
             .filter(|p| report.contains(p) || self.change_key(*p) != before[p])
             .collect()
+    }
+
+    /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
+    /// two-phase spill order even before they appear in `graph.arrays`.
+    fn is_dynamic_array_anchor(&self, (sheet, row, column): Position) -> bool {
+        matches!(
+            self.workbook
+                .worksheet(sheet)
+                .ok()
+                .and_then(|ws| ws.cell(row, column)),
+            Some(Cell::ArrayFormula {
+                kind: ArrayKind::Dynamic,
+                ..
+            })
+        )
     }
 
     /// Full recompute whose result is not expressible as a delta: it may have

@@ -686,7 +686,10 @@ fn blocked_spill_reset_on_insert_below_matches_full() {
     full.evaluate();
 
     assert_eq!(inc._get_text("E17"), full._get_text("E17"));
-    assert_eq!(inc._get_cell("E17").get_type(), full._get_cell("E17").get_type());
+    assert_eq!(
+        inc._get_cell("E17").get_type(),
+        full._get_cell("E17").get_type()
+    );
 }
 
 #[test]
@@ -1538,6 +1541,37 @@ fn redundant_evaluate_keeps_rand_reporting_but_not_sumifs() {
     }
 }
 
+/// SUBTOTAL records FormulaText of scanned cells. A formula write in that
+/// range re-evals SUBTOTAL but must not always-report it when the aggregate
+/// is unchanged (fuzz seed 31).
+#[test]
+fn subtotal_formula_text_reread_is_not_always_reported() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=SUBTOTAL(9,A1:A5)");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("A2", "=0");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("SUBTOTAL reread must stay Incremental"),
+        ChangedSinceRead::Cells(cells) => {
+            let changed: std::collections::HashSet<(i32, i32)> =
+                cells.iter().map(|c| (c.row, c.column)).collect();
+            assert!(
+                changed.contains(&(2, 1)),
+                "A2 is a write seed, got {changed:?}"
+            );
+            assert!(
+                !changed.contains(&(1, 2)),
+                "SUBTOTAL must not always-report when the aggregate is unchanged, got {changed:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn formula_edit_stays_incremental() {
     let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
@@ -1630,14 +1664,16 @@ fn isformula_sees_value_overwrite_of_its_argument() {
 fn sequence_hash_spill_survives_unrelated_other_sheet_edit() {
     let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
     inc.add_sheet("Data").unwrap();
-    inc.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string()).unwrap();
+    inc.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string())
+        .unwrap();
     inc.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
     inc.evaluate();
     let g14_after_first = inc._get_text("G14");
 
     let mut full = new_empty_model();
     full.add_sheet("Data").unwrap();
-    full.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string()).unwrap();
+    full.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string())
+        .unwrap();
     full.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
     full.evaluate();
 
@@ -1682,6 +1718,69 @@ fn journal_rejected_write_logs_nothing() {
     match model.take_changed_cells() {
         ChangedSinceRead::Cells(cells) => assert!(cells.is_empty()),
         ChangedSinceRead::Everything => panic!("rejected write must not force Everything"),
+    }
+}
+
+/// `E15#` of an empty cell is `#REF!` until E15 is written. The `#` operator
+/// must record a cell edge on the empty anchor so the later write re-runs it
+/// (fuzz seed 3, 200 steps).
+#[test]
+fn spill_hash_of_empty_anchor_sees_later_formula() {
+    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
+    inc._set("E16", "=E15#");
+    inc.evaluate();
+    inc._set("E15", "=ROWS(A1:A8)");
+    inc.evaluate();
+
+    let mut full = new_empty_model();
+    full._set("E16", "=E15#");
+    full.evaluate();
+    full._set("E15", "=ROWS(A1:A8)");
+    full.evaluate();
+
+    assert_eq!(inc._get_text("E16"), full._get_text("E16"));
+    assert_eq!(inc._get_text("E16"), "8");
+}
+
+/// `COUNT(F15#)` of an empty F15 is 0 until F15 is written (fuzz seed 32).
+#[test]
+fn count_of_empty_spill_hash_sees_later_formula() {
+    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
+    inc._set("G4", "=COUNT(F15#)");
+    inc.evaluate();
+    inc._set("F15", "=SUM(A1:C6)");
+    inc.evaluate();
+
+    let mut full = new_empty_model();
+    full._set("G4", "=COUNT(F15#)");
+    full.evaluate();
+    full._set("F15", "=SUM(A1:C6)");
+    full.evaluate();
+
+    assert_eq!(inc._get_text("G4"), full._get_text("G4"));
+}
+
+/// `=E15#` above `=SEQUENCE(3)`: Full's first pass leaves E11 empty (the `#`
+/// ref is still a CellFormula, not in spill_cells). Incremental must not be a
+/// second pass on already-promoted arrays (fuzz seed 31).
+#[test]
+fn sequence_hash_above_anchor_matches_full_on_first_eval() {
+    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
+    inc.new_defined_name("LAM", None, "LAMBDA(x,x*2+Sheet1!$A$2)")
+        .unwrap();
+    inc._set("E15", "=SEQUENCE(3)");
+    inc._set("E10", "=E15#");
+    inc.evaluate();
+
+    let mut full = new_empty_model();
+    full.new_defined_name("LAM", None, "LAMBDA(x,x*2+Sheet1!$A$2)")
+        .unwrap();
+    full._set("E15", "=SEQUENCE(3)");
+    full._set("E10", "=E15#");
+    full.evaluate();
+
+    for cell in ["E10", "E11", "E12", "E15", "E16", "E17"] {
+        assert_eq!(inc._get_text(cell), full._get_text(cell), "{cell}");
     }
 }
 
