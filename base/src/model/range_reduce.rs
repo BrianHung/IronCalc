@@ -7,9 +7,10 @@
 //! shorter range is reused only when it is itself referenced by a formula, so a
 //! lone range keeps its direct scan and pays no speculative overhead.
 //!
-//! Results are memoized per evaluation pass (see [`Model::evaluate`]); the cache
-//! is cleared whenever cell values are recomputed, so it never outlives the
-//! values it summarizes.
+//! Results are memoized per evaluation pass (see [`Model::evaluate`]); each
+//! cache entry is stamped with `pass_generation`, so a later pass ignores
+//! leftovers without a hand-placed `.clear()`. A spill rewrite still clears
+//! the memo within the same pass.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,7 +22,8 @@ use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 
 /// Per-pass memo of range reductions, keyed by range and reducer.
-pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), RangeAgg>;
+/// The `u64` is the `pass_generation` that produced the aggregate.
+pub(crate) type RangeReduceCache = HashMap<(Area, RangeReducer), (u64, RangeAgg)>;
 
 /// An associative reduction over the numeric cells of a range.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -137,13 +139,7 @@ fn collect_static_ranges(
             let c1 = absolute_coord(*absolute_column1, *column1, context.column);
             let r2 = absolute_coord(*absolute_row2, *row2, context.row);
             let c2 = absolute_coord(*absolute_column2, *column2, context.column);
-            let area = (
-                *sheet_index,
-                r1.min(r2),
-                c1.min(c2),
-                r1.max(r2),
-                c1.max(c2),
-            );
+            let area = (*sheet_index, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2));
             out.entry(area.0).or_default().insert(area);
         }
         Node::FunctionKind { args, .. } | Node::NamedFunctionKind { args, .. } => {
@@ -335,17 +331,20 @@ impl Model<'_> {
     }
 
     fn cached_agg(&self, key: &(Area, RangeReducer)) -> Option<RangeAgg> {
-        self.range_reduce_cache
-            .get(key)
-            .filter(|agg| agg.cacheable())
-            .cloned()
+        match self.range_reduce_cache.get(key) {
+            Some((gen, agg)) if *gen == self.pass_generation && agg.cacheable() => {
+                Some(agg.clone())
+            }
+            _ => None,
+        }
     }
 
     fn cache_agg(&mut self, key: (Area, RangeReducer), agg: RangeAgg, circ_seen: bool) {
         // COUNT ignores errors, so a mid-cycle `#CIRC` becomes a Number.
         // Caching that poisons later scans of the same range.
         if !circ_seen && agg.cacheable() {
-            self.range_reduce_cache.insert(key, agg);
+            self.range_reduce_cache
+                .insert(key, (self.pass_generation, agg));
         }
     }
 

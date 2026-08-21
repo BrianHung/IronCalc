@@ -705,6 +705,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
+            pass_generation: 0,
             read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
             write_seeds: HashSet::new(),

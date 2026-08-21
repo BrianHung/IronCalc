@@ -272,6 +272,9 @@ pub struct Model<'a> {
     pub(crate) formula_cell_count: usize,
     /// Memoized range reductions for the current pass, keyed by range and reducer.
     pub(crate) range_reduce_cache: RangeReduceCache,
+    /// Bumped at the start of every `evaluate_full` restart and `evaluate_selective`.
+    /// Range-reduce cache entries from another generation are ignored.
+    pub(crate) pass_generation: u64,
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
     pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
@@ -1953,6 +1956,7 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
+            pass_generation: 0,
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
@@ -3441,7 +3445,7 @@ impl<'a> Model<'a> {
         while retry && restart_count < max_restarts {
             retry = false;
             self.cells.clear();
-            self.range_reduce_cache.clear();
+            self.pass_generation = self.pass_generation.wrapping_add(1);
             self.support.clear();
             // dynamic links (HYPERLINK) are rebuilt on every evaluation
             self.links.clear();

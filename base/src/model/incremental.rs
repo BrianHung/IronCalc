@@ -260,7 +260,7 @@ impl Model<'_> {
     }
 
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
-        self.range_reduce_cache.clear();
+        self.pass_generation = self.pass_generation.wrapping_add(1);
         let write_seeds = std::mem::take(&mut self.write_seeds);
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
