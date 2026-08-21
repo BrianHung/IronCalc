@@ -1,6 +1,6 @@
 use chrono::DateTime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     calc_result::Range,
@@ -74,6 +74,7 @@ impl<'a> Model<'a> {
             views,
             conditional_formatting: vec![],
             links: HashMap::new(),
+            write_log: crate::recalc::WriteLog::default(),
         }
     }
 
@@ -195,7 +196,7 @@ impl<'a> Model<'a> {
         self.parsed_defined_names = HashMap::new();
         self.parse_defined_names();
         // Reparsing invalidates the dependency graph built on the old parse.
-        self.graph.force_full();
+        self.invalidate_graph();
         self.evaluate();
     }
 
@@ -704,9 +705,9 @@ impl<'a> Model<'a> {
             recompute_scope: None,
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
-            write_log: crate::recalc::WriteLog::default(),
             read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
+            write_seeds: HashSet::new(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

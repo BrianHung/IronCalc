@@ -13,9 +13,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{CellOrRange, Model};
+use super::Model;
 use crate::calc_result::CalcResult;
 use crate::dependency_graph::{Area, RecalcMode};
+use crate::expressions::parser::Node;
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 
@@ -104,6 +105,76 @@ impl RangeReducer {
     }
 }
 
+/// Static range refs a formula can name (no NameTarget / OFFSET). Defined-name
+/// and computed ranges are left to the tracer; composition only needs explicit
+/// `A1:A10`-style prefixes to know a shorter range is itself referenced.
+fn collect_static_ranges(
+    node: &Node,
+    context: CellReferenceIndex,
+    out: &mut HashMap<u32, HashSet<Area>>,
+) {
+    let absolute_coord = |absolute: bool, value: i32, offset: i32| {
+        if absolute {
+            value
+        } else {
+            value + offset
+        }
+    };
+    match node {
+        Node::RangeKind {
+            sheet_index,
+            absolute_row1,
+            absolute_column1,
+            row1,
+            column1,
+            absolute_row2,
+            absolute_column2,
+            row2,
+            column2,
+            ..
+        } => {
+            let r1 = absolute_coord(*absolute_row1, *row1, context.row);
+            let c1 = absolute_coord(*absolute_column1, *column1, context.column);
+            let r2 = absolute_coord(*absolute_row2, *row2, context.row);
+            let c2 = absolute_coord(*absolute_column2, *column2, context.column);
+            let area = (
+                *sheet_index,
+                r1.min(r2),
+                c1.min(c2),
+                r1.max(r2),
+                c1.max(c2),
+            );
+            out.entry(area.0).or_default().insert(area);
+        }
+        Node::FunctionKind { args, .. } | Node::NamedFunctionKind { args, .. } => {
+            for arg in args {
+                collect_static_ranges(arg, context, out);
+            }
+        }
+        Node::LambdaCallKind { lambda, args } => {
+            collect_static_ranges(lambda, context, out);
+            for arg in args {
+                collect_static_ranges(arg, context, out);
+            }
+        }
+        Node::LambdaDefKind { body, .. } => collect_static_ranges(body, context, out),
+        Node::OpRangeKind { left, right }
+        | Node::OpConcatenateKind { left, right }
+        | Node::OpSumKind { left, right, .. }
+        | Node::OpProductKind { left, right, .. }
+        | Node::OpPowerKind { left, right }
+        | Node::CompareKind { left, right, .. } => {
+            collect_static_ranges(left, context, out);
+            collect_static_ranges(right, context, out);
+        }
+        Node::UnaryKind { right, .. } => collect_static_ranges(right, context, out),
+        Node::ImplicitIntersection { child, .. } | Node::SpillRangeOperator { child } => {
+            collect_static_ranges(child, context, out);
+        }
+        _ => {}
+    }
+}
+
 impl Model<'_> {
     /// Records the ranges referenced by formulas, per sheet, so range composition
     /// knows when reusing a one-row-shorter range is worthwhile. Incremental and
@@ -122,13 +193,7 @@ impl Model<'_> {
                             column: *col,
                         };
                         let node = &self.parsed_formulas[sheet as usize][formula as usize].0;
-                        let mut refs = Vec::new();
-                        self.collect_references(node, context, &mut refs, &mut HashSet::new());
-                        for reference in refs {
-                            if let CellOrRange::Range(area) = reference {
-                                referenced.entry(area.0).or_default().insert(area);
-                            }
-                        }
+                        collect_static_ranges(node, context, &mut referenced);
                     }
                 }
             }

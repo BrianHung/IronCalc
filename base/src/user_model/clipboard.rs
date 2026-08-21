@@ -104,9 +104,6 @@ impl<'a> UserModel<'a> {
         clipboard: &ClipboardData,
         is_cut: bool,
     ) -> Result<(), String> {
-        // Paste moves cells and rewrites references and defined names in ways the
-        // incremental graph does not model, so force a full recompute.
-        self.model.force_full_recompute();
         let mut diff_list = Vec::new();
         let view = self.get_selected_view();
         let (source_first_row, source_first_column, source_last_row, source_last_column) =

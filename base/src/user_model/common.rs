@@ -1279,8 +1279,6 @@ impl<'a> UserModel<'a> {
         column_count: i32,
         delta: i32,
     ) -> Result<(), String> {
-        // Structural changes move formulas, invalidating the dependency graph.
-        self.model.force_full_recompute();
         if delta == 0 || column_count <= 0 {
             return Ok(());
         }
@@ -1322,8 +1320,6 @@ impl<'a> UserModel<'a> {
         row_count: i32,
         delta: i32,
     ) -> Result<(), String> {
-        // Structural changes move formulas, invalidating the dependency graph.
-        self.model.force_full_recompute();
         if delta == 0 || row_count <= 0 {
             return Ok(());
         }

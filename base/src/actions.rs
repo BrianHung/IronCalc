@@ -510,7 +510,6 @@ impl<'a> Model<'a> {
             // mark it dirty at the pre-shift position; the later shift moves that
             // mark to the target, ensuring the incremental pass evaluates it.
             self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
-            self.graph.mark_dirty((sheet, source_row, source_column));
         } else {
             self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
         }
@@ -1026,7 +1025,7 @@ impl<'a> Model<'a> {
                     }
                 } else {
                     // remove all cells in row
-                    self.workbook.worksheet_mut(sheet)?.sheet_data.remove(&r);
+                    self.workbook.worksheet_mut(sheet)?.remove_row_data(r);
                 }
             }
         }
