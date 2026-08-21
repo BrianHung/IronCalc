@@ -2144,8 +2144,11 @@ impl<'a> Model<'a> {
         column: i32,
         value: &str,
     ) -> Result<(), String> {
-        self.mark_value_edit(sheet, row, column);
+        if !is_valid_row(row) || !is_valid_column_number(column) {
+            return Err("Incorrect row or column".to_string());
+        }
         let style_index = self.get_cell_style_index(sheet, row, column)?;
+        self.mark_value_edit(sheet, row, column);
         let new_style_index;
         if common::value_needs_quoting(value, self.language) {
             new_style_index = self
@@ -2195,8 +2198,11 @@ impl<'a> Model<'a> {
         column: i32,
         value: bool,
     ) -> Result<(), String> {
-        self.mark_value_edit(sheet, row, column);
+        if !is_valid_row(row) || !is_valid_column_number(column) {
+            return Err("Incorrect row or column".to_string());
+        }
         let style_index = self.get_cell_style_index(sheet, row, column)?;
+        self.mark_value_edit(sheet, row, column);
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
                 .styles
@@ -2238,8 +2244,11 @@ impl<'a> Model<'a> {
         column: i32,
         value: f64,
     ) -> Result<(), String> {
-        self.mark_value_edit(sheet, row, column);
+        if !is_valid_row(row) || !is_valid_column_number(column) {
+            return Err("Incorrect row or column".to_string());
+        }
         let style_index = self.get_cell_style_index(sheet, row, column)?;
+        self.mark_value_edit(sheet, row, column);
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
                 .styles
@@ -2459,6 +2468,15 @@ impl<'a> Model<'a> {
         column: i32,
         value: String,
     ) -> Result<(), String> {
+        // Reject invalid coordinates before touching the graph: a dirty seed at a
+        // missing sheet panics on the next Incremental evaluate, and an invalid
+        // row/column would appear in the changed-cell delta without a write.
+        if !is_valid_row(row) || !is_valid_column_number(column) {
+            return Err("Incorrect row or column".to_string());
+        }
+        let _ = self.workbook.worksheet(sheet)?;
+        // first we make sure we can write in the cell and clear the spills.
+        self.prepare_cell_for_user_input(sheet, row, column)?;
         // A plain value edit keeps the graph valid and opts into incremental;
         // a formula, clear, or quote-prefixed literal forces a full recompute.
         if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') {
@@ -2466,9 +2484,6 @@ impl<'a> Model<'a> {
         } else {
             self.graph.force_full();
         }
-
-        // first we make sure we can write in the cell and clear the spills.
-        self.prepare_cell_for_user_input(sheet, row, column)?;
         if value.is_empty() {
             // If the value is empty we just clear the cell.
             // Deleting the contents of a cell also removes its link.
@@ -3262,8 +3277,13 @@ impl<'a> Model<'a> {
             self.collect_array_cells();
             self.collect_volatile_cells();
             self.build_dependency_graph();
+            self.graph.after_pass();
+        } else {
+            // Ready + an ever-growing dirty set would make a later Incremental
+            // switch (tests, with_recalc_mode) see stale seeds. Full has no
+            // valid graph, so the next Incremental pass must rebuild.
+            self.graph.force_full();
         }
-        self.graph.after_pass();
     }
 
     /// Removes the content of every cell in the range but leaves the style.
@@ -3468,7 +3488,7 @@ impl<'a> Model<'a> {
                         f,
                         s,
                         kind: ArrayKind::Dynamic,
-                        ..
+                        v,
                     } = cell
                     {
                         let (width, height) = *r;
@@ -3476,7 +3496,17 @@ impl<'a> Model<'a> {
                             Axis::Row => *row + height > boundary,
                             Axis::Column => *column + width > boundary,
                         };
-                        if reaches {
+                        // A blocked spill stores r=(1,1) and has no edge from the
+                        // blocker, so `reaches` is false. The blocker moving away
+                        // must still re-evaluate the anchor.
+                        let blocked = matches!(
+                            v,
+                            FormulaValue::Error {
+                                ei: Error::SPILL,
+                                ..
+                            }
+                        );
+                        if reaches || blocked {
                             result.push((*row, *column, *f, *s, width, height));
                         }
                     }

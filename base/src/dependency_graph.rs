@@ -328,6 +328,7 @@ impl VolatileCells {
 }
 
 impl NondeterministicCells {
+    #[cfg(feature = "recalc_verify")]
     pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
         self.0.iter()
     }
@@ -549,6 +550,27 @@ impl DependencyGraph {
                 }
             }
         }
+        dependents
+    }
+
+    /// Direct dependents of `cell`: cells reading it, cells reading a range
+    /// that contains it, and cells reading a name that currently resolves to it.
+    pub(crate) fn dependents_of(&self, cell: Position) -> Vec<Position> {
+        let mut dependents: Vec<Position> = self
+            .cell_dependents
+            .get(&cell)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        if let Some(sheet_ranges) = self.range_dependents.get(&cell.0) {
+            for range in sheet_ranges.containing(cell) {
+                if let Some(range_dependents) = sheet_ranges.dependents_of(range) {
+                    dependents.extend(range_dependents.iter().copied());
+                }
+            }
+        }
+        dependents.extend(self.dependents_via_names(cell));
         dependents
     }
 
