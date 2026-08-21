@@ -1272,3 +1272,137 @@ fn incremental_overwrite_spill_anchor_updates_dependents() {
     assert_eq!(model._get_text("C2"), "0");
     assert!(!model.graph.arrays.contains(&(0, 1, 1)));
 }
+
+#[test]
+fn incremental_rejected_write_does_not_poison_evaluate() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model.evaluate();
+    assert!(model.set_user_input(1, 9, 3, "84".to_string()).is_err());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+}
+
+#[test]
+fn incremental_blocked_spill_respills_after_insert() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("E3", "7");
+    model._set("E1", "=SEQUENCE(3)");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "#SPILL!");
+
+    model.insert_rows(0, 2, 2).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "1");
+    assert_eq!(model._get_text("E2"), "2");
+    assert_eq!(model._get_text("E3"), "3");
+}
+
+#[test]
+fn incremental_empty_passthrough_counts_as_blank() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("C1", "=COUNTBLANK(D1:E1)");
+    model._set("D1", "=A1");
+    model._set("E1", "x");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "1");
+
+    model._set("E1", "y");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "1");
+}
+
+#[test]
+fn incremental_empty_passthrough_concat() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "=D1&G1");
+    model._set("D1", "=IF(TRUE,A1,1)");
+    model._set("G1", "1");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+
+    model._set("G1", "2");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "2");
+}
+
+#[test]
+fn incremental_sumifs_index_criteria_tracks_expanded_range() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    for row in 1..=10 {
+        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
+        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
+    }
+    model._set("E1", "=SUMIFS(D1:D10,INDEX(A1:C3,0,1),\">0\")");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "10");
+
+    model._set("A7", "0");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "9");
+}
+
+#[test]
+fn incremental_sumifs_let_criteria_tracks_expanded_range() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    for row in 1..=10 {
+        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
+        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
+    }
+    model._set("E1", "=LET(r,A1:A3,SUMIFS(D1:D10,r,\">0\"))");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "10");
+
+    model._set("A7", "0");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "9");
+}
+
+#[test]
+fn incremental_offset_cone_delta_only_net_movers() {
+    for _ in 0..40 {
+        let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+        model._set("C1", "0");
+        model._set("D1", "10");
+        model._set("E1", "=C1*10");
+        model._set("A1", "=OFFSET(D1,0,C1)");
+        model._set("G1", "=A1+1");
+        model.evaluate();
+        let _ = model.take_changed_cells();
+        model._set("C1", "1");
+        model.evaluate();
+        assert_eq!(model._get_text("A1"), "10");
+        match model.take_changed_cells() {
+            ChangedSinceRead::Everything => panic!("expected a cells delta"),
+            ChangedSinceRead::Cells(cells) => {
+                assert!(
+                    !cells
+                        .iter()
+                        .any(|c| c.row == 1 && (c.column == 1 || c.column == 7)),
+                    "unchanged A1/G1 in delta: {cells:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn incremental_redundant_evaluate_reports_late_spill() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("E15", "=SEQUENCE(3)");
+    model._set("A1", "=E15#");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => {}
+        ChangedSinceRead::Cells(cells) => {
+            if model._get_text("A2") == "2" {
+                assert!(
+                    cells.iter().any(|c| c.row == 2 && c.column == 1),
+                    "A2 spilled on the redundant pass but is missing from the delta: {cells:?}"
+                );
+            }
+        }
+    }
+}

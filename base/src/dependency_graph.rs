@@ -662,10 +662,13 @@ impl DependencyGraph {
     /// caller can fall back to the recursive recompute that reports `#CIRC!`.
     pub(crate) fn topo_order(&self, affected: &HashSet<Position>) -> Option<Vec<Position>> {
         let successors = |cell: Position| -> Vec<Position> {
-            self.dependents_of(cell)
+            let mut dependents: Vec<Position> = self
+                .dependents_of(cell)
                 .into_iter()
                 .filter(|d| affected.contains(d))
-                .collect()
+                .collect();
+            dependents.sort_unstable();
+            dependents
         };
         let mut indegree: HashMap<Position, usize> = affected.iter().map(|&c| (c, 0)).collect();
         for &cell in affected {
