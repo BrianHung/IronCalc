@@ -180,7 +180,7 @@ const RANGE_INDEX_MAX_BANDS: i32 = 16;
 /// cell can find the ranges that contain it without scanning them all.
 /// `dependents` is the source of truth; `bands` and `wide` only speed up the
 /// point query and are rebuilt from it whenever positions shift.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SheetRanges {
     dependents: HashMap<Area, HashSet<Position>>,
     /// Row band (`row / RANGE_INDEX_BAND_ROWS`) to the bounded ranges touching it.
@@ -233,7 +233,7 @@ impl SheetRanges {
 }
 
 /// Walkability of the stored edges. One enum so built/forced flags cannot disagree.
-#[derive(Default)]
+#[derive(Clone, Default)]
 enum GraphState {
     Ready {
         dirty: HashSet<Position>,
@@ -243,7 +243,7 @@ enum GraphState {
 }
 
 /// Shared storage for the role-typed sets on [`DependencyGraph`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Positions(HashSet<Position>);
 
 impl Positions {
@@ -269,25 +269,29 @@ impl Positions {
 }
 
 /// Array/spill cells.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ArrayCells(Positions);
+
+/// Cells whose static edges miss their target (`OFFSET`, `INDIRECT`).
+#[derive(Clone, Default)]
+pub(crate) struct DynamicRefs(Positions);
 
 /// Volatile formulas (`RAND`, `NOW`, `OFFSET`, …). Only RAND/NOW/TODAY re-roll;
 /// `OFFSET` recomputes because static edges miss the cell it actually reads.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct VolatileCells(Positions);
 
 /// RAND/NOW/TODAY. Verify strips this cone.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct NondeterministicCells(Positions);
 
 /// Formulas whose result depends on coordinates or formula text (`ROW()`,
 /// `COLUMN()`, `FORMULATEXT`), not only on precedent values.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct StructureDependent(Positions);
 
 /// `SUBTOTAL(1xx)` formulas that skip hidden rows/columns.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct VisibilityDependent(Positions);
 
 impl ArrayCells {
@@ -301,6 +305,28 @@ impl ArrayCells {
 
     fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
         self.0.shift(shift_pos);
+    }
+}
+
+impl DynamicRefs {
+    pub(crate) fn contains(&self, cell: &Position) -> bool {
+        self.0.contains(cell)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
+        self.0.iter()
+    }
+
+    pub(crate) fn replace(&mut self, cells: HashSet<Position>) {
+        self.0.replace(cells);
+    }
+
+    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
+        self.0.shift(shift_pos);
+    }
+
+    fn remove(&mut self, cell: &Position) {
+        self.0.remove(cell);
     }
 }
 
@@ -328,7 +354,6 @@ impl VolatileCells {
 }
 
 impl NondeterministicCells {
-    #[cfg(feature = "recalc_verify")]
     pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
         self.0.iter()
     }
@@ -387,7 +412,7 @@ impl VisibilityDependent {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it. A set, so a formula reading
     /// the same cell twice (`=A1+A1`) records a single edge.
@@ -405,7 +430,11 @@ pub(crate) struct DependencyGraph {
     state: GraphState,
     pub(crate) volatile: VolatileCells,
     pub(crate) arrays: ArrayCells,
+    pub(crate) dynamic_refs: DynamicRefs,
     pub(crate) nondeterministic: NondeterministicCells,
+    /// Insert/delete can move data cells the dirty cone does not name. Cleared
+    /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
+    structural_unknown: bool,
     pub(crate) structure_dependent: StructureDependent,
     visibility_dependent: VisibilityDependent,
 }
@@ -473,6 +502,7 @@ impl DependencyGraph {
     /// spill cells that `prepare_cell_for_user_input` already cleared.
     pub(crate) fn clear_cell_roles(&mut self, cell: Position) {
         self.volatile.remove(&cell);
+        self.dynamic_refs.remove(&cell);
         self.nondeterministic.remove(&cell);
         self.structure_dependent.remove(&cell);
         self.visibility_dependent.remove(&cell);
@@ -494,6 +524,28 @@ impl DependencyGraph {
         }
     }
 
+    /// The dirty set before this pass seeds volatiles. User edits, not RAND/*IFS.
+    pub(crate) fn peek_dirty(&self) -> Vec<Position> {
+        match &self.state {
+            GraphState::Ready { dirty } => dirty.iter().copied().collect(),
+            GraphState::MustRebuild => Vec::new(),
+        }
+    }
+
+    /// Seeds Verify allows in the delta even when the snapshot did not move:
+    /// user edits plus RAND/NOW/TODAY. OFFSET and *IFS-as-volatile recompute
+    /// every pass but are not always-report: they land in the delta only if
+    /// observable state moved.
+    #[cfg(feature = "recalc_verify")]
+    pub(crate) fn always_report_seeds(&self) -> HashSet<Position> {
+        let mut seeds = match &self.state {
+            GraphState::Ready { dirty } => dirty.clone(),
+            GraphState::MustRebuild => HashSet::new(),
+        };
+        seeds.extend(self.nondeterministic.iter());
+        seeds
+    }
+
     /// Forces the next evaluation to be full and rebuild the graph.
     pub(crate) fn force_full(&mut self) {
         self.state = GraphState::MustRebuild;
@@ -506,7 +558,6 @@ impl DependencyGraph {
     }
 
     /// True when the graph is not ready: first pass or an unmodeled edit.
-    #[cfg(test)]
     pub(crate) fn full_reflects_change(&self) -> bool {
         !matches!(self.state, GraphState::Ready { .. })
     }
@@ -527,6 +578,10 @@ impl DependencyGraph {
 
     pub(crate) fn replace_arrays(&mut self, cells: HashSet<Position>) {
         self.arrays.replace(cells);
+    }
+
+    pub(crate) fn replace_dynamic_refs(&mut self, cells: HashSet<Position>) {
+        self.dynamic_refs.replace(cells);
     }
 
     pub(crate) fn replace_nondeterministic(&mut self, cells: HashSet<Position>) {
@@ -572,6 +627,48 @@ impl DependencyGraph {
         }
         dependents.extend(self.dependents_via_names(cell));
         dependents
+    }
+
+    /// Orders `affected` so each cell follows the affected cells it reads.
+    /// Returns `None` when the affected set contains a dependency cycle, so the
+    /// caller can fall back to the recursive recompute that reports `#CIRC!`.
+    pub(crate) fn topo_order(&self, affected: &HashSet<Position>) -> Option<Vec<Position>> {
+        let successors = |cell: Position| -> Vec<Position> {
+            let mut dependents: Vec<Position> = self
+                .dependents_of(cell)
+                .into_iter()
+                .filter(|d| affected.contains(d))
+                .collect();
+            dependents.sort_unstable();
+            dependents
+        };
+        let mut indegree: HashMap<Position, usize> = affected.iter().map(|&c| (c, 0)).collect();
+        for &cell in affected {
+            for dependent in successors(cell) {
+                *indegree.entry(dependent).or_default() += 1;
+            }
+        }
+        let mut queue: Vec<Position> = indegree
+            .iter()
+            .filter(|(_, &n)| n == 0)
+            .map(|(&c, _)| c)
+            .collect();
+        queue.sort_unstable();
+        let mut order = Vec::with_capacity(affected.len());
+        let mut head = 0;
+        while head < queue.len() {
+            let cell = queue[head];
+            head += 1;
+            order.push(cell);
+            for dependent in successors(cell) {
+                let n = indegree.entry(dependent).or_default();
+                *n -= 1;
+                if *n == 0 {
+                    queue.push(dependent);
+                }
+            }
+        }
+        (order.len() == affected.len()).then_some(order)
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
@@ -621,6 +718,9 @@ impl DependencyGraph {
         }
         self.mark_structural_dependents(sheet, axis, boundary);
         self.shift(sheet, axis, boundary, delta);
+        // Data cells in the shift band are not dirty. The cell-list delta cannot
+        // name them, so `take_changed_cells` reports Everything after this pass.
+        self.structural_unknown = true;
     }
 
     /// Marks the dependents a structural edit at `boundary` can change: those
@@ -709,6 +809,7 @@ impl DependencyGraph {
         }
         self.volatile.shift(shift_pos);
         self.arrays.shift(shift_pos);
+        self.dynamic_refs.shift(shift_pos);
         self.nondeterministic.shift(shift_pos);
         self.structure_dependent.shift(shift_pos);
         self.visibility_dependent.shift(shift_pos);
@@ -723,8 +824,15 @@ impl DependencyGraph {
         self.name_dependents = shifted_names;
     }
 
+    /// Whether this pass follows an insert/delete whose delta cannot name every
+    /// moved cell. Clears the flag.
+    pub(crate) fn take_structural_unknown(&mut self) -> bool {
+        std::mem::replace(&mut self.structural_unknown, false)
+    }
+
     /// Marks the graph ready after a pass that left the edges valid.
     pub(crate) fn after_pass(&mut self) {
+        self.structural_unknown = false;
         self.state = GraphState::Ready {
             dirty: HashSet::new(),
         };

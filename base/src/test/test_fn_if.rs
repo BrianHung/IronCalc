@@ -32,5 +32,5 @@ fn fn_if_missing_args() {
 
     // assert_eq!(model._get_text("A1"), *"0");
     assert_eq!(model._get_text("A2"), *"5");
-    assert_eq!(model._get_text("A3"), *"0");
+    assert_eq!(model._get_text("A3"), *"");
 }

@@ -147,7 +147,7 @@ fn dynamic_formula_spills_array() {
         cell_a5,
         Cell::SpillCell {
             a: (1, 1),
-            v: SpillValue::Number(0.0),
+            v: SpillValue::Empty,
             ..
         }
     ));

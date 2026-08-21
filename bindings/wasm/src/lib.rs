@@ -14,7 +14,8 @@ use ironcalc_base::{
     },
     types::{CellType, Color, Link, Style, StyleIncludes},
     worksheet::NavigationDirection,
-    BorderArea, ClipboardData, RecalcMode as BaseRecalcMode, UserModel as BaseModel,
+    BorderArea, ChangedSinceRead, ClipboardData, RecalcMode as BaseRecalcMode,
+    UserModel as BaseModel,
 };
 
 fn to_js_error(error: String) -> JsError {
@@ -199,6 +200,32 @@ impl Model {
     #[wasm_bindgen(js_name = "pauseEvaluation")]
     pub fn pause_evaluation(&mut self) {
         self.model.pause_evaluation()
+    }
+
+    /// Returns the cells whose observable state moved on incremental
+    /// evaluations since the last call, and clears the record.
+    /// `{ kind: "everything" }` after a full recompute;
+    /// `{ kind: "cells", cells: [...] }` for an incremental delta
+    /// (possibly empty). These are not the same answer, so this is not `null`.
+    /// Only meaningful for a model constructed with `RecalcMode.Incremental`.
+    #[wasm_bindgen(
+        js_name = "takeChangedCells",
+        unchecked_return_type = "{ kind: 'everything' } | { kind: 'cells', cells: CellReferenceIndex[] }"
+    )]
+    pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "camelCase")]
+        enum ChangedSinceReadJs {
+            Everything,
+            Cells {
+                cells: Vec<ironcalc_base::expressions::types::CellReferenceIndex>,
+            },
+        }
+        let payload = match self.model.take_changed_cells() {
+            ChangedSinceRead::Everything => ChangedSinceReadJs::Everything,
+            ChangedSinceRead::Cells(cells) => ChangedSinceReadJs::Cells { cells },
+        };
+        serde_wasm_bindgen::to_value(&payload).map_err(|e| to_js_error(e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "resumeEvaluation")]

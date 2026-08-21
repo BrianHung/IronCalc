@@ -112,13 +112,15 @@ impl Cell {
             Cell::ErrorCell { .. } => CellType::ErrorValue,
             Cell::SharedString { .. } => CellType::Text,
             Cell::CellFormula { v, .. } | Cell::ArrayFormula { v, .. } => match v {
-                FormulaValue::Unevaluated | FormulaValue::Number(_) => CellType::Number,
+                FormulaValue::Unevaluated | FormulaValue::Number(_) | FormulaValue::Empty => {
+                    CellType::Number
+                }
                 FormulaValue::Boolean(_) => CellType::LogicalValue,
                 FormulaValue::Text(_) => CellType::Text,
                 FormulaValue::Error { .. } => CellType::ErrorValue,
             },
             Cell::SpillCell { v, .. } => match v {
-                SpillValue::Number(_) => CellType::Number,
+                SpillValue::Number(_) | SpillValue::Empty => CellType::Number,
                 SpillValue::Boolean(_) => CellType::LogicalValue,
                 SpillValue::Text(_) => CellType::Text,
                 SpillValue::Error(_) => CellType::ErrorValue,
@@ -205,6 +207,7 @@ fn formula_value_to_cell_value(v: &FormulaValue, language: &Language) -> CellVal
         FormulaValue::Number(n) => CellValue::Number(*n),
         FormulaValue::Text(s) => CellValue::String(s.clone()),
         FormulaValue::Error { ei, .. } => CellValue::String(ei.to_localized_error_string(language)),
+        FormulaValue::Empty => CellValue::None,
     }
 }
 
@@ -214,5 +217,6 @@ fn spill_value_to_cell_value(v: &SpillValue, language: &Language) -> CellValue {
         SpillValue::Number(n) => CellValue::Number(*n),
         SpillValue::Text(s) => CellValue::String(s.clone()),
         SpillValue::Error(ei) => CellValue::String(ei.to_localized_error_string(language)),
+        SpillValue::Empty => CellValue::None,
     }
 }

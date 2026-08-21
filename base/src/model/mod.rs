@@ -105,6 +105,31 @@ pub(crate) enum CellState {
     Evaluating,
 }
 
+/// What cells changed since the last [`Model::take_changed_cells`], backing the
+/// incremental delta API.
+pub(crate) enum ChangedCells {
+    /// A full recompute ran: the next `take_changed_cells` is `Everything`,
+    /// not an empty `Cells` list.
+    All,
+    /// Cells whose observable state moved on an incremental pass since the last
+    /// read (not every cell that ran).
+    Delta(HashSet<Position>),
+}
+
+/// Cells that changed since the last [`Model::take_changed_cells`].
+///
+/// `Everything` is a full pass (rescan the workbook). `Cells` is the incremental
+/// delta, possibly empty. These are not the same kind of answer, so this is not
+/// an `Option`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangedSinceRead {
+    /// A full pass ran, or an insert/delete moved cells the dirty cone cannot
+    /// name. Rescan the workbook.
+    Everything,
+    /// The incremental delta since the last read, possibly empty.
+    Cells(Vec<CellReferenceIndex>),
+}
+
 /// A parsed formula for a defined name
 #[derive(Clone)]
 pub(crate) enum ParsedDefinedName {
@@ -148,7 +173,7 @@ fn array_node_to_formula_value(node: ArrayNode) -> FormulaValue {
             o: String::new(),
             m: String::new(),
         },
-        ArrayNode::Empty => FormulaValue::Number(0.0),
+        ArrayNode::Empty => FormulaValue::Empty,
     }
 }
 
@@ -158,7 +183,7 @@ fn array_node_to_spill_value(node: ArrayNode) -> SpillValue {
         ArrayNode::Number(n) => SpillValue::Number(n),
         ArrayNode::String(s) => SpillValue::Text(s),
         ArrayNode::Error(ei) => SpillValue::Error(ei),
-        ArrayNode::Empty => SpillValue::Number(0.0),
+        ArrayNode::Empty => SpillValue::Empty,
     }
 }
 
@@ -169,9 +194,11 @@ fn formula_value_to_spill_value(v: &FormulaValue) -> SpillValue {
         FormulaValue::Number(n) => SpillValue::Number(*n),
         FormulaValue::Text(s) => SpillValue::Text(s.clone()),
         FormulaValue::Error { ei, .. } => SpillValue::Error(ei.clone()),
+        FormulaValue::Empty => SpillValue::Empty,
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum CellOrRange {
     // (sheet, row, column)
     Cell((u32, i32, i32)),
@@ -246,6 +273,14 @@ pub struct Model<'a> {
     /// affected set approaches this recomputes about as much as a full pass but
     /// with extra bookkeeping, so it falls back to full instead.
     pub(crate) formula_cell_count: usize,
+    /// User writes since the last evaluate. Drained into dirty/force-full.
+    pub(crate) write_log: crate::recalc::WriteLog,
+    /// Stack of in-flight formula read sets. The evaluator pushes one per
+    /// formula it is computing; nested `evaluate_cell` records on the top.
+    pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
+    /// What cells changed since the last [`Model::take_changed_cells`], backing
+    /// the incremental delta API. See [`ChangedCells`].
+    pub(crate) changed_cells: ChangedCells,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -342,6 +377,13 @@ impl<'a> Model<'a> {
                     column_right += cell.column;
                 }
                 // FIXME: HACK. The parser is currently parsing Sheet3!A1:A10 as Sheet3!A1:(present sheet)!A10
+                self.trace_rect(
+                    *sheet_index,
+                    row_left.min(row_right),
+                    column_left.min(column_right),
+                    row_left.max(row_right),
+                    column_left.max(column_right),
+                );
                 CalcResult::Range {
                     left: CellReferenceIndex {
                         sheet: *sheet_index,
@@ -389,6 +431,13 @@ impl<'a> Model<'a> {
                     && left2.row == right2.row
                     && left2.column == right2.column
                 {
+                    self.trace_rect(
+                        left1.sheet,
+                        left1.row.min(right2.row),
+                        left1.column.min(right2.column),
+                        left1.row.max(right2.row),
+                        left1.column.max(right2.column),
+                    );
                     return CalcResult::Range {
                         left: left1,
                         right: right2,
@@ -658,6 +707,7 @@ impl<'a> Model<'a> {
                         r1.max(r2),
                         c1.max(c2),
                     )));
+                self.trace_rect(*sheet_index, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2));
                 CalcResult::Range {
                     left: CellReferenceIndex {
                         sheet: *sheet_index,
@@ -730,15 +780,28 @@ impl<'a> Model<'a> {
             }
             ArrayKind(s) => CalcResult::Array(s.to_owned()),
             DefinedNameKind((name, scope, _)) => {
+                self.trace_input(crate::recalc::Input::Name {
+                    name: name.clone(),
+                    scope: *scope,
+                });
                 if let Ok(Some(parsed_defined_name)) = self.get_parsed_defined_name(name, *scope) {
                     match parsed_defined_name {
                         ParsedDefinedName::CellReference(reference) => {
                             self.evaluate_cell(reference)
                         }
-                        ParsedDefinedName::RangeReference(range) => CalcResult::Range {
-                            left: range.left,
-                            right: range.right,
-                        },
+                        ParsedDefinedName::RangeReference(range) => {
+                            self.trace_rect(
+                                range.left.sheet,
+                                range.left.row,
+                                range.left.column,
+                                range.right.row,
+                                range.right.column,
+                            );
+                            CalcResult::Range {
+                                left: range.left,
+                                right: range.right,
+                            }
+                        }
                         ParsedDefinedName::LambdaDefinition(param_names, body) => {
                             let lambda_id = self.get_next_lambda_id();
                             self.lambdas.insert(lambda_id, (param_names, body));
@@ -988,6 +1051,7 @@ impl<'a> Model<'a> {
                                 })
                                 .unwrap_or(false);
                             if blocking {
+                                self.trace_cell(sheet, r, c);
                                 return self.set_cells_with_result(
                                     cell_reference,
                                     cell,
@@ -1167,10 +1231,7 @@ impl<'a> Model<'a> {
                 debug_assert!(false, "Unexpected range result in non-array formula");
                 return Err("Cannot set a range as cell value".to_string());
             }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => {
-                // We treat empty cells as number 0.
-                return self.set_cells_with_result(cell_reference, cell, &CalcResult::Number(0.0));
-            }
+            CalcResult::EmptyCell | CalcResult::EmptyArg => FormulaValue::Empty,
             // CalcResult::Array is handled before this match (see above); it always returns early.
             CalcResult::Array(_) | CalcResult::Lambda(_) => {
                 debug_assert!(false, "Unexpected array result in non-array formula");
@@ -1364,6 +1425,18 @@ impl<'a> Model<'a> {
                 let message = ei.to_localized_error_string(self.language);
                 CalcResult::new_error(ei.clone(), cell_reference, message)
             }
+            CellFormula {
+                v: FormulaValue::Empty,
+                ..
+            }
+            | ArrayFormula {
+                v: FormulaValue::Empty,
+                ..
+            }
+            | SpillCell {
+                v: SpillValue::Empty,
+                ..
+            } => CalcResult::EmptyCell,
         }
     }
 
@@ -1427,9 +1500,58 @@ impl<'a> Model<'a> {
             .get(&cell_reference.column)
     }
 
+    fn tracing(&self) -> bool {
+        self.recalc_mode != RecalcMode::Full
+    }
+
+    fn trace_cell(&mut self, sheet: u32, row: i32, column: i32) {
+        if let Some(top) = self.read_stack.last_mut() {
+            top.record_cell((sheet, row, column));
+        }
+    }
+
+    fn trace_rect(&mut self, sheet: u32, row1: i32, column1: i32, row2: i32, column2: i32) {
+        if let Some(top) = self.read_stack.last_mut() {
+            top.record_rect((sheet, row1, column1, row2, column2));
+        }
+    }
+
+    pub(crate) fn trace_input(&mut self, input: crate::recalc::Input) {
+        if let Some(top) = self.read_stack.last_mut() {
+            top.record_input(input);
+        }
+    }
+
+    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: crate::recalc::ReadSet) {
+        if !self.tracing() {
+            return;
+        }
+        self.graph.remove_dependent(dependent);
+        for p in reads.cells {
+            if p != dependent {
+                self.graph.add_cell_edge(p, dependent);
+            }
+        }
+        for area in reads.rects {
+            self.graph.add_range_edge(area, dependent);
+        }
+        for input in reads.inputs {
+            if let crate::recalc::Input::Name { name, scope } = input {
+                if let Some(target) = self.name_target(&name, scope) {
+                    self.graph.add_name_edge(name, scope, dependent, target);
+                }
+            }
+        }
+    }
+
     // Evaluates a cell and returns the value in the cell
     // FIXME: CalcResult cannot be Array or Range, should we have a different type?
     pub(crate) fn evaluate_cell(&mut self, cell_reference: CellReferenceIndex) -> CalcResult {
+        self.trace_cell(
+            cell_reference.sheet,
+            cell_reference.row,
+            cell_reference.column,
+        );
         // Incremental pass: a cell outside the affected set did not change, so
         // return its stored value instead of recomputing it (and its precedents).
         if let Some(scope) = &self.recompute_scope {
@@ -1537,6 +1659,9 @@ impl<'a> Model<'a> {
                 }
                 // mark cell as being evaluated
                 self.cells.insert(key, CellState::Evaluating);
+                if self.tracing() {
+                    self.read_stack.push(crate::recalc::ReadSet::default());
+                }
                 let (node, _static_result) =
                     &self.parsed_formulas[cell_reference.sheet as usize][f as usize];
                 let result = self.evaluate_node_in_context(&node.clone(), cell_reference);
@@ -1578,12 +1703,22 @@ impl<'a> Model<'a> {
                 if let Err(e) = self.set_cells_with_result(cell_reference, &original_cell, &result)
                 {
                     self.cells.insert(key, CellState::Evaluated);
+                    if self.tracing() {
+                        if let Some(reads) = self.read_stack.pop() {
+                            self.commit_reads(key, reads);
+                        }
+                    }
                     // TODO: I _think_ this can never happen. Maybe we should  refactor things in a way that this is apparent
                     return CalcResult::new_error(Error::ERROR, cell_reference, e);
                 };
 
                 // mark cell as evaluated
                 self.cells.insert(key, CellState::Evaluated);
+                if self.tracing() {
+                    if let Some(reads) = self.read_stack.pop() {
+                        self.commit_reads(key, reads);
+                    }
+                }
 
                 // return the result of the evaluation.
                 match result {
@@ -1763,6 +1898,9 @@ impl<'a> Model<'a> {
             recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
+            write_log: crate::recalc::WriteLog::default(),
+            read_stack: Vec::new(),
+            changed_cells: ChangedCells::All,
         };
 
         model.parse_formulas();
@@ -2416,6 +2554,7 @@ impl<'a> Model<'a> {
     /// sets so Incremental does not keep treating it as RAND/OFFSET/ROW/etc.
     fn mark_value_edit(&mut self, sheet: u32, row: i32, column: i32) {
         let position = (sheet, row, column);
+        self.write_log.push(crate::recalc::Write::Value(position));
         self.graph.mark_dirty(position);
         if self
             .workbook
@@ -3184,7 +3323,7 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full(),
+            RecalcMode::Full => self.evaluate_full_untracked(),
             RecalcMode::Incremental => {
                 self.evaluate_selective();
             }
@@ -3218,6 +3357,9 @@ impl<'a> Model<'a> {
     /// reordered and the phase restarts; an N*N bound prevents infinite loops on
     /// circular spill dependencies. Phase 2 evaluates the remaining cells.
     fn evaluate_full(&mut self) {
+        if self.tracing() {
+            self.graph.clear_edges();
+        }
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3276,7 +3418,8 @@ impl<'a> Model<'a> {
         if self.recalc_mode != RecalcMode::Full {
             self.collect_array_cells();
             self.collect_volatile_cells();
-            self.build_dependency_graph();
+            // Edges come from the read tracer (commit_reads during evaluate_cell),
+            // not from a second static walk of the AST.
             self.graph.after_pass();
         } else {
             // Ready + an ever-growing dirty set would make a later Incremental

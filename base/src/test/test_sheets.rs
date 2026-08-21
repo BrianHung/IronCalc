@@ -14,7 +14,7 @@ fn test_add_remove_sheets() {
     // Add a sheet
     model.new_sheet();
     assert_eq!(model.workbook.get_worksheet_names(), ["Sheet1", "Sheet2"]);
-    assert_eq!(model._get_text("A2"), "0");
+    assert_eq!(model._get_text("A2"), "");
     model._set("Sheet2!A1", "=Sheet1!A1");
     model.evaluate();
     assert_eq!(model._get_text("Sheet2!A1"), "7");
@@ -225,7 +225,7 @@ fn test_delete_sheet_by_index() {
     // Add a sheet
     model.new_sheet();
     assert_eq!(model.workbook.get_worksheet_names(), ["Sheet1", "Sheet2"]);
-    assert_eq!(model._get_text("A2"), "0");
+    assert_eq!(model._get_text("A2"), "");
     model._set("Sheet2!A1", "=Sheet1!A1");
     model.evaluate();
     assert_eq!(model._get_text("Sheet2!A1"), "7");
