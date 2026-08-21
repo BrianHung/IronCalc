@@ -14,7 +14,6 @@ pub(crate) enum Input {
     },
     Clock,
     Random,
-    #[allow(dead_code)]
     SheetStructure,
     /// CELL/INFO observe workbook environment, not cell values.
     Environment,

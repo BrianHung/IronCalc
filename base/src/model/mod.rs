@@ -1522,6 +1522,57 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// Used dimension of `sheet`. Records `SheetStructure` so a structural
+    /// edit re-runs formulas that clipped a whole-column/row reference.
+    pub(crate) fn sheet_dimension(
+        &mut self,
+        sheet: u32,
+    ) -> Result<crate::worksheet::WorksheetDimension, String> {
+        self.trace_input(crate::recalc::Input::SheetStructure);
+        Ok(self.workbook.worksheet(sheet)?.dimension())
+    }
+
+    /// Whether `row` is hidden. Records `RowHidden`.
+    pub(crate) fn row_hidden(&mut self, sheet: u32, row: i32) -> Result<bool, String> {
+        self.trace_input(crate::recalc::Input::RowHidden(sheet, row));
+        self.workbook.worksheet(sheet)?.is_row_hidden(row)
+    }
+
+    /// Table definition by name. Records `SheetStructure`.
+    pub(crate) fn table_by_name(&mut self, name: &str) -> Option<&crate::types::Table> {
+        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.workbook.tables.get(name)
+    }
+
+    /// All tables. Records `SheetStructure`.
+    pub(crate) fn tables(&mut self) -> &std::collections::HashMap<String, crate::types::Table> {
+        self.trace_input(crate::recalc::Input::SheetStructure);
+        &self.workbook.tables
+    }
+
+    pub(crate) fn workbook_name(&self) -> &str {
+        &self.workbook.name
+    }
+
+    pub(crate) fn sheet_count(&mut self) -> usize {
+        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.workbook.worksheets.len()
+    }
+
+    pub(crate) fn worksheet_name(&mut self, sheet: u32) -> Result<String, String> {
+        Ok(self.workbook.worksheet(sheet)?.name.clone())
+    }
+
+    /// Formula index of a cell, if any. Records `FormulaText`.
+    pub(crate) fn formula_index_at(&mut self, sheet: u32, row: i32, column: i32) -> Option<i32> {
+        self.trace_input(crate::recalc::Input::FormulaText((sheet, row, column)));
+        self.workbook
+            .worksheets
+            .get(sheet as usize)?
+            .cell(row, column)?
+            .get_formula()
+    }
+
     fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: crate::recalc::ReadSet) {
         if !self.tracing() {
             return;
@@ -3301,13 +3352,15 @@ impl<'a> Model<'a> {
                     } else {
                         self.graph.mark_dirty(p);
                     }
-                    // FORMULATEXT and similar read the cell's formula text as an
-                    // input, not as a value edge. A write must re-dirty them.
-                    let text_readers = self.graph.dependents_of_inputs(|i| {
-                        matches!(i, crate::recalc::Input::FormulaText(q) if *q == p)
-                    });
-                    for r in text_readers {
-                        self.graph.mark_dirty(r);
+                    // FORMULATEXT/ISFORMULA read formula-ness, not the value.
+                    // A number-to-number write does not change that.
+                    if was_formula || is_formula {
+                        let text_readers = self.graph.dependents_of_inputs(|i| {
+                            matches!(i, crate::recalc::Input::FormulaText(q) if *q == p)
+                        });
+                        for r in text_readers {
+                            self.graph.mark_dirty(r);
+                        }
                     }
                 }
                 crate::recalc::Write::Hidden { row, column, .. } => {
