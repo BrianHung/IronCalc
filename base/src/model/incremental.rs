@@ -52,7 +52,7 @@ enum ChangeValue {
 /// clock functions, and the reference functions whose target our static edges do
 /// not capture. A cell calling one must be recomputed on every pass.
 // Add new volatile functions here, or their cells will not refresh incrementally.
-fn is_volatile_function(kind: &Function, _args: &[Node]) -> bool {
+fn is_volatile_function(kind: &Function, args: &[Node]) -> bool {
     matches!(
         kind,
         Function::Rand
@@ -64,7 +64,47 @@ fn is_volatile_function(kind: &Function, _args: &[Node]) -> bool {
             | Function::Indirect
             | Function::Cell
             | Function::Info
-    )
+    ) || ifs_has_non_static_range(kind, args)
+}
+
+/// A node `run_ifs` can resolve without evaluating: a cell, a range, or a name.
+fn is_static_area_node(node: &Node) -> bool {
+    match node {
+        Node::ReferenceKind { .. } | Node::RangeKind { .. } | Node::DefinedNameKind(_) => true,
+        Node::ImplicitIntersection { child, .. } => is_static_area_node(child),
+        _ => false,
+    }
+}
+
+/// `*IFS` with INDEX/LET/CHOOSE as the walk or criteria range has no static
+/// rectangle to record. Recompute every pass, matching `A1:expr`.
+fn ifs_has_non_static_range(kind: &Function, args: &[Node]) -> bool {
+    let (walk, criteria) = match kind {
+        Function::Sumifs | Function::Averageifs | Function::Minifs | Function::Maxifs => {
+            (args.first(), (1..args.len()).step_by(2).collect::<Vec<_>>())
+        }
+        Function::Countifs => (args.first(), (0..args.len()).step_by(2).collect()),
+        Function::Sumif | Function::Averageif => {
+            let walk = if args.len() == 3 {
+                args.get(2)
+            } else {
+                args.first()
+            };
+            (walk, vec![0])
+        }
+        Function::Countif => (args.first(), vec![0]),
+        _ => return false,
+    };
+    let Some(walk) = walk else {
+        return false;
+    };
+    if !is_static_area_node(walk) {
+        return true;
+    }
+    criteria.iter().any(|&index| {
+        args.get(index)
+            .is_some_and(|node| !is_static_area_node(node))
+    })
 }
 
 /// Values that are not a function of the sheet. Incremental then full will
@@ -731,10 +771,40 @@ impl Model<'_> {
             {
                 self.evaluate_full_untracked();
             } else {
-                // A redundant full preserves the delta, but a conditional-format
-                // edit moves CF results with no cell value change, so diff those.
+                // A redundant full preserves the delta unless values actually
+                // moved (e.g. a spill that takes two passes). Diff cells and CF.
+                let before: HashMap<Position, Option<ChangeKey>> = self
+                    .get_all_cells()
+                    .into_iter()
+                    .map(|c| {
+                        let p = (c.index, c.row, c.column);
+                        (p, self.change_key(p))
+                    })
+                    .collect();
                 let cf_before = self.cf_cache.clone();
                 self.evaluate_full();
+                let after: Vec<(Position, Option<ChangeKey>)> = self
+                    .get_all_cells()
+                    .into_iter()
+                    .map(|c| {
+                        let p = (c.index, c.row, c.column);
+                        (p, self.change_key(p))
+                    })
+                    .collect();
+                if let ChangedCells::Delta(delta) = &mut self.changed_cells {
+                    let mut seen = HashSet::new();
+                    for (p, now) in after {
+                        seen.insert(p);
+                        if before.get(&p) != Some(&now) {
+                            delta.insert(p);
+                        }
+                    }
+                    for p in before.keys() {
+                        if !seen.contains(p) {
+                            delta.insert(*p);
+                        }
+                    }
+                }
                 self.record_cf_changes(cf_before);
             }
             return EvalPass::Full;
@@ -749,8 +819,16 @@ impl Model<'_> {
             }
         }
         let (seeds, affected) = self.graph.take_seeds_and_affected();
+        let extras = self.later_formula_precedents(&affected);
+        for &position in &extras {
+            self.invalidate(position);
+        }
         let dyn_seeds: Vec<Position> = self.graph.dynamic_refs.iter().collect();
         let dyn_cone = self.graph.reachable(dyn_seeds.clone());
+        let dyn_extras = self.later_formula_precedents(&dyn_cone);
+        for &position in &dyn_extras {
+            self.invalidate(position);
+        }
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
@@ -773,9 +851,17 @@ impl Model<'_> {
         // moved. A cycle in the affected set has no topological order, so fall
         // back to recomputing the whole set, where `evaluate_cell`'s recursion
         // still reports `#CIRC!`.
+        // Phase 1 may evaluate a cone cell against a target phase 2 then
+        // updates; only its net movement across both phases is reportable.
+        let dyn_before: HashMap<Position, Option<ChangeKey>> =
+            dyn_cone.iter().map(|&p| (p, self.change_key(p))).collect();
         let mut changed = match self.graph.topo_order(&affected) {
-            Some(order) => self.recompute_frontier(affected, &seeds, &seeds, order),
-            None => self.recompute_all(affected, &seeds),
+            Some(order) => self.recompute_frontier(affected, &seeds, &seeds, order, extras),
+            None => {
+                let mut all = affected;
+                all.extend(extras);
+                self.recompute_all(all, &seeds)
+            }
         };
         // OFFSET/INDIRECT run after the static frontier so they read updated
         // targets, then their dependents pick up the new value. They have no
@@ -796,8 +882,14 @@ impl Model<'_> {
                 self.cells.remove(&position);
             }
             let dyn_changed = match self.graph.topo_order(&dyn_cone) {
-                Some(order) => self.recompute_frontier(dyn_cone.clone(), &dyn_seeds, &[], order),
-                None => self.recompute_all(dyn_cone.clone(), &[]),
+                Some(order) => {
+                    self.recompute_frontier(dyn_cone.clone(), &dyn_seeds, &[], order, dyn_extras)
+                }
+                None => {
+                    let mut all = dyn_cone.clone();
+                    all.extend(dyn_extras);
+                    self.recompute_all(all, &[])
+                }
             };
             for &position in &dyn_cone {
                 if let std::collections::hash_map::Entry::Vacant(entry) = self.cells.entry(position)
@@ -808,6 +900,12 @@ impl Model<'_> {
                 }
             }
             changed.extend(dyn_changed);
+            let seed_set: HashSet<Position> = seeds.iter().copied().collect();
+            changed.retain(|p| {
+                !dyn_cone.contains(p)
+                    || seed_set.contains(p)
+                    || dyn_before.get(p) != Some(&self.change_key(*p))
+            });
         }
         // Record only the changed cells for `take_changed_cells`, unless a full
         // pass has already marked everything changed since the last read, or an
@@ -857,10 +955,13 @@ impl Model<'_> {
         must_run: &[Position],
         always_report: &[Position],
         order: Vec<Position>,
+        extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
         let before: HashMap<Position, Option<ChangeKey>> =
             affected.iter().map(|&p| (p, self.change_key(p))).collect();
-        self.recompute_scope = Some(affected.clone());
+        let mut scope = affected.clone();
+        scope.extend(extra_scope);
+        self.recompute_scope = Some(scope);
         let report: HashSet<Position> = always_report.iter().copied().collect();
         let mut stale: HashSet<Position> = must_run.iter().copied().collect();
         let mut changed = HashSet::new();
@@ -939,6 +1040,41 @@ impl Model<'_> {
                 .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })
                 .collect(),
         )
+    }
+
+    /// Full evaluates cells in row-major order, so a reader that sits *before* a
+    /// formula precedent sees that precedent live (EmptyCell, not the stored
+    /// Number(0) `set_cells_with_result` writes). Incremental serves stored
+    /// values for anything outside the dirty cone. Those later-in-order formula
+    /// precedents go into `recompute_scope` (and are invalidated) but are not
+    /// added to the frontier: topo would run them first and store 0 before the
+    /// reader looks.
+    fn later_formula_precedents(&self, affected: &HashSet<Position>) -> HashSet<Position> {
+        let mut formulas = Vec::new();
+        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
+            let sheet = sheet_index as u32;
+            for (row, row_data) in &worksheet.sheet_data {
+                for (col, cell) in row_data {
+                    if cell.get_formula().is_some() {
+                        formulas.push((sheet, *row, *col));
+                    }
+                }
+            }
+        }
+        let mut extra = HashSet::new();
+        let mut stack: Vec<Position> = affected.iter().copied().collect();
+        while let Some(reader) = stack.pop() {
+            for &formula in &formulas {
+                if formula <= reader || affected.contains(&formula) || extra.contains(&formula) {
+                    continue;
+                }
+                if self.graph.dependents_of(formula).contains(&reader) {
+                    extra.insert(formula);
+                    stack.push(formula);
+                }
+            }
+        }
+        extra
     }
 
     /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
