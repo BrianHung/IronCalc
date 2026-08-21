@@ -17,6 +17,11 @@ pub enum RecalcMode {
     #[default]
     Full,
     /// Recompute only the cells reachable from the dirty set.
+    ///
+    /// Multi-column `SUM` may re-associate by composing per-row subtotals, so
+    /// floating-point order can differ from default Full's left-to-right
+    /// row-major scan. That difference is intentional and isolated to this
+    /// mode and Verify; default Full stays a single accumulator.
     Incremental,
     /// On Incremental passes, run full as well and `assert_eq!` the two agree.
     /// Formula, first-eval, and array/spill fallbacks are Full and are not
@@ -297,10 +302,6 @@ impl ArrayCells {
     fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
         self.0.shift(shift_pos);
     }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
 }
 
 impl VolatileCells {
@@ -466,9 +467,11 @@ impl DependencyGraph {
     }
 
     /// Drops role-set membership when a formula is overwritten with a value.
+    /// Leaves `arrays` so an overwritten dynamic-array anchor still Full-falls-
+    /// back until the next rebuild. Removing it would leave Incremental to miss
+    /// spill cells that `prepare_cell_for_user_input` already cleared.
     pub(crate) fn clear_cell_roles(&mut self, cell: Position) {
         self.volatile.remove(&cell);
-        self.arrays.remove(&cell);
         self.nondeterministic.remove(&cell);
         self.structure_dependent.remove(&cell);
         self.visibility_dependent.remove(&cell);
