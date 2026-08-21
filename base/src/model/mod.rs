@@ -2501,7 +2501,7 @@ impl<'a> Model<'a> {
         // missing sheet panics on the next Incremental evaluate, and an invalid
         // row/column would appear in the changed-cell delta without a write.
         if !is_valid_row(row) || !is_valid_column_number(column) {
-            return Err("Incorrect row or column".to_string());
+            return Err("Row or column is outside valid range.".to_string());
         }
         let _ = self.workbook.worksheet(sheet)?;
         // first we make sure we can write in the cell and clear the spills.
