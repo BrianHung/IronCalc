@@ -2,39 +2,55 @@ use crate::dependency_graph::Position;
 
 /// A user-visible mutation of sheet state. Evaluation writes (storing a formula
 /// result) are not journaled; they are not edits.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Write {
-    Value(Position),
-    Formula(Position),
-    Clear(Position),
+    /// A cell's content changed. `was_formula` lets the consumer drop stale
+    /// outgoing edges.
+    Cell {
+        at: Position,
+        was_formula: bool,
+        is_formula: bool,
+    },
     Hidden {
         sheet: u32,
         row: Option<i32>,
         column: Option<i32>,
     },
-    Structural,
 }
 
-/// Per-model log of writes since the last evaluate. Worksheet mutators push;
-/// `Model::evaluate` drains.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct WriteLog {
+/// Per-worksheet log of writes since the last evaluate. Worksheet mutators
+/// push; `Model::evaluate` drains.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WriteLog {
     entries: Vec<Write>,
+    recording: bool,
+}
+
+impl Default for WriteLog {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            recording: true,
+        }
+    }
 }
 
 impl WriteLog {
     pub(crate) fn push(&mut self, write: Write) {
-        self.entries.push(write);
+        if self.recording {
+            self.entries.push(write);
+        }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn drain(&mut self) -> Vec<Write> {
         std::mem::take(&mut self.entries)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    pub(crate) fn set_recording(&mut self, recording: bool) {
+        self.recording = recording;
+    }
+
+    pub(crate) fn is_recording(&self) -> bool {
+        self.recording
     }
 }

@@ -33,13 +33,12 @@ pub enum CellTableStatus {
 }
 
 impl<'a> Model<'a> {
-    fn get_table_for_cell(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let worksheet = match self.workbook.worksheet(sheet_index) {
-            Ok(ws) => ws,
-            Err(_) => return false,
+    fn get_table_for_cell(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
+        let Ok(sheet_name) = self.worksheet_name(sheet_index) else {
+            return false;
         };
-        for table in self.workbook.tables.values() {
-            if worksheet.name != table.sheet_name {
+        for table in self.tables().values() {
+            if sheet_name != table.sheet_name {
                 continue;
             }
             // (column, row, column, row)
@@ -54,19 +53,12 @@ impl<'a> Model<'a> {
     }
 
     fn cell_hidden_status(
-        &self,
+        &mut self,
         sheet_index: u32,
         row: i32,
         column: i32,
     ) -> Result<CellTableStatus, String> {
-        let worksheet = self.workbook.worksheet(sheet_index)?;
-        let mut hidden = false;
-        for row_style in &worksheet.rows {
-            if row_style.r == row {
-                hidden = row_style.hidden;
-                break;
-            }
-        }
+        let hidden = self.row_hidden(sheet_index, row)?;
         if !hidden {
             return Ok(CellTableStatus::Normal);
         }
@@ -79,22 +71,8 @@ impl<'a> Model<'a> {
     }
 
     // FIXME(TD): This is too much
-    fn cell_is_subtotal(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let row_data = match self.workbook.worksheets[sheet_index as usize]
-            .sheet_data
-            .get(&row)
-        {
-            Some(r) => r,
-            None => return false,
-        };
-        let cell = match row_data.get(&column) {
-            Some(c) => c,
-            None => {
-                return false;
-            }
-        };
-
-        match cell.get_formula() {
+    fn cell_is_subtotal(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
+        match self.formula_index_at(sheet_index, row, column) {
             Some(f) => {
                 let node = &self.parsed_formulas[sheet_index as usize][f as usize].0;
                 matches!(

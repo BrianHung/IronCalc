@@ -1,7 +1,7 @@
 //! Dependency graph and recalculation mode for incremental evaluation.
 //!
-//! A forward dependency graph (precedent to dependents), rebuilt on every full
-//! pass from a static walk of the formulas, lets
+//! A forward dependency graph (precedent to dependents), rebuilt from the
+//! reads observed while formulas evaluate, lets
 //! [`Model::evaluate`](crate::Model::evaluate) recompute only the cells reachable
 //! from those that changed. Anything the incremental path cannot model forces the
 //! next pass to be full, so incremental never diverges from what full produces.
@@ -55,37 +55,6 @@ impl RecalcMode {
 pub(crate) type Position = (u32, i32, i32);
 /// `(sheet, row1, column1, row2, column2)`.
 pub(crate) type Area = (u32, i32, i32, i32, i32);
-
-/// A defined name's current resolution. Stored separately from cell/range edges
-/// so a structural shift cannot walk a snapshot that the name no longer names.
-#[derive(Clone, Copy)]
-pub(crate) enum NameTarget {
-    Cell(Position),
-    Range(Area),
-}
-
-impl NameTarget {
-    fn contains(self, cell: Position) -> bool {
-        match self {
-            NameTarget::Cell(position) => position == cell,
-            NameTarget::Range(area) => area_contains(&area, cell),
-        }
-    }
-
-    fn sheet(self) -> u32 {
-        match self {
-            NameTarget::Cell((sheet, _, _)) => sheet,
-            NameTarget::Range((sheet, _, _, _, _)) => sheet,
-        }
-    }
-
-    fn as_area(self) -> Area {
-        match self {
-            NameTarget::Cell((sheet, row, column)) => (sheet, row, column, row, column),
-            NameTarget::Range(area) => area,
-        }
-    }
-}
 
 /// Axis a structural edit inserts or deletes lines along.
 #[derive(Clone, Copy)]
@@ -211,6 +180,16 @@ impl SheetRanges {
         }
     }
 
+    /// Drops `dependent` from this range. Leaves `bands`/`wide` (index, not truth).
+    fn remove_dependent(&mut self, range: &Area, dependent: &Position) {
+        if let Some(set) = self.dependents.get_mut(range) {
+            set.remove(dependent);
+            if set.is_empty() {
+                self.dependents.remove(range);
+            }
+        }
+    }
+
     /// The ranges on this sheet that contain `cell`.
     fn containing(&self, cell: Position) -> impl Iterator<Item = &Area> + '_ {
         self.wide
@@ -251,10 +230,6 @@ impl Positions {
         self.0.contains(cell)
     }
 
-    fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter().copied()
-    }
-
     fn replace(&mut self, cells: HashSet<Position>) {
         self.0 = cells;
     }
@@ -262,82 +237,19 @@ impl Positions {
     fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
         self.0 = self.0.drain().filter_map(shift_pos).collect();
     }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
 }
 
 /// Array/spill cells.
 #[derive(Clone, Default)]
 pub(crate) struct ArrayCells(Positions);
 
-/// Cells whose static edges miss their target (`OFFSET`, `INDIRECT`).
-#[derive(Clone, Default)]
-pub(crate) struct DynamicRefs(Positions);
-
-/// Volatile formulas (`RAND`, `NOW`, `OFFSET`, …). Only RAND/NOW/TODAY re-roll;
-/// `OFFSET` recomputes because static edges miss the cell it actually reads.
-#[derive(Clone, Default)]
-pub(crate) struct VolatileCells(Positions);
-
-/// RAND/NOW/TODAY. Verify strips this cone.
-#[derive(Clone, Default)]
-pub(crate) struct NondeterministicCells(Positions);
-
-/// Formulas whose result depends on coordinates or formula text (`ROW()`,
-/// `COLUMN()`, `FORMULATEXT`), not only on precedent values.
-#[derive(Clone, Default)]
-pub(crate) struct StructureDependent(Positions);
-
-/// `SUBTOTAL(1xx)` formulas that skip hidden rows/columns.
-#[derive(Clone, Default)]
-pub(crate) struct VisibilityDependent(Positions);
-
 impl ArrayCells {
     pub(crate) fn contains(&self, cell: &Position) -> bool {
         self.0.contains(cell)
     }
 
-    fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-}
-
-impl DynamicRefs {
-    pub(crate) fn contains(&self, cell: &Position) -> bool {
-        self.0.contains(cell)
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter()
-    }
-
-    pub(crate) fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
-}
-
-impl VolatileCells {
-    #[cfg(test)]
-    pub(crate) fn contains(&self, cell: &Position) -> bool {
-        self.0.contains(cell)
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter()
+    pub(crate) fn snapshot(&self) -> HashSet<Position> {
+        self.0 .0.clone()
     }
 
     fn replace(&mut self, cells: HashSet<Position>) {
@@ -346,69 +258,6 @@ impl VolatileCells {
 
     fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
         self.0.shift(shift_pos);
-    }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
-}
-
-impl NondeterministicCells {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter()
-    }
-
-    fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
-}
-
-impl StructureDependent {
-    #[cfg(test)]
-    pub(crate) fn contains(&self, cell: &Position) -> bool {
-        self.0.contains(cell)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter()
-    }
-
-    fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
-    }
-}
-
-impl VisibilityDependent {
-    fn iter(&self) -> impl Iterator<Item = Position> + '_ {
-        self.0.iter()
-    }
-
-    fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
-    }
-
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
-    }
-
-    fn remove(&mut self, cell: &Position) {
-        self.0.remove(cell);
     }
 }
 
@@ -423,20 +272,17 @@ pub(crate) struct DependencyGraph {
     /// sheet (like HyperFormula's range mapping) and indexed by row band within a
     /// sheet, so a cell finds the ranges containing it without scanning them all.
     range_dependents: HashMap<u32, SheetRanges>,
-    /// Dependents of a defined name. The name's resolution is in `name_targets`
-    /// and is not shifted: names are not displaced with the sheet.
-    name_dependents: HashMap<(Option<u32>, String), HashSet<Position>>,
-    name_targets: HashMap<(Option<u32>, String), NameTarget>,
+    /// Non-cell inputs (hidden flags, own coordinates, clock, names…) to the
+    /// formulas that read them.
+    input_dependents: HashMap<crate::recalc::Input, HashSet<Position>>,
+    /// What each formula read last time it evaluated; the reverse of the edge
+    /// maps, so a formula's edges can be dropped in O(degree) before re-record.
+    precedents: HashMap<Position, crate::recalc::ReadSet>,
     state: GraphState,
-    pub(crate) volatile: VolatileCells,
     pub(crate) arrays: ArrayCells,
-    pub(crate) dynamic_refs: DynamicRefs,
-    pub(crate) nondeterministic: NondeterministicCells,
     /// Insert/delete can move data cells the dirty cone does not name. Cleared
     /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
     structural_unknown: bool,
-    pub(crate) structure_dependent: StructureDependent,
-    visibility_dependent: VisibilityDependent,
 }
 
 impl DependencyGraph {
@@ -444,8 +290,8 @@ impl DependencyGraph {
     pub(crate) fn clear_edges(&mut self) {
         self.cell_dependents.clear();
         self.range_dependents.clear();
-        self.name_dependents.clear();
-        self.name_targets.clear();
+        self.input_dependents.clear();
+        self.precedents.clear();
     }
 
     /// Records that `dependent` reads `precedent`. Idempotent.
@@ -464,56 +310,92 @@ impl DependencyGraph {
             .insert(range, dependent);
     }
 
-    /// Records that `dependent` reads the named definition. The resolution is
-    /// the name's current target and is not shifted on insert/delete.
-    pub(crate) fn add_name_edge(
-        &mut self,
-        name: String,
-        scope: Option<u32>,
-        dependent: Position,
-        target: NameTarget,
-    ) {
-        let key = (scope, name);
-        self.name_targets.insert(key.clone(), target);
-        self.name_dependents
-            .entry(key)
+    /// Records that `dependent` reads a non-cell input. Idempotent.
+    pub(crate) fn add_input_edge(&mut self, input: crate::recalc::Input, dependent: Position) {
+        self.input_dependents
+            .entry(input)
             .or_default()
             .insert(dependent);
     }
 
-    /// Drops outgoing edges from a cell that is no longer a formula.
-    pub(crate) fn remove_dependent(&mut self, dependent: Position) {
-        for dependents in self.cell_dependents.values_mut() {
-            dependents.remove(&dependent);
-        }
-        for sheet_ranges in self.range_dependents.values_mut() {
-            for dependents in sheet_ranges.dependents.values_mut() {
-                dependents.remove(&dependent);
+    /// Formulas that read any input for which `pred` holds.
+    pub(crate) fn dependents_of_inputs(
+        &self,
+        pred: impl Fn(&crate::recalc::Input) -> bool,
+    ) -> HashSet<Position> {
+        self.input_dependents
+            .iter()
+            .filter(|(input, _)| pred(input))
+            .flat_map(|(_, deps)| deps.iter().copied())
+            .collect()
+    }
+
+    /// RAND/NOW/TODAY and CELL/INFO: re-roll every pass and always-report.
+    pub(crate) fn always_dirty_cells(&self) -> HashSet<Position> {
+        self.dependents_of_inputs(|i| {
+            matches!(
+                i,
+                crate::recalc::Input::Random
+                    | crate::recalc::Input::Clock
+                    | crate::recalc::Input::Environment
+            )
+        })
+    }
+
+    /// Replaces `dependent`'s outgoing edges with the reads just observed.
+    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: crate::recalc::ReadSet) {
+        self.remove_dependent(dependent);
+        for &p in &reads.cells {
+            if p != dependent {
+                self.add_cell_edge(p, dependent);
             }
         }
-        for dependents in self.name_dependents.values_mut() {
-            dependents.remove(&dependent);
+        for &area in &reads.rects {
+            self.add_range_edge(area, dependent);
+        }
+        for input in &reads.inputs {
+            self.add_input_edge(input.clone(), dependent);
+        }
+        self.precedents.insert(dependent, reads);
+    }
+
+    /// Drops outgoing edges from a cell in O(degree) via the reverse index.
+    pub(crate) fn remove_dependent(&mut self, dependent: Position) {
+        let Some(reads) = self.precedents.remove(&dependent) else {
+            return;
+        };
+        for p in reads.cells {
+            if let Some(set) = self.cell_dependents.get_mut(&p) {
+                set.remove(&dependent);
+                if set.is_empty() {
+                    self.cell_dependents.remove(&p);
+                }
+            }
+        }
+        for area in reads.rects {
+            if let Some(sheet) = self.range_dependents.get_mut(&area.0) {
+                sheet.remove_dependent(&area, &dependent);
+            }
+        }
+        for input in reads.inputs {
+            if let Some(set) = self.input_dependents.get_mut(&input) {
+                set.remove(&dependent);
+                if set.is_empty() {
+                    self.input_dependents.remove(&input);
+                }
+            }
         }
     }
 
-    /// Drops role-set membership when a formula is overwritten with a value.
-    /// Leaves `arrays` so an overwritten dynamic-array anchor still Full-falls-
-    /// back until the next rebuild. Removing it would leave Incremental to miss
-    /// spill cells that `prepare_cell_for_user_input` already cleared.
-    pub(crate) fn clear_cell_roles(&mut self, cell: Position) {
-        self.volatile.remove(&cell);
-        self.dynamic_refs.remove(&cell);
-        self.nondeterministic.remove(&cell);
-        self.structure_dependent.remove(&cell);
-        self.visibility_dependent.remove(&cell);
-    }
-
-    /// Hide/unhide can change `SUBTOTAL(1xx)` without a cell-value edit.
-    pub(crate) fn mark_visibility_dirty(&mut self) {
-        let cells: Vec<Position> = self.visibility_dependent.iter().collect();
-        for cell in cells {
-            self.mark_dirty(cell);
-        }
+    #[cfg(test)]
+    pub(crate) fn cell_reads(
+        &self,
+        cell: Position,
+        pred: impl Fn(&crate::recalc::Input) -> bool,
+    ) -> bool {
+        self.precedents
+            .get(&cell)
+            .is_some_and(|reads| reads.inputs.iter().any(pred))
     }
 
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
@@ -524,25 +406,16 @@ impl DependencyGraph {
         }
     }
 
-    /// The dirty set before this pass seeds volatiles. User edits, not RAND/*IFS.
-    pub(crate) fn peek_dirty(&self) -> Vec<Position> {
-        match &self.state {
-            GraphState::Ready { dirty } => dirty.iter().copied().collect(),
-            GraphState::MustRebuild => Vec::new(),
-        }
-    }
-
     /// Seeds Verify allows in the delta even when the snapshot did not move:
-    /// user edits plus RAND/NOW/TODAY. OFFSET and *IFS-as-volatile recompute
-    /// every pass but are not always-report: they land in the delta only if
-    /// observable state moved.
+    /// user edits plus RAND/NOW/TODAY/CELL. OFFSET recomputes because its
+    /// actual target is a traced edge; it is not always-report.
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn always_report_seeds(&self) -> HashSet<Position> {
         let mut seeds = match &self.state {
             GraphState::Ready { dirty } => dirty.clone(),
             GraphState::MustRebuild => HashSet::new(),
         };
-        seeds.extend(self.nondeterministic.iter());
+        seeds.extend(self.always_dirty_cells());
         seeds
     }
 
@@ -572,40 +445,8 @@ impl DependencyGraph {
         (seeds, affected)
     }
 
-    pub(crate) fn replace_volatile(&mut self, cells: HashSet<Position>) {
-        self.volatile.replace(cells);
-    }
-
     pub(crate) fn replace_arrays(&mut self, cells: HashSet<Position>) {
         self.arrays.replace(cells);
-    }
-
-    pub(crate) fn replace_dynamic_refs(&mut self, cells: HashSet<Position>) {
-        self.dynamic_refs.replace(cells);
-    }
-
-    pub(crate) fn replace_nondeterministic(&mut self, cells: HashSet<Position>) {
-        self.nondeterministic.replace(cells);
-    }
-
-    pub(crate) fn replace_structure_dependent(&mut self, cells: HashSet<Position>) {
-        self.structure_dependent.replace(cells);
-    }
-
-    pub(crate) fn replace_visibility_dependent(&mut self, cells: HashSet<Position>) {
-        self.visibility_dependent.replace(cells);
-    }
-
-    fn dependents_via_names(&self, cell: Position) -> Vec<Position> {
-        let mut dependents = Vec::new();
-        for (key, target) in &self.name_targets {
-            if target.contains(cell) {
-                if let Some(cells) = self.name_dependents.get(key) {
-                    dependents.extend(cells.iter().copied());
-                }
-            }
-        }
-        dependents
     }
 
     /// Direct dependents of `cell`: cells reading it, cells reading a range
@@ -625,7 +466,6 @@ impl DependencyGraph {
                 }
             }
         }
-        dependents.extend(self.dependents_via_names(cell));
         dependents
     }
 
@@ -689,7 +529,6 @@ impl DependencyGraph {
             if let Some(dependents) = self.cell_dependents.get(&cell) {
                 stack.extend(dependents.iter().copied());
             }
-            stack.extend(self.dependents_via_names(cell));
             if let Some(sheet_ranges) = self.range_dependents.get(&cell.0) {
                 for range in sheet_ranges.containing(cell) {
                     if !fired.insert(*range) {
@@ -727,36 +566,35 @@ impl DependencyGraph {
     /// reading a moved precedent or a range reaching it. Uses pre-shift
     /// coordinates; [`shift`](Self::shift) then moves the dirty set with the rest.
     fn mark_structural_dependents(&mut self, sheet: u32, axis: Axis, boundary: i32) {
-        let GraphState::Ready { dirty } = &mut self.state else {
+        if !matches!(self.state, GraphState::Ready { .. }) {
             return;
-        };
+        }
+        let mut extra: HashSet<Position> = HashSet::new();
         for (precedent, dependents) in &self.cell_dependents {
             if precedent.0 == sheet && axis.coord(*precedent) >= boundary {
-                dirty.extend(dependents.iter().copied());
+                extra.extend(dependents.iter().copied());
             }
         }
         if let Some(sheet_ranges) = self.range_dependents.get(&sheet) {
             for (area, dependents) in sheet_ranges.iter() {
                 if axis.area_max(*area) >= boundary {
-                    dirty.extend(dependents.iter().copied());
+                    extra.extend(dependents.iter().copied());
                 }
             }
         }
-        // ROW()/COLUMN()/FORMULATEXT observe coordinates or formula text, not
-        // only precedent values. Dirty the whole set: FORMULATEXT can sit above
-        // the insert while its target is displaced below it.
-        dirty.extend(self.structure_dependent.iter());
-        // Names are not displaced. An insert above $A$10 changes what the name
-        // means even though no value-edit happened.
-        let mut named = Vec::new();
-        for (key, target) in &self.name_targets {
-            if target.sheet() == sheet && axis.area_max(target.as_area()) >= boundary {
-                if let Some(dependents) = self.name_dependents.get(key) {
-                    named.extend(dependents.iter().copied());
-                }
-            }
+        // Coordinates, formula text, and name resolutions can change without
+        // any precedent value moving. Re-run everything that read them.
+        extra.extend(self.dependents_of_inputs(|input| match input {
+            crate::recalc::Input::OwnCoord((s, ..))
+            | crate::recalc::Input::FormulaText((s, ..)) => *s == sheet,
+            crate::recalc::Input::Name { .. }
+            | crate::recalc::Input::SheetStructure
+            | crate::recalc::Input::Computed => true,
+            _ => false,
+        }));
+        if let GraphState::Ready { dirty } = &mut self.state {
+            dirty.extend(extra);
         }
-        dirty.extend(named);
     }
 
     fn range_overlaps_band(&self, sheet: u32, axis: Axis, boundary: i32, delta: i32) -> bool {
@@ -807,21 +645,65 @@ impl DependencyGraph {
         if let GraphState::Ready { dirty } = &mut self.state {
             *dirty = dirty.drain().filter_map(shift_pos).collect();
         }
-        self.volatile.shift(shift_pos);
         self.arrays.shift(shift_pos);
-        self.dynamic_refs.shift(shift_pos);
-        self.nondeterministic.shift(shift_pos);
-        self.structure_dependent.shift(shift_pos);
-        self.visibility_dependent.shift(shift_pos);
-        let mut shifted_names: HashMap<(Option<u32>, String), HashSet<Position>> = HashMap::new();
-        for (key, dependents) in self.name_dependents.drain() {
-            let dependents: HashSet<Position> =
-                dependents.into_iter().filter_map(shift_pos).collect();
-            if !dependents.is_empty() {
-                shifted_names.insert(key, dependents);
+        let shift_input = |input: crate::recalc::Input| -> Option<crate::recalc::Input> {
+            match input {
+                crate::recalc::Input::OwnCoord(p) => {
+                    Some(crate::recalc::Input::OwnCoord(shift_pos(p)?))
+                }
+                crate::recalc::Input::FormulaText(p) => {
+                    Some(crate::recalc::Input::FormulaText(shift_pos(p)?))
+                }
+                crate::recalc::Input::RowHidden(s, r)
+                    if s == sheet && matches!(axis, Axis::Row) =>
+                {
+                    Some(crate::recalc::Input::RowHidden(
+                        s,
+                        shift_coord(r, boundary, delta)?,
+                    ))
+                }
+                crate::recalc::Input::ColHidden(s, c)
+                    if s == sheet && matches!(axis, Axis::Column) =>
+                {
+                    Some(crate::recalc::Input::ColHidden(
+                        s,
+                        shift_coord(c, boundary, delta)?,
+                    ))
+                }
+                other => Some(other),
             }
-        }
-        self.name_dependents = shifted_names;
+        };
+        let shifted_inputs: HashMap<crate::recalc::Input, HashSet<Position>> = self
+            .input_dependents
+            .drain()
+            .filter_map(|(input, deps)| {
+                let deps: HashSet<Position> = deps.into_iter().filter_map(shift_pos).collect();
+                if deps.is_empty() {
+                    return None;
+                }
+                Some((shift_input(input)?, deps))
+            })
+            .collect();
+        self.input_dependents = shifted_inputs;
+        self.precedents = self
+            .precedents
+            .drain()
+            .filter_map(|(dep, reads)| {
+                let dep = shift_pos(dep)?;
+                Some((
+                    dep,
+                    crate::recalc::ReadSet {
+                        cells: reads.cells.into_iter().filter_map(shift_pos).collect(),
+                        rects: reads
+                            .rects
+                            .into_iter()
+                            .filter_map(|area| shift_area(sheet, axis, boundary, delta, area))
+                            .collect(),
+                        inputs: reads.inputs.into_iter().filter_map(shift_input).collect(),
+                    },
+                ))
+            })
+            .collect();
     }
 
     /// Whether this pass follows an insert/delete whose delta cannot name every

@@ -131,6 +131,7 @@ mod test_networkdays;
 mod test_now;
 mod test_percentage;
 mod test_range_evaluation;
+mod test_recalc_invariants;
 mod test_set_functions_error_handling;
 mod test_sheet_names;
 mod test_spill_functions;

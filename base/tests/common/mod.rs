@@ -207,9 +207,7 @@ impl Op {
                 row,
                 col,
                 value,
-            } if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') => {
-                Some((*sheet, *row, *col))
-            }
+            } if !value.is_empty() && !value.starts_with('\'') => Some((*sheet, *row, *col)),
             Op::SetNumber {
                 sheet, row, col, ..
             }
@@ -217,6 +215,9 @@ impl Op {
                 sheet, row, col, ..
             }
             | Op::SetBool {
+                sheet, row, col, ..
+            }
+            | Op::ArrayFormula {
                 sheet, row, col, ..
             } => Some((*sheet, *row, *col)),
             _ => None,
@@ -956,7 +957,7 @@ pub fn minimize_by<O: Clone>(
         }
     };
     let mut cur: Vec<O> = ops.to_vec();
-    let mut last_failure = run(&cur).err().expect("minimize: scenario must fail");
+    let mut last_failure = run(&cur).expect_err("minimize: scenario must fail");
     // Truncate after the failing step.
     if last_failure.step + 1 < cur.len() {
         let cand: Vec<O> = cur[..=last_failure.step].to_vec();

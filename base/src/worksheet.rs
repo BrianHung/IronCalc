@@ -2,6 +2,7 @@ use crate::constants::{self, LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::expressions::utils::{is_valid_column_number, is_valid_row};
 use crate::model::CellStructure;
+use crate::recalc::Write;
 use crate::{expressions::token::Error, types::*};
 
 use std::collections::HashMap;
@@ -39,6 +40,12 @@ impl Worksheet {
         self.sheet_data.get(&row)?.get(&column)
     }
 
+    /// Read-only view of the sheet's cells. Mutations must go through
+    /// `update_cell` / `remove_cell` so they are journaled.
+    pub fn sheet_data(&self) -> &SheetData {
+        &self.sheet_data
+    }
+
     pub(crate) fn cell_mut(&mut self, row: i32, column: i32) -> Option<&mut Cell> {
         self.sheet_data.get_mut(&row)?.get_mut(&column)
     }
@@ -54,20 +61,38 @@ impl Worksheet {
             return Err("Incorrect row or column".to_string());
         }
 
+        let old = self.cell(row, column).cloned();
+        let was_formula = old.as_ref().and_then(Cell::get_formula).is_some();
+        let old_formula = old.as_ref().and_then(Cell::get_formula);
+        let new_formula = new_cell.get_formula();
+        // A new formula index is a user formula edit (force-full until Step 4).
+        // Same index with a different cell (spill geometry reset, style) is a
+        // value-like write: dirty the cell, do not rebuild the graph.
+        let is_formula = new_formula.is_some() && old_formula != new_formula;
+        let changed = old.as_ref() != Some(&new_cell);
+        // A style on a blank cell materializes EmptyCell; that is not a
+        // value or formula edit and must not dirty the graph.
+        let style_only = matches!(new_cell, Cell::EmptyCell { .. })
+            && matches!(old.as_ref(), None | Some(Cell::EmptyCell { .. }));
+
         match self.sheet_data.get_mut(&row) {
-            Some(column_data) => match column_data.get(&column) {
-                Some(_cell) => {
-                    column_data.insert(column, new_cell);
-                }
-                None => {
-                    column_data.insert(column, new_cell);
-                }
-            },
+            Some(column_data) => {
+                column_data.insert(column, new_cell);
+            }
             None => {
                 let mut column_data = HashMap::new();
                 column_data.insert(column, new_cell);
                 self.sheet_data.insert(row, column_data);
             }
+        }
+        // Evaluation stores a formula result with recording off, so it never
+        // reaches this push. A no-op write (identical cell) is not an edit.
+        if changed && !style_only {
+            self.write_log.push(Write::Cell {
+                at: (0, row, column),
+                was_formula,
+                is_formula,
+            });
         }
         Ok(())
     }
@@ -383,10 +408,18 @@ impl Worksheet {
             return Err(format!("Row number '{row}' is not valid."));
         }
 
+        let currently = self.is_row_hidden(row)?;
         let rows = &mut self.rows;
         for r in rows.iter_mut() {
             if r.r == row {
                 r.hidden = hidden;
+                if currently != hidden {
+                    self.write_log.push(Write::Hidden {
+                        sheet: 0,
+                        row: Some(row),
+                        column: None,
+                    });
+                }
                 return Ok(());
             }
         }
@@ -398,6 +431,13 @@ impl Worksheet {
             s: 0,
             hidden,
         });
+        if hidden {
+            self.write_log.push(Write::Hidden {
+                sheet: 0,
+                row: Some(row),
+                column: None,
+            });
+        }
         Ok(())
     }
 
@@ -445,11 +485,20 @@ impl Worksheet {
     }
 
     pub fn set_column_hidden(&mut self, column: i32, hidden: bool) -> Result<(), String> {
+        let currently = self.is_column_hidden(column)?;
         let width = self
             .get_actual_column_width(column)
             .unwrap_or(constants::DEFAULT_COLUMN_WIDTH);
         let style = self.get_column_style(column)?;
-        self.set_column_width_and_style(column, width, hidden, style)
+        self.set_column_width_and_style(column, width, hidden, style)?;
+        if currently != hidden {
+            self.write_log.push(Write::Hidden {
+                sheet: 0,
+                row: None,
+                column: Some(column),
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn set_column_width_and_style(
@@ -644,13 +693,52 @@ impl Worksheet {
     }
 
     pub(crate) fn remove_cell(&mut self, row: i32, column: i32) -> Result<(), String> {
+        let cell = self.cell(row, column);
+        let was_formula = cell.and_then(Cell::get_formula).is_some();
+        let existed = cell.is_some();
+        let was_empty = matches!(cell, Some(Cell::EmptyCell { .. }) | None);
         if let Some(row_data) = self.sheet_data.get_mut(&row) {
             row_data.remove(&column);
             if row_data.is_empty() {
                 self.sheet_data.remove(&row);
             }
         }
+        if existed && (was_formula || !was_empty) {
+            self.write_log.push(Write::Cell {
+                at: (0, row, column),
+                was_formula,
+                is_formula: false,
+            });
+        }
         Ok(())
+    }
+
+    pub(crate) fn remove_row_data(&mut self, row: i32) {
+        if let Some(row_data) = self.sheet_data.remove(&row) {
+            for (column, cell) in row_data {
+                if cell.get_formula().is_some() || !matches!(cell, Cell::EmptyCell { .. }) {
+                    self.write_log.push(Write::Cell {
+                        at: (0, row, column),
+                        was_formula: cell.get_formula().is_some(),
+                        is_formula: false,
+                    });
+                }
+            }
+        }
+    }
+
+    pub(crate) fn restore_row(&mut self, row: i32, data: HashMap<i32, Cell>) {
+        for (column, cell) in &data {
+            self.write_log.push(Write::Cell {
+                at: (0, row, *column),
+                was_formula: self
+                    .cell(row, *column)
+                    .and_then(Cell::get_formula)
+                    .is_some(),
+                is_formula: cell.get_formula().is_some(),
+            });
+        }
+        self.sheet_data.insert(row, data);
     }
 
     /// Returns the height of a row in pixels

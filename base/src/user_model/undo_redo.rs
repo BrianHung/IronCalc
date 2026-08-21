@@ -13,11 +13,6 @@ use crate::user_model::history::{Diff, DiffList};
 
 impl<'a> UserModel<'a> {
     pub(super) fn apply_undo_diff_list(&mut self, diff_list: &DiffList) -> Result<(), String> {
-        // Undo restores cell contents by mutating the worksheet directly, which
-        // does not seed the dependency graph. Force the next evaluation to be
-        // full so a deferred (paused) undo cannot be skipped by a later
-        // incremental pass, leaving the undone cell's dependents stale.
-        self.model.force_full_recompute();
         let mut needs_evaluation = false;
         for diff in diff_list.iter().rev() {
             match diff {
@@ -263,7 +258,7 @@ impl<'a> UserModel<'a> {
                         if let Some(row_style) = row_data.row.clone() {
                             worksheet.rows.push(row_style);
                         }
-                        worksheet.sheet_data.insert(r, row_data.data.clone());
+                        worksheet.restore_row(r, row_data.data.clone());
                     }
                 }
                 Diff::InsertColumns {
