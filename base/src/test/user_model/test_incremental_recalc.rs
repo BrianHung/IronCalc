@@ -732,9 +732,12 @@ fn take_changed_cells_reports_incremental_delta() {
 
     assert_eq!(model.take_changed_cells(), ChangedSinceRead::Cells(vec![])); // reading clears
 
-    model._set("D1", "=A1+1"); // a new formula forces a full recompute
+    model._set("D1", "=A1+1"); // a new formula records its edges on first evaluate
     model.evaluate();
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("a new scalar formula must stay Incremental");
+    };
+    assert!(cells.iter().any(|c| c.row == 1 && c.column == 4));
 }
 
 #[test]
@@ -1544,8 +1547,14 @@ fn formula_edit_stays_incremental() {
     let _ = model.take_changed_cells();
 
     model._set("B1", "=A1+2");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("B1"), "3");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("formula edit must stay Incremental"),
+        ChangedSinceRead::Cells(_) => {}
+    }
 
     model._set("A1", "5");
     model.evaluate();

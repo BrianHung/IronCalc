@@ -3344,14 +3344,7 @@ impl<'a> Model<'a> {
                     if was_formula {
                         self.graph.remove_dependent(p);
                     }
-                    if is_formula {
-                        // New formula text: reads are recorded on first evaluate.
-                        // Until then a spill/array can appear without being in
-                        // `arrays`, so Incremental would miss spill dependents.
-                        self.graph.force_full();
-                    } else {
-                        self.graph.mark_dirty(p);
-                    }
+                    self.graph.mark_dirty(p);
                     // FORMULATEXT/ISFORMULA read formula-ness, not the value.
                     // A number-to-number write does not change that.
                     if was_formula || is_formula {

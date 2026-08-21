@@ -284,6 +284,20 @@ impl Model<'_> {
             }
             None => self.recompute_all(affected, &always_report),
         };
+        // A new dynamic array is not in `arrays` until we see it. If this pass
+        // created one, fall back to Full so spill dependents are not missed.
+        let arrays_before = self.graph.arrays.snapshot();
+        self.collect_array_cells();
+        if self
+            .graph
+            .arrays
+            .snapshot()
+            .into_iter()
+            .any(|p| !arrays_before.contains(&p))
+        {
+            self.evaluate_full_untracked();
+            return EvalPass::Full;
+        }
         // Record only the changed cells for `take_changed_cells`, unless a full
         // pass has already marked everything changed since the last read, or an
         // insert/delete moved cells the dirty cone does not name.
