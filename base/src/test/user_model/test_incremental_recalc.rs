@@ -1406,3 +1406,35 @@ fn incremental_redundant_evaluate_reports_late_spill() {
         }
     }
 }
+
+#[test]
+fn incremental_spill_invalidates_composed_range_cache() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=SEQUENCE(2,1,B1)");
+    model._set("B1", "=SUM(A6:A7)");
+    model._set("A5", "=SEQUENCE(3)");
+    model._set("A9", "=SUM(A6:A7)");
+    model.evaluate();
+    assert_eq!(model._get_text("A9"), "5");
+}
+
+#[test]
+fn min_max_signed_zero_matches_row_major_operand_order() {
+    let mut model = new_empty_model();
+    model.update_cell_with_number(0, 1, 1, 0.0).unwrap();
+    model.update_cell_with_number(0, 2, 1, -0.0).unwrap();
+    model._set("A3", "=MIN(A1:A2)");
+    model._set("A4", "=MAX(A1:A2)");
+    model.evaluate();
+    let min = match model.get_cell_value_by_index(0, 3, 1).unwrap() {
+        crate::cell::CellValue::Number(n) => n,
+        other => panic!("expected number, got {other:?}"),
+    };
+    let max = match model.get_cell_value_by_index(0, 4, 1).unwrap() {
+        crate::cell::CellValue::Number(n) => n,
+        other => panic!("expected number, got {other:?}"),
+    };
+    // Main scans `value.min(result)` left-to-right: 0.0 then -0.0.
+    assert_eq!(min.to_bits(), 0.0_f64.min(-0.0).to_bits());
+    assert_eq!(max.to_bits(), 0.0_f64.max(-0.0).to_bits());
+}

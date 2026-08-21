@@ -78,8 +78,10 @@ impl RangeReducer {
     fn merge(self, a: f64, b: f64) -> f64 {
         match self {
             RangeReducer::Sum | RangeReducer::Count => a + b,
-            RangeReducer::Min => a.min(b),
-            RangeReducer::Max => a.max(b),
+            // `b.min(a)`, not `a.min(b)`: main scans `value.min(result)`, and
+            // minNum's choice between +0 and -0 is operand-order dependent on x86.
+            RangeReducer::Min => b.min(a),
+            RangeReducer::Max => b.max(a),
         }
     }
 

@@ -948,6 +948,11 @@ impl<'a> Model<'a> {
         result: &CalcResult,
     ) -> Result<(), String> {
         let CellReferenceIndex { sheet, column, row } = cell_reference;
+        // A spill rewrites cells that a range aggregate may already have
+        // summarized this pass (first pass: the area was empty). Drop the memo.
+        if matches!(result, CalcResult::Array(_)) {
+            self.range_reduce_cache.clear();
+        }
         let original_range = match cell {
             Cell::ArrayFormula {
                 r,
