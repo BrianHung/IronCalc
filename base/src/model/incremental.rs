@@ -55,7 +55,7 @@ enum VerifyValue {
 /// clock functions, and the reference functions whose target our static edges do
 /// not capture. A cell calling one must be recomputed on every pass.
 // Add new volatile functions here, or their cells will not refresh incrementally.
-fn is_volatile_function(kind: &Function, _args: &[Node]) -> bool {
+fn is_volatile_function(kind: &Function, args: &[Node]) -> bool {
     matches!(
         kind,
         Function::Rand
@@ -67,7 +67,47 @@ fn is_volatile_function(kind: &Function, _args: &[Node]) -> bool {
             | Function::Indirect
             | Function::Cell
             | Function::Info
-    )
+    ) || ifs_has_non_static_range(kind, args)
+}
+
+/// A node `run_ifs` can resolve without evaluating: a cell, a range, or a name.
+fn is_static_area_node(node: &Node) -> bool {
+    match node {
+        Node::ReferenceKind { .. } | Node::RangeKind { .. } | Node::DefinedNameKind(_) => true,
+        Node::ImplicitIntersection { child, .. } => is_static_area_node(child),
+        _ => false,
+    }
+}
+
+/// `*IFS` with INDEX/LET/CHOOSE as the walk or criteria range has no static
+/// rectangle to record. Recompute every pass, matching `A1:expr`.
+fn ifs_has_non_static_range(kind: &Function, args: &[Node]) -> bool {
+    let (walk, criteria) = match kind {
+        Function::Sumifs | Function::Averageifs | Function::Minifs | Function::Maxifs => {
+            (args.first(), (1..args.len()).step_by(2).collect::<Vec<_>>())
+        }
+        Function::Countifs => (args.first(), (0..args.len()).step_by(2).collect()),
+        Function::Sumif | Function::Averageif => {
+            let walk = if args.len() == 3 {
+                args.get(2)
+            } else {
+                args.first()
+            };
+            (walk, vec![0])
+        }
+        Function::Countif => (args.first(), vec![0]),
+        _ => return false,
+    };
+    let Some(walk) = walk else {
+        return false;
+    };
+    if !is_static_area_node(walk) {
+        return true;
+    }
+    criteria.iter().any(|&index| {
+        args.get(index)
+            .is_some_and(|node| !is_static_area_node(node))
+    })
 }
 
 /// Values that are not a function of the sheet. Incremental then full will
@@ -668,7 +708,8 @@ impl Model<'_> {
         for cell in volatiles {
             self.graph.mark_dirty(cell);
         }
-        let (_seeds, affected) = self.graph.take_seeds_and_affected();
+        let (_seeds, mut affected) = self.graph.take_seeds_and_affected();
+        self.expand_later_formula_precedents(&mut affected);
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
@@ -700,6 +741,37 @@ impl Model<'_> {
         self.graph.after_pass();
         self.evaluate_conditional_formatting();
         EvalPass::Incremental
+    }
+
+    /// Full evaluates cells in row-major order, so a reader that sits *before* a
+    /// formula precedent sees that precedent live (EmptyCell, not the stored
+    /// Number(0) `set_cells_with_result` writes). Incremental serves stored
+    /// values for anything outside the dirty cone. Pull those later-in-order
+    /// formula precedents into scope so COUNTBLANK/concat/IF see emptiness.
+    fn expand_later_formula_precedents(&self, affected: &mut HashSet<Position>) {
+        let mut formulas = Vec::new();
+        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
+            let sheet = sheet_index as u32;
+            for (row, row_data) in &worksheet.sheet_data {
+                for (col, cell) in row_data {
+                    if cell.get_formula().is_some() {
+                        formulas.push((sheet, *row, *col));
+                    }
+                }
+            }
+        }
+        let mut stack: Vec<Position> = affected.iter().copied().collect();
+        while let Some(reader) = stack.pop() {
+            for &formula in &formulas {
+                if formula <= reader || affected.contains(&formula) {
+                    continue;
+                }
+                if self.graph.dependents_of(formula).contains(&reader) {
+                    affected.insert(formula);
+                    stack.push(formula);
+                }
+            }
+        }
     }
 
     /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
