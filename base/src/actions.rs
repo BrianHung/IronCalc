@@ -596,7 +596,8 @@ impl<'a> Model<'a> {
         }
         self.reset_dynamic_array_spills(sheet, Axis::Column, column)?;
         let worksheet = self.workbook.worksheet(sheet)?;
-        let all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+        let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+        all_rows.sort_unstable();
         for row in all_rows {
             let sorted_columns = self.get_columns_for_row(sheet, row, true)?;
             for col in sorted_columns {

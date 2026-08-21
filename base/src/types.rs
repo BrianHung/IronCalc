@@ -280,6 +280,9 @@ pub enum FormulaValue {
         // Human-readable error message, e.g. "Not implemented function"
         m: String,
     },
+    /// A formula whose live result is an empty cell (`=A1` with A1 blank).
+    /// Stored losslessly so Incremental and Full agree regardless of eval order.
+    Empty,
 }
 
 /// The value stored in a spill cell (no formula, no origin tracking).
@@ -289,6 +292,7 @@ pub enum SpillValue {
     Number(f64),
     Text(String),
     Error(Error),
+    Empty,
 }
 
 /// Whether an array formula is a CSE (Ctrl+Shift+Enter) formula or a dynamic formula.

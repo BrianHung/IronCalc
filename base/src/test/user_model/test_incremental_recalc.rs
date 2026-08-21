@@ -326,7 +326,7 @@ fn incremental_range_clear_contents_forces_full() {
         })
         .unwrap(); // clears B1; must fall back to full
     model.evaluate();
-    assert_eq!(model._get_text("C1"), "0"); // B1 cleared, not the stale 1
+    assert_eq!(model._get_text("C1"), ""); // B1 cleared, not the stale 1
 }
 
 #[test]
@@ -1145,7 +1145,7 @@ fn incremental_cell_name_survives_insert() {
     // the old A10 shifts to A11. The name still reads $A$10.
     model.insert_rows(0, 5, 1).unwrap();
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "0");
+    assert_eq!(model._get_text("B1"), "");
 
     model._set("A10", "99");
     assert!(!model.graph.should_recompute_full());
@@ -1437,4 +1437,40 @@ fn min_max_signed_zero_matches_row_major_operand_order() {
     // Main scans `value.min(result)` left-to-right: 0.0 then -0.0.
     assert_eq!(min.to_bits(), 0.0_f64.min(-0.0).to_bits());
     assert_eq!(max.to_bits(), 0.0_f64.max(-0.0).to_bits());
+}
+
+#[test]
+fn incremental_blocked_spill_sum_agrees_with_full() {
+    // A blocked dynamic array must not skip the arrays→Full guard, and SUM of
+    // the spill column must see #SPILL! rather than a stale number.
+    fn run(mode: crate::RecalcMode) -> (String, String) {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model._set("G1", "=SUM(E:E)");
+        model._set("E8", "=SUM(B3:C9)");
+        model._set("E19", "=A1:A3*2");
+        model._set("E20", "=OFFSET(A1,1,1)");
+        model.evaluate();
+        model._set("C4", "5");
+        model.evaluate();
+        (model._get_text("E19"), model._get_text("G1"))
+    }
+    assert_eq!(
+        run(crate::RecalcMode::Full),
+        run(crate::RecalcMode::Incremental)
+    );
+}
+
+#[test]
+fn stored_empty_formula_is_live_empty() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "=A1");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "");
+    match model.workbook.worksheet(0).unwrap().cell(1, 2) {
+        Some(crate::types::Cell::CellFormula {
+            v: crate::types::FormulaValue::Empty,
+            ..
+        }) => {}
+        other => panic!("expected stored Empty, got {other:?}"),
+    }
 }
