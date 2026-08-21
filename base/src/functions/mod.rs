@@ -2307,6 +2307,32 @@ impl<'a> Model<'a> {
         cell: CellReferenceIndex,
     ) -> CalcResult {
         match kind {
+            Function::Rand | Function::Randbetween | Function::Randarray => {
+                self.trace_input(crate::recalc::Input::Random);
+            }
+            Function::Now | Function::Today => {
+                self.trace_input(crate::recalc::Input::Clock);
+            }
+            Function::Row | Function::Column if args.is_empty() => {
+                self.trace_input(crate::recalc::Input::OwnCoord((
+                    cell.sheet,
+                    cell.row,
+                    cell.column,
+                )));
+            }
+            Function::Formulatext => {
+                self.trace_input(crate::recalc::Input::FormulaText((
+                    cell.sheet,
+                    cell.row,
+                    cell.column,
+                )));
+            }
+            Function::Subtotal => {
+                self.trace_input(crate::recalc::Input::RowHidden(cell.sheet, cell.row));
+            }
+            _ => {}
+        }
+        match kind {
             Function::And => self.fn_and(args, cell),
             Function::False => self.fn_false(args, cell),
             Function::If => self.fn_if(args, cell),

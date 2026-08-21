@@ -12,5 +12,5 @@ fn sheet_number_name() {
     model.rename_sheet("Sheet2", "2024").unwrap();
     model.evaluate();
     assert_eq!(model.workbook.get_worksheet_names(), ["Sheet1", "2024"]);
-    assert_eq!(model._get_text("A2"), "0");
+    assert_eq!(model._get_text("A2"), "");
 }

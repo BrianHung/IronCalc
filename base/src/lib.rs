@@ -56,6 +56,7 @@ mod functions;
 mod implicit_intersection;
 pub mod links;
 mod model;
+mod recalc;
 mod styles;
 mod tz;
 mod units;

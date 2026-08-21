@@ -180,7 +180,7 @@ const RANGE_INDEX_MAX_BANDS: i32 = 16;
 /// cell can find the ranges that contain it without scanning them all.
 /// `dependents` is the source of truth; `bands` and `wide` only speed up the
 /// point query and are rebuilt from it whenever positions shift.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SheetRanges {
     dependents: HashMap<Area, HashSet<Position>>,
     /// Row band (`row / RANGE_INDEX_BAND_ROWS`) to the bounded ranges touching it.
@@ -233,7 +233,7 @@ impl SheetRanges {
 }
 
 /// Walkability of the stored edges. One enum so built/forced flags cannot disagree.
-#[derive(Default)]
+#[derive(Clone, Default)]
 enum GraphState {
     Ready {
         dirty: HashSet<Position>,
@@ -243,7 +243,7 @@ enum GraphState {
 }
 
 /// Shared storage for the role-typed sets on [`DependencyGraph`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Positions(HashSet<Position>);
 
 impl Positions {
@@ -269,29 +269,29 @@ impl Positions {
 }
 
 /// Array/spill cells.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ArrayCells(Positions);
 
 /// Cells whose static edges miss their target (`OFFSET`, `INDIRECT`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DynamicRefs(Positions);
 
 /// Volatile formulas (`RAND`, `NOW`, `OFFSET`, …). Only RAND/NOW/TODAY re-roll;
 /// `OFFSET` recomputes because static edges miss the cell it actually reads.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct VolatileCells(Positions);
 
 /// RAND/NOW/TODAY. Verify strips this cone.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct NondeterministicCells(Positions);
 
 /// Formulas whose result depends on coordinates or formula text (`ROW()`,
 /// `COLUMN()`, `FORMULATEXT`), not only on precedent values.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct StructureDependent(Positions);
 
 /// `SUBTOTAL(1xx)` formulas that skip hidden rows/columns.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct VisibilityDependent(Positions);
 
 impl ArrayCells {
@@ -412,7 +412,7 @@ impl VisibilityDependent {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it. A set, so a formula reading
     /// the same cell twice (`=A1+A1`) records a single edge.
@@ -524,19 +524,25 @@ impl DependencyGraph {
         }
     }
 
+    /// The dirty set before this pass seeds volatiles. User edits, not RAND/*IFS.
+    pub(crate) fn peek_dirty(&self) -> Vec<Position> {
+        match &self.state {
+            GraphState::Ready { dirty } => dirty.iter().copied().collect(),
+            GraphState::MustRebuild => Vec::new(),
+        }
+    }
+
     /// Seeds Verify allows in the delta even when the snapshot did not move:
-    /// user edits plus RAND/NOW/TODAY. OFFSET is a dynamic ref, not a seed.
+    /// user edits plus RAND/NOW/TODAY. OFFSET and *IFS-as-volatile recompute
+    /// every pass but are not always-report: they land in the delta only if
+    /// observable state moved.
     #[cfg(feature = "recalc_verify")]
     pub(crate) fn always_report_seeds(&self) -> HashSet<Position> {
         let mut seeds = match &self.state {
             GraphState::Ready { dirty } => dirty.clone(),
             GraphState::MustRebuild => HashSet::new(),
         };
-        for cell in self.volatile.iter() {
-            if !self.dynamic_refs.contains(&cell) {
-                seeds.insert(cell);
-            }
-        }
+        seeds.extend(self.nondeterministic.iter());
         seeds
     }
 

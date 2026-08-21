@@ -703,6 +703,8 @@ impl<'a> Model<'a> {
             recalc_mode: crate::RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
+            write_log: crate::recalc::WriteLog::default(),
+            read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
         };
         model.parse_formulas();
