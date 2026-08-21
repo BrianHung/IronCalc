@@ -15,6 +15,7 @@
 use super::stringify::{displace_resolved_coordinates, DisplaceData};
 use super::Node;
 use crate::constants::{LAST_COLUMN, LAST_ROW};
+use crate::number_format::to_excel_precision;
 
 /// Shifts a single reference resolved against the owning cell at
 /// `(context_row, context_column)`. Returns `None` for `#REF!`.
@@ -70,14 +71,28 @@ pub(crate) fn displace_node(
 ) -> Option<Node> {
     match node {
         Node::BooleanKind(_)
-        | Node::NumberKind(_)
         | Node::StringKind(_)
-        | Node::ArrayKind(_)
         | Node::DefinedNameKind(_)
         | Node::TableNameKind(_)
         | Node::NamedVariableKind { .. }
         | Node::ErrorKind(_)
         | Node::EmptyArgKind => Some(node.clone()),
+        Node::NumberKind(n) => Some(Node::NumberKind(to_excel_precision(*n, 15))),
+        Node::ArrayKind(array) => Some(Node::ArrayKind(
+            array
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|value| match value {
+                            super::ArrayNode::Number(n) => {
+                                super::ArrayNode::Number(to_excel_precision(*n, 15))
+                            }
+                            other => other.clone(),
+                        })
+                        .collect()
+                })
+                .collect(),
+        )),
         Node::ReferenceKind {
             sheet_name,
             sheet_index,

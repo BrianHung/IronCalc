@@ -363,7 +363,10 @@ impl<'a> Model<'a> {
         rc: String,
     ) -> Result<(), String> {
         let static_result = run_static_analysis_on_node(&node);
-        let style = self.workbook.worksheet(sheet)?.get_style(row, column);
+        let mut style = self.workbook.worksheet(sheet)?.get_style(row, column);
+        if self.workbook.styles.style_is_quote_prefix(style) {
+            style = self.workbook.styles.get_style_without_quote_prefix(style)?;
+        }
         let existing = self
             .workbook
             .worksheet(sheet)?
