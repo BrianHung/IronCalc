@@ -16,6 +16,10 @@ fn reads_own_coord(model: &crate::Model, p: (u32, i32, i32)) -> bool {
         .cell_reads(p, |i| matches!(i, Input::OwnCoord(_)))
 }
 
+fn flush_writes(model: &mut crate::Model) {
+    model.drain_write_journal();
+}
+
 #[test]
 fn incremental_matches_full_on_a_chain() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -41,6 +45,7 @@ fn incremental_error_is_not_a_same_text_literal() {
     // Value edit, not a formula write: `=…` would force_full and skip Verify.
     // CellValue stores errors as text, so type is the only Error vs "#DIV/0!" distinction.
     model._set("A1", "0");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_cell("B1").get_type(), CellType::ErrorValue);
@@ -97,6 +102,7 @@ fn incremental_handles_row_insert() {
     // An insert only shifts references, so the graph shifts its edges rather
     // than rebuilding: the next pass stays incremental.
     model.insert_rows(0, 3, 2).unwrap(); // A1:A5 -> A1:A7
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("C1"), "15"); // SUM unchanged
@@ -113,6 +119,7 @@ fn incremental_handles_row_delete() {
     // No tracked range straddles the deleted row, so the shift models it and the
     // pass stays incremental.
     model.delete_rows(0, 2, 1).unwrap(); // A5 -> A4, ref A1 intact
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A4"), "11");
@@ -127,6 +134,7 @@ fn incremental_column_insert_stays_incremental() {
     model.evaluate();
 
     model.insert_columns(0, 2, 1).unwrap(); // B shifts to C, D to E
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("E1"), "3");
@@ -160,6 +168,7 @@ fn incremental_structural_edit_moves_volatile_with_the_graph() {
     // The graph shifts every position-keyed set, so the Random input travels
     // to A11 and the next pass can stay incremental.
     model.insert_rows(0, 1, 1).unwrap();
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     assert!(reads_random(&model, (0, 11, 1)));
     assert!(!reads_random(&model, (0, 10, 1)));
@@ -201,6 +210,7 @@ fn incremental_structural_edit_below_volatile_stays_incremental() {
     // Inserting below the volatile leaves it in place, so the edit can stay
     // incremental.
     model.insert_rows(0, 5, 1).unwrap();
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("C11"), "2");
@@ -284,6 +294,7 @@ fn incremental_nested_dynamic_range_tracks_interior() {
     assert_eq!(model._get_text("B1"), "2");
 
     model._set("A5", "10");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("B1"), "12");
@@ -445,6 +456,7 @@ fn incremental_offset_does_not_force_full_on_unrelated_edit() {
     // OFFSET's actual target is a traced edge, not a role set. An unrelated
     // edit must stay incremental instead of falling back to a full workbook pass.
     model._set("Z1", "2");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
@@ -613,6 +625,7 @@ fn incremental_insert_below_dynamic_array_rebuilds_spill() {
 
     model._set("Z1", "1"); // dirty an unrelated cell
     model.insert_rows(0, 6, 1).unwrap();
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
@@ -629,11 +642,51 @@ fn incremental_insert_below_dynamic_array_and_volatile_stays_incremental() {
     model.evaluate();
 
     model.insert_rows(0, 5, 1).unwrap();
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
     assert_eq!(model._get_text("A2"), "2");
     assert_eq!(model._get_text("C11"), "2");
+}
+
+/// A blocked spill (`#SPILL!`) stores `r=(1,1)`. An insert below it still
+/// resets the anchor so the next pass can re-try the spill. That reset must
+/// journal even though the formula index is unchanged (fuzz seed 51).
+#[test]
+fn blocked_spill_reset_on_insert_below_matches_full() {
+    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
+    inc._set("A1", "1");
+    inc._set("A2", "2");
+    inc._set("A3", "3");
+    inc._set("A4", "4");
+    inc._set("B1", "4");
+    inc._set("B2", "3");
+    inc._set("B3", "2");
+    inc._set("B4", "1");
+    inc._set("E17", "=SORTBY(A1:A4,B1:B4)");
+    inc._set("E18", "=FILTER(A1:A4,B1:B4>0)");
+    inc.evaluate();
+    inc.insert_rows(0, 21, 1).unwrap();
+    inc.evaluate();
+
+    let mut full = new_empty_model();
+    full._set("A1", "1");
+    full._set("A2", "2");
+    full._set("A3", "3");
+    full._set("A4", "4");
+    full._set("B1", "4");
+    full._set("B2", "3");
+    full._set("B3", "2");
+    full._set("B4", "1");
+    full._set("E17", "=SORTBY(A1:A4,B1:B4)");
+    full._set("E18", "=FILTER(A1:A4,B1:B4>0)");
+    full.evaluate();
+    full.insert_rows(0, 21, 1).unwrap();
+    full.evaluate();
+
+    assert_eq!(inc._get_text("E17"), full._get_text("E17"));
+    assert_eq!(inc._get_cell("E17").get_type(), full._get_cell("E17").get_type());
 }
 
 #[test]
@@ -714,6 +767,7 @@ fn take_changed_cells_reports_everything_for_data_only_shift() {
     // Insert above two data cells. Nothing is a formula dependent, so a cell
     // list would be empty while A1/A2 visibly moved.
     model.insert_rows(0, 1, 1).unwrap();
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
@@ -801,6 +855,7 @@ fn phase_two_restores_memo_for_skipped_cone_cells() {
     model._set("A1", "=OFFSET(D2,0,0)");
     model.evaluate();
     model._set("Z1", "1");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert!(
@@ -983,6 +1038,7 @@ fn incremental_sumifs_reads_resized_criteria() {
     assert_eq!(model._get_text("C1"), "3");
 
     model._set("B2", "0");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("C1"), "2");
@@ -1008,6 +1064,7 @@ fn incremental_cell_name_survives_insert() {
     assert_eq!(model._get_text("B1"), "");
 
     model._set("A10", "99");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("B1"), "99");
@@ -1052,6 +1109,7 @@ fn incremental_subtotal_sees_hidden_row() {
 
     model.set_row_hidden(0, 2, true).unwrap();
     model._set("D9", "1");
+    flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("B1"), "4");
@@ -1474,5 +1532,167 @@ fn redundant_evaluate_keeps_rand_reporting_but_not_sumifs() {
         ChangedSinceRead::Everything => {
             panic!("SUMIFS must not wipe the delta on a redundant evaluate")
         }
+    }
+}
+
+#[test]
+fn formula_edit_stays_incremental() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1+1");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("B1", "=A1+2");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "3");
+
+    model._set("A1", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "7");
+}
+
+#[test]
+fn journal_value_over_formula_drops_edges() {
+    for overwrite in [
+        |model: &mut crate::Model| model.update_cell_with_number(0, 1, 1, 5.0).unwrap(),
+        |model: &mut crate::Model| model.update_cell_with_text(0, 1, 1, "5").unwrap(),
+        |model: &mut crate::Model| model.update_cell_with_bool(0, 1, 1, true).unwrap(),
+        |model: &mut crate::Model| {
+            model.set_user_input(0, 1, 1, "5".to_string()).unwrap();
+        },
+    ] {
+        let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+        model._set("A1", "=RAND()");
+        model.evaluate();
+        overwrite(&mut model);
+        model.evaluate();
+        let _ = model.take_changed_cells();
+        model._set("B1", "1");
+        model.evaluate();
+        model._set("B1", "2");
+        model.evaluate();
+        match model.take_changed_cells() {
+            ChangedSinceRead::Everything => panic!("overwritten RAND must not force Everything"),
+            ChangedSinceRead::Cells(cells) => {
+                assert!(
+                    !cells.iter().any(|c| c.row == 1 && c.column == 1),
+                    "overwritten RAND must not stay in later deltas"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn formulatext_sees_value_overwrite_of_its_argument() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=1+1");
+    model._set("B1", "=FORMULATEXT(A1)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "=1+1");
+
+    model._set("A1", "ov");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "#N/A");
+}
+
+#[test]
+fn isformula_sees_value_overwrite_of_its_argument() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=1+1");
+    model._set("B1", "=ISFORMULA(A1)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "TRUE");
+
+    model.update_cell_with_number(0, 1, 1, 36.0).unwrap();
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "FALSE");
+}
+
+/// SEQUENCE + a `#` spill-ref can take a second Full pass to materialize
+/// spill cells. An unrelated write on another sheet must not leave those
+/// cells missing on Incremental (fuzz seed 52).
+#[test]
+fn sequence_hash_spill_survives_unrelated_other_sheet_edit() {
+    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
+    inc.add_sheet("Data").unwrap();
+    inc.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string()).unwrap();
+    inc.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
+    inc.evaluate();
+    let g14_after_first = inc._get_text("G14");
+
+    let mut full = new_empty_model();
+    full.add_sheet("Data").unwrap();
+    full.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string()).unwrap();
+    full.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
+    full.evaluate();
+
+    inc.set_user_input(1, 4, 1, "38".to_string()).unwrap();
+    inc.evaluate();
+    full.set_user_input(1, 4, 1, "38".to_string()).unwrap();
+    full.evaluate();
+
+    assert_eq!(
+        inc._get_text("G14"),
+        full._get_text("G14"),
+        "after first evaluate Incremental G14={g14_after_first:?}"
+    );
+}
+
+#[test]
+fn style_on_blank_cell_does_not_enter_the_delta() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    let mut style = model.get_style_for_cell(0, 13, 3).unwrap();
+    style.fill.color = crate::types::Color::Rgb("#FFAA00".to_string());
+    model.set_cell_style(0, 13, 3, &style).unwrap();
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("style on a blank cell must stay Incremental"),
+        ChangedSinceRead::Cells(cells) => assert!(
+            cells.is_empty(),
+            "style on a blank cell must not appear in the delta, got {cells:?}"
+        ),
+    }
+}
+
+#[test]
+fn journal_rejected_write_logs_nothing() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    assert!(model.set_user_input(1, 9, 3, "84".to_string()).is_err());
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Cells(cells) => assert!(cells.is_empty()),
+        ChangedSinceRead::Everything => panic!("rejected write must not force Everything"),
+    }
+}
+
+#[test]
+fn undo_redo_under_incremental_stays_incremental() {
+    let mut model = UserModel::new_empty("m", "en", "UTC", "en")
+        .unwrap()
+        .with_recalc_mode(incremental_mode());
+    model.set_user_input(0, 1, 1, "1").unwrap();
+    model.set_user_input(0, 1, 2, "=A1+1").unwrap();
+    model.evaluate();
+    let _ = model.model.take_changed_cells();
+    model.set_user_input(0, 1, 1, "5").unwrap();
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 2).unwrap(), "6");
+    model.undo().unwrap();
+    model.evaluate();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 2).unwrap(), "2");
+    match model.model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("undo of a value edit must stay Incremental"),
+        ChangedSinceRead::Cells(_) => {}
     }
 }

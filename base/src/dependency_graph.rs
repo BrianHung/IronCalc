@@ -248,6 +248,10 @@ impl ArrayCells {
         self.0.contains(cell)
     }
 
+    pub(crate) fn snapshot(&self) -> HashSet<Position> {
+        self.0.0.clone()
+    }
+
     fn replace(&mut self, cells: HashSet<Position>) {
         self.0.replace(cells);
     }

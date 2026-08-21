@@ -74,6 +74,7 @@ impl<'a> Model<'a> {
             views,
             conditional_formatting: vec![],
             links: HashMap::new(),
+            write_log: crate::recalc::WriteLog::default(),
         }
     }
 
@@ -195,7 +196,7 @@ impl<'a> Model<'a> {
         self.parsed_defined_names = HashMap::new();
         self.parse_defined_names();
         // Reparsing invalidates the dependency graph built on the old parse.
-        self.graph.force_full();
+        self.invalidate_graph();
         self.evaluate();
     }
 
@@ -703,7 +704,6 @@ impl<'a> Model<'a> {
             recalc_mode: crate::RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
-            write_log: crate::recalc::WriteLog::default(),
             read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
         };

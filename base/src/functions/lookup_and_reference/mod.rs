@@ -1076,6 +1076,11 @@ impl<'a> Model<'a> {
                     message: "argument must be a reference to a single cell".to_string(),
                 };
             }
+            self.trace_input(crate::recalc::Input::FormulaText((
+                left.sheet,
+                left.row,
+                left.column,
+            )));
             if let Ok(Some(f)) = self.get_english_cell_formula(left.sheet, left.row, left.column) {
                 CalcResult::String(f)
             } else {

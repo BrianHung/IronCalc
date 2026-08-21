@@ -76,6 +76,8 @@ pub use model::get_milliseconds_since_epoch;
 pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
+#[doc(hidden)]
+pub use recalc::WriteLog;
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
 pub use user_model::UserModel;

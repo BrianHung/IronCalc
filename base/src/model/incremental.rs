@@ -224,7 +224,7 @@ impl Model<'_> {
                     })
                     .collect();
                 let cf_before = self.cf_cache.clone();
-                self.evaluate_full();
+                self.evaluate_full_and_follow_up_new_arrays();
                 let after: Vec<(Position, Option<ChangeKey>)> = self
                     .get_all_cells()
                     .into_iter()
@@ -413,8 +413,27 @@ impl Model<'_> {
     /// Full recompute whose result is not expressible as a delta: it may have
     /// changed any cell, so the next `take_changed_cells` reports `Everything`.
     pub(crate) fn evaluate_full_untracked(&mut self) {
-        self.evaluate_full();
+        self.evaluate_full_and_follow_up_new_arrays();
         self.changed_cells = ChangedCells::All;
+    }
+
+    /// A newly observed dynamic-array anchor may not have seen a SEQUENCE
+    /// that spilled later in the same pass (`E15#` after `=SEQUENCE(3)`).
+    /// Leave it dirty so the next evaluate takes the arrays→Full path and
+    /// matches a second Full-mode pass.
+    fn evaluate_full_and_follow_up_new_arrays(&mut self) {
+        let before = self.graph.arrays.snapshot();
+        self.evaluate_full();
+        let new: Vec<Position> = self
+            .graph
+            .arrays
+            .snapshot()
+            .into_iter()
+            .filter(|p| !before.contains(p))
+            .collect();
+        for p in new {
+            self.graph.mark_dirty(p);
+        }
     }
 
     /// Returns the cells whose observable state moved on incremental evaluations
@@ -422,6 +441,7 @@ impl Model<'_> {
     /// full recompute has run, or an insert/delete moved cells the dirty cone
     /// cannot name. An empty `Cells` delta is not `Everything`.
     pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
+        self.drain_write_journal();
         // Reading re-arms tracking: the record resets to an empty delta, so
         // subsequent incremental passes accumulate afresh.
         let taken = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
