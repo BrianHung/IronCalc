@@ -1,9 +1,20 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
+use crate::recalc::Input;
 use crate::test::util::{incremental_mode, new_empty_model};
 use crate::types::CellType;
 use crate::{ChangedSinceRead, UserModel};
+
+fn reads_random(model: &crate::Model, p: (u32, i32, i32)) -> bool {
+    model.graph.cell_reads(p, |i| matches!(i, Input::Random))
+}
+
+fn reads_own_coord(model: &crate::Model, p: (u32, i32, i32)) -> bool {
+    model
+        .graph
+        .cell_reads(p, |i| matches!(i, Input::OwnCoord(_)))
+}
 
 #[test]
 fn incremental_matches_full_on_a_chain() {
@@ -50,7 +61,7 @@ fn volatile_hidden_in_defined_name_lambda_is_detected() {
 
     // B1 (sheet 0, row 1, column 2) must be volatile so the incremental path
     // re-rolls it every pass, matching a full recompute.
-    assert!(model.graph.volatile.contains(&(0, 1, 2)));
+    assert!(reads_random(&model, (0, 1, 2)));
 }
 
 #[test]
@@ -144,17 +155,17 @@ fn incremental_structural_edit_moves_volatile_with_the_graph() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A10", "=RAND()");
     model.evaluate();
-    assert!(model.graph.volatile.contains(&(0, 10, 1)));
+    assert!(reads_random(&model, (0, 10, 1)));
 
-    // The graph shifts every position-keyed set, so the volatile travels to A11
-    // and the next pass can stay incremental.
+    // The graph shifts every position-keyed set, so the Random input travels
+    // to A11 and the next pass can stay incremental.
     model.insert_rows(0, 1, 1).unwrap();
     assert!(!model.graph.should_recompute_full());
-    assert!(model.graph.volatile.contains(&(0, 11, 1)));
-    assert!(!model.graph.volatile.contains(&(0, 10, 1)));
+    assert!(reads_random(&model, (0, 11, 1)));
+    assert!(!reads_random(&model, (0, 10, 1)));
 
     model.evaluate();
-    assert!(model.graph.volatile.contains(&(0, 11, 1)));
+    assert!(reads_random(&model, (0, 11, 1)));
 }
 
 #[test]
@@ -270,10 +281,6 @@ fn incremental_nested_dynamic_range_tracks_interior() {
     // only the endpoints; A5 is missed unless the SUM is marked volatile.
     model._set("B1", "=SUM((A1):(A10))");
     model.evaluate();
-    assert!(
-        model.graph.volatile.contains(&(0, 1, 2)),
-        "SUM((A1):(A10)) nests OpRangeKind; it must be volatile"
-    );
     assert_eq!(model._get_text("B1"), "2");
 
     model._set("A5", "10");
@@ -434,10 +441,8 @@ fn incremental_offset_does_not_force_full_on_unrelated_edit() {
     model._set("Z1", "1");
     model.evaluate();
     assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
-    assert!(model.graph.dynamic_refs.contains(&(0, 1, 1)));
-    assert!(model.graph.volatile.contains(&(0, 1, 1)));
 
-    // OFFSET is volatile and a dynamic ref, not an array cell. An unrelated
+    // OFFSET's actual target is a traced edge, not a role set. An unrelated
     // edit must stay incremental instead of falling back to a full workbook pass.
     model._set("Z1", "2");
     assert!(!model.graph.should_recompute_full());
@@ -1014,7 +1019,7 @@ fn incremental_argless_row_updates_after_insert() {
     model._set("A1", "=ROW()");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
-    assert!(model.graph.structure_dependent.contains(&(0, 1, 1)));
+    assert!(reads_own_coord(&model, (0, 1, 1)));
 
     model.insert_rows(0, 1, 1).unwrap();
     model.evaluate();
@@ -1057,11 +1062,11 @@ fn incremental_overwrite_rand_clears_volatile() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "=RAND()");
     model.evaluate();
-    assert!(model.graph.volatile.contains(&(0, 1, 1)));
+    assert!(reads_random(&model, (0, 1, 1)));
 
     model._set("A1", "5");
     model.evaluate();
-    assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+    assert!(!reads_random(&model, (0, 1, 1)));
     assert_eq!(model._get_text("A1"), "5");
 
     model._set("B1", "1");
@@ -1069,7 +1074,7 @@ fn incremental_overwrite_rand_clears_volatile() {
     model._set("B1", "2");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "5");
-    assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+    assert!(!reads_random(&model, (0, 1, 1)));
 }
 
 #[test]
@@ -1082,18 +1087,18 @@ fn incremental_update_cell_apis_clear_volatile_roles() {
         let mut model = new_empty_model().with_recalc_mode(incremental_mode());
         model._set("A1", "=RAND()");
         model.evaluate();
-        assert!(model.graph.volatile.contains(&(0, 1, 1)));
+        assert!(reads_random(&model, (0, 1, 1)));
 
         overwrite(&mut model);
         model.evaluate();
-        assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+        assert!(!reads_random(&model, (0, 1, 1)));
         let _ = model.take_changed_cells();
 
         model._set("B1", "1");
         model.evaluate();
         model._set("B1", "2");
         model.evaluate();
-        assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+        assert!(!reads_random(&model, (0, 1, 1)));
 
         let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
             panic!("expected incremental delta");
@@ -1295,5 +1300,179 @@ fn stored_empty_formula_is_live_empty() {
             ..
         }) => {}
         other => panic!("expected stored Empty, got {other:?}"),
+    }
+}
+
+#[test]
+fn offset_target_change_without_static_edge() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("C1", "0");
+    model._set("D1", "1");
+    model._set("E1", "2");
+    model._set("A1", "=OFFSET(D1,0,C1)");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    let _ = model.take_changed_cells();
+
+    model._set("E1", "99");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("unrelated E1 edit must stay Incremental"),
+        ChangedSinceRead::Cells(cells) => {
+            let changed: std::collections::HashSet<(i32, i32)> =
+                cells.iter().map(|c| (c.row, c.column)).collect();
+            assert!(changed.contains(&(1, 5)));
+            assert!(!changed.contains(&(1, 1)));
+        }
+    }
+
+    model._set("C1", "1");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "99");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("OFFSET retarget must stay Incremental"),
+        ChangedSinceRead::Cells(cells) => {
+            let changed: std::collections::HashSet<(i32, i32)> =
+                cells.iter().map(|c| (c.row, c.column)).collect();
+            assert!(changed.contains(&(1, 1)));
+        }
+    }
+}
+
+#[test]
+fn sumifs_criteria_from_index_is_tracked() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    for row in 1..=10 {
+        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
+        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
+    }
+    model._set("E1", "=SUMIFS(D1:D10,INDEX(A1:C3,0,1),\">0\")");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "10");
+    let _ = model.take_changed_cells();
+
+    model._set("A7", "0");
+    model.evaluate();
+    assert_eq!(model._get_text("E1"), "9");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("SUMIFS INDEX criteria must stay Incremental"),
+        ChangedSinceRead::Cells(_) => {}
+    }
+}
+
+#[test]
+fn subtotal_sees_hidden_row_it_scans_not_own_row() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    for row in 1..=10 {
+        model._set(&format!("A{row}"), "1");
+    }
+    model._set("A50", "=SUBTOTAL(109,A1:A10)");
+    model.evaluate();
+    assert_eq!(model._get_text("A50"), "10");
+    let _ = model.take_changed_cells();
+
+    model.set_row_hidden(0, 5, true).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("A50"), "9");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("hide scanned row must stay Incremental"),
+        ChangedSinceRead::Cells(cells) => {
+            assert!(cells.iter().any(|c| c.row == 50 && c.column == 1));
+        }
+    }
+
+    model.set_row_hidden(0, 50, true).unwrap();
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => panic!("hide own row must not force Full"),
+        ChangedSinceRead::Cells(cells) => {
+            assert!(
+                !cells.iter().any(|c| c.row == 50 && c.column == 1),
+                "SUBTOTAL must not recompute when its own row is hidden"
+            );
+        }
+    }
+    assert_eq!(model._get_text("A50"), "9");
+}
+
+#[test]
+fn name_reader_redirty_on_insert() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    let sheet = model.workbook.worksheets[0].get_name();
+    model._set("A10", "42");
+    model
+        .new_defined_name("MyRef", None, &format!("{sheet}!$A$10"))
+        .unwrap();
+    model._set("B1", "=MyRef");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "42");
+
+    model.insert_rows(0, 5, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "");
+
+    model._set("A10", "99");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "99");
+}
+
+#[test]
+fn name_reader_redirty_on_insert_sheet_scoped() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    let sheet = model.workbook.worksheets[0].get_name();
+    model._set("A10", "42");
+    model
+        .new_defined_name("LocalRef", Some(0), &format!("{sheet}!$A$10"))
+        .unwrap();
+    model._set("B1", "=LocalRef");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "42");
+
+    model.insert_rows(0, 5, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "");
+
+    model._set("A10", "99");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "99");
+}
+
+#[test]
+fn redundant_evaluate_keeps_rand_reporting_but_not_sumifs() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=SUMIFS(A1:A1,A1:A1,\">0\")");
+    model._set("C1", "=RAND()");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model._set("A1", "5");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => {}
+        other => panic!("RAND must keep reporting Everything, got {other:?}"),
+    }
+
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=SUMIFS(A1:A1,A1:A1,\">0\")");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    model._set("A1", "5");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    model.evaluate();
+    match model.take_changed_cells() {
+        ChangedSinceRead::Cells(cells) => assert!(
+            cells.is_empty(),
+            "SUMIFS must not always-report on a redundant evaluate"
+        ),
+        ChangedSinceRead::Everything => {
+            panic!("SUMIFS must not wipe the delta on a redundant evaluate")
+        }
     }
 }

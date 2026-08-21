@@ -2327,8 +2327,8 @@ impl<'a> Model<'a> {
                     cell.column,
                 )));
             }
-            Function::Subtotal => {
-                self.trace_input(crate::recalc::Input::RowHidden(cell.sheet, cell.row));
+            Function::Cell | Function::Info => {
+                self.trace_input(crate::recalc::Input::Environment);
             }
             _ => {}
         }

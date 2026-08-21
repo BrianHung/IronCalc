@@ -2,16 +2,25 @@ use crate::dependency_graph::{Area, Position};
 
 /// A non-cell input a formula read during evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum Input {
     RowHidden(u32, i32),
+    #[allow(dead_code)]
     ColHidden(u32, i32),
     OwnCoord(Position),
     FormulaText(Position),
-    Name { name: String, scope: Option<u32> },
+    Name {
+        name: String,
+        scope: Option<u32>,
+    },
     Clock,
     Random,
+    #[allow(dead_code)]
     SheetStructure,
+    /// CELL/INFO observe workbook environment, not cell values.
+    Environment,
+    /// A read whose target was computed (OFFSET/INDIRECT). Structural edits
+    /// re-dirty these formulas so they re-resolve instead of shifting a snapshot.
+    Computed,
 }
 
 /// Cells, rectangles, and non-cell inputs observed while evaluating one formula.

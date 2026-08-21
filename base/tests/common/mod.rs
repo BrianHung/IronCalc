@@ -956,7 +956,7 @@ pub fn minimize_by<O: Clone>(
         }
     };
     let mut cur: Vec<O> = ops.to_vec();
-    let mut last_failure = run(&cur).err().expect("minimize: scenario must fail");
+    let mut last_failure = run(&cur).expect_err("minimize: scenario must fail");
     // Truncate after the failing step.
     if last_failure.step + 1 < cur.len() {
         let cand: Vec<O> = cur[..=last_failure.step].to_vec();

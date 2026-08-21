@@ -910,11 +910,25 @@ impl<'a> Model<'a> {
                 };
 
                 match parsed_reference {
-                    ParsedReference::CellReference(reference) => CalcResult::Range {
-                        left: reference,
-                        right: reference,
-                    },
-                    ParsedReference::Range(left, right) => CalcResult::Range { left, right },
+                    ParsedReference::CellReference(reference) => {
+                        self.trace_input(crate::recalc::Input::Computed);
+                        self.trace_rect(
+                            reference.sheet,
+                            reference.row,
+                            reference.column,
+                            reference.row,
+                            reference.column,
+                        );
+                        CalcResult::Range {
+                            left: reference,
+                            right: reference,
+                        }
+                    }
+                    ParsedReference::Range(left, right) => {
+                        self.trace_input(crate::recalc::Input::Computed);
+                        self.trace_rect(left.sheet, left.row, left.column, right.row, right.column);
+                        CalcResult::Range { left, right }
+                    }
                 }
             }
             Err(v) => v,
@@ -1032,6 +1046,8 @@ impl<'a> Model<'a> {
             row: row_end,
             column: column_end,
         };
+        self.trace_input(crate::recalc::Input::Computed);
+        self.trace_rect(left.sheet, left.row, left.column, right.row, right.column);
         CalcResult::Range { left, right }
     }
 

@@ -204,12 +204,6 @@ pub(crate) enum CellOrRange {
     Cell((u32, i32, i32)),
     // (sheet, start_row, start_column, end_row, end_column)
     Range((u32, i32, i32, i32, i32)),
-    /// A defined name, stored as a vertex so a structural shift cannot move the
-    /// edge while the name definition stays put.
-    Name {
-        name: String,
-        scope: Option<u32>,
-    },
 }
 
 /// A dynamical IronCalc model.
@@ -1465,6 +1459,7 @@ impl<'a> Model<'a> {
         right: CellReferenceIndex,
     ) -> Vec<Vec<ArrayNode>> {
         let mut result = Vec::new();
+        self.trace_rect(left.sheet, left.row, left.column, right.row, right.column);
         for r in left.row..=right.row {
             let mut row_result = Vec::new();
             for c in left.column..=right.column {
@@ -1510,7 +1505,14 @@ impl<'a> Model<'a> {
         }
     }
 
-    fn trace_rect(&mut self, sheet: u32, row1: i32, column1: i32, row2: i32, column2: i32) {
+    pub(crate) fn trace_rect(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        column1: i32,
+        row2: i32,
+        column2: i32,
+    ) {
         if let Some(top) = self.read_stack.last_mut() {
             top.record_rect((sheet, row1, column1, row2, column2));
         }
@@ -1526,22 +1528,7 @@ impl<'a> Model<'a> {
         if !self.tracing() {
             return;
         }
-        self.graph.remove_dependent(dependent);
-        for p in reads.cells {
-            if p != dependent {
-                self.graph.add_cell_edge(p, dependent);
-            }
-        }
-        for area in reads.rects {
-            self.graph.add_range_edge(area, dependent);
-        }
-        for input in reads.inputs {
-            if let crate::recalc::Input::Name { name, scope } = input {
-                if let Some(target) = self.name_target(&name, scope) {
-                    self.graph.add_name_edge(name, scope, dependent, target);
-                }
-            }
-        }
+        self.graph.replace_reads(dependent, reads);
     }
 
     // Evaluates a cell and returns the value in the cell
@@ -2565,7 +2552,6 @@ impl<'a> Model<'a> {
             .is_some()
         {
             self.graph.remove_dependent(position);
-            self.graph.clear_cell_roles(position);
         }
     }
 
@@ -3210,24 +3196,6 @@ impl<'a> Model<'a> {
         self.spill_cells = spill_cells;
     }
 
-    /// Resolves a name used as a function (`FOO(...)`) to a defined-name lambda
-    /// body and its scope, or `None` if the name is unknown or resolves to
-    /// something other than a lambda. Sheet-local is tried before global, and
-    /// only the first match is considered, mirroring how the evaluator resolves
-    /// the same call.
-    fn resolve_named_lambda(&self, name: &str, sheet: u32) -> Option<(Option<u32>, Node)> {
-        let (scope, resolved) = [Some(sheet), None].into_iter().find_map(|scope| {
-            let parsed = self.get_parsed_defined_name(name, scope).ok().flatten()?;
-            Some((scope, parsed))
-        })?;
-        match resolved {
-            ParsedDefinedName::LambdaDefinition(_, body) => Some((scope, body)),
-            ParsedDefinedName::CellReference(_)
-            | ParsedDefinedName::RangeReference(_)
-            | ParsedDefinedName::InvalidDefinedNameFormula => None,
-        }
-    }
-
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
     /// including the anchor itself.
     fn get_spill_area(&self, cell_ref: CellReferenceIndex) -> Vec<CellReferenceIndex> {
@@ -3283,35 +3251,6 @@ impl<'a> Model<'a> {
                             && p.column <= c2
                     }) {
                         return true;
-                    }
-                }
-                CellOrRange::Name { ref name, scope } => {
-                    if let Ok(Some(parsed)) = self.get_parsed_defined_name(name, scope) {
-                        match parsed {
-                            ParsedDefinedName::CellReference(r) => {
-                                if positions.iter().any(|p| {
-                                    p.sheet == r.sheet && p.row == r.row && p.column == r.column
-                                }) {
-                                    return true;
-                                }
-                            }
-                            ParsedDefinedName::RangeReference(range) => {
-                                let r1 = range.left.row.min(range.right.row);
-                                let r2 = range.left.row.max(range.right.row);
-                                let c1 = range.left.column.min(range.right.column);
-                                let c2 = range.left.column.max(range.right.column);
-                                if positions.iter().any(|p| {
-                                    p.sheet == range.left.sheet
-                                        && p.row >= r1
-                                        && p.row <= r2
-                                        && p.column >= c1
-                                        && p.column <= c2
-                                }) {
-                                    return true;
-                                }
-                            }
-                            _ => {}
-                        }
                     }
                 }
             }
@@ -3417,9 +3356,7 @@ impl<'a> Model<'a> {
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
             self.collect_array_cells();
-            self.collect_volatile_cells();
-            // Edges come from the read tracer (commit_reads during evaluate_cell),
-            // not from a second static walk of the AST.
+            // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();
         } else {
             // Ready + an ever-growing dirty set would make a later Incremental
@@ -3871,7 +3808,14 @@ impl<'a> Model<'a> {
         self.workbook
             .worksheet_mut(sheet)?
             .set_column_hidden(column, hidden)?;
-        self.graph.mark_visibility_dirty();
+        let deps: Vec<_> = self
+            .graph
+            .dependents_of_inputs(|i| matches!(i, crate::recalc::Input::ColHidden(s, c) if *s == sheet && *c == column))
+            .into_iter()
+            .collect();
+        for p in deps {
+            self.graph.mark_dirty(p);
+        }
         Ok(())
     }
 
@@ -3881,7 +3825,16 @@ impl<'a> Model<'a> {
         self.workbook
             .worksheet_mut(sheet)?
             .set_row_hidden(row, hidden)?;
-        self.graph.mark_visibility_dirty();
+        let deps: Vec<_> = self
+            .graph
+            .dependents_of_inputs(
+                |i| matches!(i, crate::recalc::Input::RowHidden(s, r) if *s == sheet && *r == row),
+            )
+            .into_iter()
+            .collect();
+        for p in deps {
+            self.graph.mark_dirty(p);
+        }
         Ok(())
     }
 

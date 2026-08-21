@@ -121,4 +121,10 @@ fn differential_full_vs_incremental() {
         }
         panic!("{} distinct divergence(s):{report}", findings.len());
     }
+    if total.evaluates > 0 && total.cells_deltas < total.evaluates / 2 {
+        panic!(
+            "fuzz Incremental coverage collapsed: cells_deltas={} of evaluates={} (need at least half Incremental)",
+            total.cells_deltas, total.evaluates
+        );
+    }
 }

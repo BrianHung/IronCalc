@@ -54,11 +54,12 @@ impl<'a> Model<'a> {
     }
 
     fn cell_hidden_status(
-        &self,
+        &mut self,
         sheet_index: u32,
         row: i32,
         column: i32,
     ) -> Result<CellTableStatus, String> {
+        self.trace_input(crate::recalc::Input::RowHidden(sheet_index, row));
         let worksheet = self.workbook.worksheet(sheet_index)?;
         let mut hidden = false;
         for row_style in &worksheet.rows {
