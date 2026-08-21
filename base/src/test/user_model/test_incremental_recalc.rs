@@ -1216,3 +1216,59 @@ fn incremental_overwrite_rand_clears_volatile() {
     assert_eq!(model._get_text("A1"), "5");
     assert!(!model.graph.volatile.contains(&(0, 1, 1)));
 }
+
+#[test]
+fn incremental_update_cell_apis_clear_volatile_roles() {
+    for overwrite in [
+        |model: &mut crate::Model| model.update_cell_with_number(0, 1, 1, 5.0).unwrap(),
+        |model: &mut crate::Model| model.update_cell_with_text(0, 1, 1, "5").unwrap(),
+        |model: &mut crate::Model| model.update_cell_with_bool(0, 1, 1, true).unwrap(),
+    ] {
+        let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+        model._set("A1", "=RAND()");
+        model.evaluate();
+        assert!(model.graph.volatile.contains(&(0, 1, 1)));
+
+        overwrite(&mut model);
+        model.evaluate();
+        assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+        let _ = model.take_changed_cells();
+
+        model._set("B1", "1");
+        model.evaluate();
+        model._set("B1", "2");
+        model.evaluate();
+        assert!(!model.graph.volatile.contains(&(0, 1, 1)));
+
+        let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+            panic!("expected incremental delta");
+        };
+        let changed: std::collections::HashSet<(i32, i32)> =
+            cells.iter().map(|c| (c.row, c.column)).collect();
+        assert!(
+            !changed.contains(&(1, 1)),
+            "overwritten RAND must not stay in later deltas"
+        );
+    }
+}
+
+#[test]
+fn incremental_overwrite_spill_anchor_updates_dependents() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=SEQUENCE(3)");
+    model._set("C2", "=A2*10");
+    model.evaluate();
+    assert_eq!(model._get_text("A2"), "2");
+    assert_eq!(model._get_text("C2"), "20");
+
+    // Keep the anchor in `arrays` so this pass Full-falls-back; clearing that
+    // role would stay Incremental and leave C2 stale after the spill is wiped.
+    model._set("A1", "5");
+    assert!(model.graph.arrays.contains(&(0, 1, 1)));
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "5");
+    assert_eq!(model._get_text("A2"), "");
+    assert_eq!(model._get_text("A3"), "");
+    assert_eq!(model._get_text("C2"), "0");
+    assert!(!model.graph.arrays.contains(&(0, 1, 1)));
+}
