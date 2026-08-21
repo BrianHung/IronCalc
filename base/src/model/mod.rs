@@ -2173,7 +2173,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: &str,
     ) -> Result<(), String> {
-        self.graph.mark_dirty((sheet, row, column));
+        self.mark_value_edit(sheet, row, column);
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index;
         if common::value_needs_quoting(value, self.language) {
@@ -2224,7 +2224,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: bool,
     ) -> Result<(), String> {
-        self.graph.mark_dirty((sheet, row, column));
+        self.mark_value_edit(sheet, row, column);
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2267,7 +2267,7 @@ impl<'a> Model<'a> {
         column: i32,
         value: f64,
     ) -> Result<(), String> {
-        self.graph.mark_dirty((sheet, row, column));
+        self.mark_value_edit(sheet, row, column);
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         let new_style_index = if self.workbook.styles.style_is_quote_prefix(style_index) {
             self.workbook
@@ -2432,6 +2432,24 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
+    /// A value write over a formula drops that cell's outgoing edges and role
+    /// sets so Incremental does not keep treating it as RAND/OFFSET/ROW/etc.
+    fn mark_value_edit(&mut self, sheet: u32, row: i32, column: i32) {
+        let position = (sheet, row, column);
+        self.graph.mark_dirty(position);
+        if self
+            .workbook
+            .worksheet(sheet)
+            .ok()
+            .and_then(|ws| ws.cell(row, column))
+            .and_then(Cell::get_formula)
+            .is_some()
+        {
+            self.graph.remove_dependent(position);
+            self.graph.clear_cell_roles(position);
+        }
+    }
+
     /// Sets a cell parametrized by (`sheet`, `row`, `column`) with `value`.
     ///
     /// This mimics a user entering a value on a cell.
@@ -2472,20 +2490,8 @@ impl<'a> Model<'a> {
     ) -> Result<(), String> {
         // A plain value edit keeps the graph valid and opts into incremental;
         // a formula, clear, or quote-prefixed literal forces a full recompute.
-        let was_formula = self
-            .workbook
-            .worksheet(sheet)
-            .ok()
-            .and_then(|ws| ws.cell(row, column))
-            .and_then(Cell::get_formula)
-            .is_some();
         if !value.is_empty() && !value.starts_with('=') && !value.starts_with('\'') {
-            self.graph.mark_dirty((sheet, row, column));
-            if was_formula {
-                let position = (sheet, row, column);
-                self.graph.remove_dependent(position);
-                self.graph.clear_cell_roles(position);
-            }
+            self.mark_value_edit(sheet, row, column);
         } else {
             self.graph.force_full();
         }
