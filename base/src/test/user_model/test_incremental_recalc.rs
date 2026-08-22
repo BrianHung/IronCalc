@@ -1488,24 +1488,29 @@ fn incremental_spill_invalidates_composed_range_cache() {
 }
 
 #[test]
-fn min_max_signed_zero_matches_row_major_operand_order() {
-    let mut model = new_empty_model();
-    model.update_cell_with_number(0, 1, 1, 0.0).unwrap();
-    model.update_cell_with_number(0, 2, 1, -0.0).unwrap();
-    model._set("A3", "=MIN(A1:A2)");
-    model._set("A4", "=MAX(A1:A2)");
-    model.evaluate();
-    let min = match model.get_cell_value_by_index(0, 3, 1).unwrap() {
-        crate::cell::CellValue::Number(n) => n,
-        other => panic!("expected number, got {other:?}"),
+fn min_max_signed_zero_matches_full() {
+    // The ±0 tie-break of `f64::min`/`max` is platform-defined (LLVM folds
+    // constants to +0 on x86_64, runtime minsd picks the first operand), so no
+    // fixed bit pattern is portable. What must hold everywhere is mode parity:
+    // Incremental's composed MIN/MAX returns the same bits as Full's direct
+    // row-major scan on the platform it runs on.
+    let run = |mode: crate::RecalcMode| {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model.update_cell_with_number(0, 1, 1, 0.0).unwrap();
+        model.update_cell_with_number(0, 2, 1, -0.0).unwrap();
+        model._set("A3", "=MIN(A1:A2)");
+        model._set("A4", "=MAX(A1:A2)");
+        model.evaluate();
+        let bits = |row: i32| match model.get_cell_value_by_index(0, row, 1).unwrap() {
+            crate::cell::CellValue::Number(n) => n.to_bits(),
+            other => panic!("expected number, got {other:?}"),
+        };
+        (bits(3), bits(4))
     };
-    let max = match model.get_cell_value_by_index(0, 4, 1).unwrap() {
-        crate::cell::CellValue::Number(n) => n,
-        other => panic!("expected number, got {other:?}"),
-    };
-    // Main scans `value.min(result)` left-to-right: 0.0 then -0.0.
-    assert_eq!(min.to_bits(), 0.0_f64.min(-0.0).to_bits());
-    assert_eq!(max.to_bits(), 0.0_f64.max(-0.0).to_bits());
+    assert_eq!(
+        run(crate::RecalcMode::Full),
+        run(crate::RecalcMode::Incremental)
+    );
 }
 
 #[test]
