@@ -1,4 +1,5 @@
 //! Construction-time checks that incremental recalc invariants hold in source.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[test]
 fn graph_is_only_notified_by_the_journal() {
