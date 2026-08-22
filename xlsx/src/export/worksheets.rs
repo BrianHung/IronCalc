@@ -367,9 +367,7 @@ pub(crate) fn get_worksheet_xml(
                         &parsed_formulas[*f as usize].0,
                     );
                     let style = get_cell_style_attribute(*s);
-                    row_data_str.push(format!(
-                        "<c r=\"{cell_name}\"{style}><f>{formula}</f></c>"
-                    ));
+                    row_data_str.push(format!("<c r=\"{cell_name}\"{style}><f>{formula}</f></c>"));
                 }
                 Cell::SpillCell {
                     v: SpillValue::Text(v),
