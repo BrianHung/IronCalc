@@ -3,7 +3,7 @@
 //! `recalc_verify` feature, a `RecalcMode::Verify` model), comparing every
 //! populated cell after every `evaluate()`, and checking the incremental
 //! changed-cells delta for completeness and soundness.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ironcalc_base::expressions::types::Area;
 use ironcalc_base::types::{Color, Style};

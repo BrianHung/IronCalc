@@ -4,6 +4,7 @@
 //!
 //! CI runs a bounded seed set (defaults: 8 seeds × 40 steps). Override with
 //! `FUZZ_SEEDS`, `FUZZ_STEPS`, `FUZZ_START`. The x86_64 job is `ubuntu-latest`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
 use common::*;
