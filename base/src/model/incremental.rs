@@ -55,6 +55,11 @@ impl Model<'_> {
     /// Records the positions of array and spill cells after a full pass, so the
     /// incremental path can fall back to full for any edit that reaches one. Must
     /// run after spilling, when the spill output cells exist.
+    ///
+    /// For an ArrayFormula anchor, every position in its declared `r` rectangle
+    /// is indexed, not just occupied cells: a structural delete can drop a CSE
+    /// member (leaving no cell to inspect) while the anchor still owns the
+    /// rectangle and refills it on the next full pass.
     pub(crate) fn collect_array_cells(&mut self) {
         let mut array_cells = HashSet::new();
         let mut formula_cell_count = 0;
@@ -71,8 +76,22 @@ impl Model<'_> {
                     if cell.get_formula().is_some() {
                         formula_cell_count += 1;
                     }
-                    if matches!(cell, Cell::ArrayFormula { .. } | Cell::SpillCell { .. }) {
-                        array_cells.insert((sheet, row, col));
+                    match cell {
+                        Cell::ArrayFormula {
+                            r: (width, height), ..
+                        } => {
+                            // The anchor plus every position it may spill into,
+                            // including ones currently empty or deleted.
+                            for r in row..row + height {
+                                for c in col..col + width {
+                                    array_cells.insert((sheet, r, c));
+                                }
+                            }
+                        }
+                        Cell::SpillCell { .. } => {
+                            array_cells.insert((sheet, row, col));
+                        }
+                        _ => {}
                     }
                 }
             }

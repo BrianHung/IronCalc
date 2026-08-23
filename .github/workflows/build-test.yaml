@@ -47,9 +47,12 @@ jobs:
       - name: Incremental recalc check (Verify)
         run: IRONCALC_RECALC=verify cargo test -p ironcalc_base --features recalc_verify
       # ubuntu-latest is x86_64; macos-latest is arm64. Signed-zero and other
-      # IEEE quirks are compared on both. The fuzzer is time-bounded.
+      # IEEE quirks are compared on both. The fuzzer is time-bounded and runs
+      # with structural ops (insert/delete/move rows & columns, sheet CRUD)
+      # included: they are where most historical bugs lived, and the suite is
+      # green with them in.
       - name: Bounded incremental differential fuzz
-        run: FUZZ_NO_MINIMIZE=1 FUZZ_SEEDS=40 FUZZ_STEPS=120 FUZZ_AVOID_OPS=InsertRows,DeleteRows,InsertCols,DeleteCols,MoveRows,MoveCols,AddSheet,DeleteSheet,RenameSheet cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
+        run: FUZZ_NO_MINIMIZE=1 FUZZ_SEEDS=40 FUZZ_STEPS=120 cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
   test-js:
     runs-on: ubuntu-latest
     steps:
