@@ -3,6 +3,8 @@
 //! now-ghost member position must therefore not go incremental and serve a
 //! stale blank — the arrays guard must cover the declared rectangle.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ironcalc_base::{Model, RecalcMode};
 
 #[test]

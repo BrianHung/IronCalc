@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use ironcalc_base::Model;
 #[test]
 fn empty_passthrough_semantics() {
