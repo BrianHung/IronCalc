@@ -1,6 +1,8 @@
 //! Fuzz seed 7 minimized: after CSE + insert/delete column churn, a new
 //! formula `=LEN(G18&F14)` must give the same result in Full and Incremental.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ironcalc_base::{Model, RecalcMode};
 
 fn apply_exact(mode: RecalcMode, trace: bool) -> String {
