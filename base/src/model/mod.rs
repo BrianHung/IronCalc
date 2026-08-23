@@ -176,7 +176,7 @@ fn array_node_to_formula_value(node: ArrayNode) -> FormulaValue {
             o: String::new(),
             m: String::new(),
         },
-        ArrayNode::Empty => FormulaValue::Empty,
+        ArrayNode::Empty => FormulaValue::Number(0.0),
     }
 }
 
@@ -186,7 +186,7 @@ fn array_node_to_spill_value(node: ArrayNode) -> SpillValue {
         ArrayNode::Number(n) => SpillValue::Number(n),
         ArrayNode::String(s) => SpillValue::Text(s),
         ArrayNode::Error(ei) => SpillValue::Error(ei),
-        ArrayNode::Empty => SpillValue::Empty,
+        ArrayNode::Empty => SpillValue::Number(0.0),
     }
 }
 
@@ -197,7 +197,6 @@ fn formula_value_to_spill_value(v: &FormulaValue) -> SpillValue {
         FormulaValue::Number(n) => SpillValue::Number(*n),
         FormulaValue::Text(s) => SpillValue::Text(s.clone()),
         FormulaValue::Error { ei, .. } => SpillValue::Error(ei.clone()),
-        FormulaValue::Empty => SpillValue::Empty,
     }
 }
 
@@ -790,9 +789,6 @@ impl<'a> Model<'a> {
                 });
                 if let Ok(Some(parsed_defined_name)) = self.get_parsed_defined_name(name, *scope) {
                     match parsed_defined_name {
-                        ParsedDefinedName::CellReference(reference) => {
-                            self.evaluate_cell(reference)
-                        }
                         ParsedDefinedName::RangeReference(range) => {
                             self.trace_rect(
                                 range.left.sheet,
@@ -805,6 +801,9 @@ impl<'a> Model<'a> {
                                 left: range.left,
                                 right: range.right,
                             }
+                        }
+                        ParsedDefinedName::CellReference(reference) => {
+                            self.evaluate_cell(reference)
                         }
                         ParsedDefinedName::LambdaDefinition(param_names, body) => {
                             let lambda_id = self.get_next_lambda_id();
@@ -1107,6 +1106,9 @@ impl<'a> Model<'a> {
                 Some((false, (original_width, original_height))) => {
                     // CSE array formula: fill the declared range with the array values.
                     // Use relative indices for get_value_from_array (1-based).
+                    // Cells are created on demand via update_cell: a structural edit
+                    // can drop a member of the declared range, and the next full
+                    // pass must refill it rather than error on the missing slot.
                     for r in row..row + original_height {
                         for c in column..column + original_width {
                             let rel_row = r - row + 1;
@@ -1141,54 +1143,28 @@ impl<'a> Model<'a> {
                                     v: sv,
                                 }
                             };
-                            *self.workbook.worksheets[sheet as usize]
-                                .sheet_data
-                                .get_mut(&r)
-                                .ok_or("expected a row")?
-                                .get_mut(&c)
-                                .ok_or("expected a column")? = new_cell;
+                            let worksheet = &mut self.workbook.worksheets[sheet as usize];
+                            worksheet.update_cell(r, c, new_cell)?;
                         }
                     }
                     // All cells (anchor + spills) have been written above.
                     return Ok(());
                 }
                 None => {
-                    // Scalar formula produced an array at runtime. We only coerce safely
-                    // when the array is 1x1 (the result is genuinely a single value just
-                    // wrapped in an array). For larger arrays, Excel would apply implicit
-                    // intersection (legacy) or, for formulas identified as dynamic/array
-                    // at parse time, auto-spill. In this `original_range == None` path we
-                    // do not have that array/dynamic context, so neither behavior is
-                    // available here; picking [0][0] could silently produce wrong results.
-                    // Emit #VALUE! instead so the divergence is visible.
-                    let coerced = if array_width == 1 && array_height == 1 {
-                        match self.get_value_from_array(array, 1, 1) {
-                            Some(node) => array_node_to_formula_value(node),
-                            None => FormulaValue::Error {
-                                ei: Error::VALUE,
-                                o: "".to_string(),
-                                m: "Unexpected array result".to_string(),
-                            },
-                        }
-                    } else {
-                        // Currently unreachable from normal user formulas: static
-                        // analysis wraps array-returning subexpressions in scalar
-                        // contexts in implicit intersection (`@`), which collapses
-                        // them to a single value before they reach the cell. If we
-                        // ever get here, static analysis or implicit-intersection
-                        // insertion has regressed.
-                        debug_assert!(
-                            false,
-                            "Larger-than-1x1 array reached scalar-context cell \
-                             (sheet={sheet}, row={row}, column={column}, \
-                             {array_width}x{array_height}); implicit intersection \
-                             was expected to collapse it.",
-                        );
-                        FormulaValue::Error {
+                    // Scalar formula produced a computed array at runtime. A 1x1
+                    // array is a single value just wrapped; unwrap it. A larger
+                    // array has no source coordinates to intersect against, so it
+                    // takes its top-left element, the legacy behavior for
+                    // positionless arrays. Ranges never reach here: evaluate_cell
+                    // applies implicit intersection while their coordinates are
+                    // still known.
+                    let coerced = match self.get_value_from_array(array, 1, 1) {
+                        Some(node) => array_node_to_formula_value(node),
+                        None => FormulaValue::Error {
                             ei: Error::VALUE,
                             o: "".to_string(),
-                            m: "Array result in scalar context".to_string(),
-                        }
+                            m: "Unexpected array result".to_string(),
+                        },
                     };
                     *self.workbook.worksheets[sheet as usize]
                         .sheet_data
@@ -1244,7 +1220,12 @@ impl<'a> Model<'a> {
                 debug_assert!(false, "Unexpected range result in non-array formula");
                 return Err("Cannot set a range as cell value".to_string());
             }
-            CalcResult::EmptyCell | CalcResult::EmptyArg => FormulaValue::Empty,
+            CalcResult::EmptyCell | CalcResult::EmptyArg => {
+                // Excel coerces a blank formula result to 0 (cached as
+                // `<v>0</v>`); storing 0 keeps same-pass readers and later
+                // out-of-cone readers in agreement, so Full is order-independent.
+                FormulaValue::Number(0.0)
+            }
             // CalcResult::Array is handled before this match (see above); it always returns early.
             CalcResult::Array(_) | CalcResult::Lambda(_) => {
                 debug_assert!(false, "Unexpected array result in non-array formula");
@@ -1438,18 +1419,6 @@ impl<'a> Model<'a> {
                 let message = ei.to_localized_error_string(self.language);
                 CalcResult::new_error(ei.clone(), cell_reference, message)
             }
-            CellFormula {
-                v: FormulaValue::Empty,
-                ..
-            }
-            | ArrayFormula {
-                v: FormulaValue::Empty,
-                ..
-            }
-            | SpillCell {
-                v: SpillValue::Empty,
-                ..
-            } => CalcResult::EmptyCell,
         }
     }
 
@@ -1731,6 +1700,20 @@ impl<'a> Model<'a> {
                     {
                         // it is a single cell range, we can just return the value of the cell
                         self.evaluate_cell(left)
+                    } else if !matches!(original_cell, Cell::ArrayFormula { .. }) {
+                        // A scalar formula produced a multi-cell range at runtime,
+                        // e.g. a name defined as a range after the formula was
+                        // parsed, so no `@` was inserted. Apply implicit
+                        // intersection here, while the range's true coordinates
+                        // are known; materializing it into an array loses them.
+                        match implicit_intersection(&cell_reference, &Range { left, right }) {
+                            Some(target) => self.evaluate_cell(target),
+                            None => CalcResult::new_error(
+                                Error::VALUE,
+                                cell_reference,
+                                "Implicit intersection found no value".to_string(),
+                            ),
+                        }
                     } else {
                         let array_height = right.row - left.row + 1;
                         let array_width = right.column - left.column + 1;
@@ -1757,6 +1740,15 @@ impl<'a> Model<'a> {
                     result
                 };
 
+                // Formula-result boundary: a blank result coerces to 0, matching
+                // what `set_cells_with_result` stores below. Every reader —
+                // same-pass dependent, out-of-cone incremental read, or stored
+                // value — observes the same number, so Full is order-independent.
+                let result = match result {
+                    CalcResult::EmptyCell | CalcResult::EmptyArg => CalcResult::Number(0.0),
+                    r => r,
+                };
+
                 if let Err(e) = self.set_cells_with_result(cell_reference, &original_cell, &result)
                 {
                     self.cells.insert(key, CellState::Evaluated);
@@ -1780,40 +1772,13 @@ impl<'a> Model<'a> {
                 // return the result of the evaluation.
                 match result {
                     CalcResult::Array(a) => {
-                        // The cell ended up holding an array. Coerce it to a scalar so
-                        // that dependents observe the same value `set_cells_with_result`
-                        // wrote into the cell:
-                        //   * Array formula anchor (CSE/Dynamic): return a[0][0] (the
-                        //     anchor's "first cell" value, matching the existing model).
-                        //   * Plain scalar formula: 1x1 -> unwrap to the single value;
-                        //     larger -> `#VALUE!`. This must mirror the coercion in
-                        //     `set_cells_with_result` so that dependents evaluated via
-                        //     `ReferenceKind -> evaluate_cell` in the same recalculation
-                        //     pass do not observe a different value than what is stored.
-                        let is_array_formula = matches!(original_cell, Cell::ArrayFormula { .. });
-                        let array_height = a.len();
-                        let array_width = if array_height > 0 { a[0].len() } else { 0 };
-                        if !is_array_formula && (array_width != 1 || array_height != 1) {
-                            // Currently unreachable from normal user formulas: static
-                            // analysis wraps array-returning subexpressions in scalar
-                            // contexts in implicit intersection (`@`), which collapses
-                            // them to a single value before they reach the cell. If we
-                            // ever get here, static analysis or implicit-intersection
-                            // insertion has regressed. Mirrors the assertion in
-                            // `set_cells_with_result` so that the cell value and the
-                            // value observed by in-pass dependents stay consistent.
-                            debug_assert!(
-                                false,
-                                "Larger-than-1x1 array reached scalar-context cell \
-                                 ({cell_reference:?}, {array_width}x{array_height}); \
-                                 implicit intersection was expected to collapse it.",
-                            );
-                            CalcResult::new_error(
-                                Error::VALUE,
-                                cell_reference,
-                                "Array result in scalar context".to_string(),
-                            )
-                        } else if array_height == 0 || array_width == 0 {
+                        // The cell ended up holding an array. Dependents must
+                        // observe the same scalar `set_cells_with_result` wrote:
+                        // the top-left element. That is the anchor value for a
+                        // CSE/dynamic formula and the coerced value for a computed
+                        // array in a scalar context. An empty element reads as the
+                        // stored 0, never as a blank.
+                        if a.is_empty() || a[0].is_empty() {
                             CalcResult::new_error(
                                 Error::CALC,
                                 cell_reference,
@@ -1828,7 +1793,7 @@ impl<'a> Model<'a> {
                                     let message = error.to_localized_error_string(self.language);
                                     CalcResult::new_error(error.clone(), cell_reference, message)
                                 }
-                                ArrayNode::Empty => CalcResult::EmptyCell,
+                                ArrayNode::Empty => CalcResult::Number(0.0),
                             }
                         }
                     }
@@ -2685,7 +2650,11 @@ impl<'a> Model<'a> {
             // Deleting the contents of a cell also removes its link.
             let ws = self.workbook.worksheet_mut(sheet)?;
             ws.cell_clear_contents(row, column)?;
-            ws.links.remove(&(row, column));
+            if ws.links.remove(&(row, column)).is_some() {
+                ws.write_log.push(crate::recalc::Write::Link {
+                    at: (sheet, row, column),
+                });
+            }
             return Ok(());
         }
 
@@ -3381,6 +3350,10 @@ impl<'a> Model<'a> {
                         }
                     }
                 }
+                crate::recalc::Write::Link { at } => {
+                    self.graph.mark_dirty(at);
+                    self.write_seeds.insert(at);
+                }
                 crate::recalc::Write::Hidden { row, column, .. } => {
                     let deps = if let Some(r) = row {
                         self.graph.dependents_of_inputs(|i| {
@@ -3555,13 +3528,26 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        // Deleting the contents of a cell also removes its link
-        ws.links.retain(|&(row, column), _| {
-            row < range.row
-                || row >= range.row + range.height
-                || column < range.column
-                || column >= range.column + range.width
-        });
+        // Deleting the contents of a cell also removes its link. Each removal
+        // is journaled: a stranded link can sit at a position with no cell, so
+        // the cell clears above do not cover it and the delta would miss it.
+        let removed_links: Vec<(i32, i32)> = ws
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= range.row
+                    && row < range.row + range.height
+                    && column >= range.column
+                    && column < range.column + range.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            ws.links.remove(&(row, column));
+            ws.write_log.push(crate::recalc::Write::Link {
+                at: (range.sheet, row, column),
+            });
+        }
         Ok(())
     }
 
@@ -3664,13 +3650,26 @@ impl<'a> Model<'a> {
         for (row, column) in to_clear {
             let _ = worksheet.remove_cell(row, column);
         }
-        // Deleting the cells also removes their links
-        worksheet.links.retain(|&(row, column), _| {
-            row < area.row
-                || row >= area.row + area.height
-                || column < area.column
-                || column >= area.column + area.width
-        });
+        // Deleting the cells also removes their links. Each removal is
+        // journaled: a stranded link can sit at a position with no cell, so
+        // the cell removals above do not cover it and the delta would miss it.
+        let removed_links: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= area.row
+                    && row < area.row + area.height
+                    && column >= area.column
+                    && column < area.column + area.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            worksheet.links.remove(&(row, column));
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (area.sheet, row, column),
+            });
+        }
         Ok(())
     }
 

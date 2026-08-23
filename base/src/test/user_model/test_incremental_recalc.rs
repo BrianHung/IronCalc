@@ -344,7 +344,9 @@ fn incremental_range_clear_contents_forces_full() {
         })
         .unwrap(); // clears B1; must fall back to full
     model.evaluate();
-    assert_eq!(model._get_text("C1"), ""); // B1 cleared, not the stale 1
+    // B1 was cleared; C1 reads a formula blank, which coerces to 0
+    // (Excel parity) — the assertion is that it is not the stale 1.
+    assert_eq!(model._get_text("C1"), "0");
 }
 
 #[test]
@@ -531,9 +533,13 @@ fn incremental_indirect_through_helper_reads_updated_target() {
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
-    // INDIRECT is stored as a 1×1 dynamic array, so the cone takes the
-    // array/spill full path. That is Everything, not an incremental delta.
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    // INDIRECT is stored as a 1×1 dynamic array; its last result was 1×1, so
+    // the pass stays incremental and the delta is the precise chain
+    // C1 → F2 → E2 → D2 → A1, traced through both INDIRECT hops.
+    match model.take_changed_cells() {
+        ChangedSinceRead::Cells(cells) => assert_eq!(cells.len(), 5),
+        other => panic!("expected a precise delta, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1212,7 +1218,9 @@ fn incremental_cell_name_survives_insert() {
     // the old A10 shifts to A11. The name still reads $A$10.
     model.insert_rows(0, 5, 1).unwrap();
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "");
+    // The name now reads a blank cell: a blank formula result coerces to 0
+    // (Excel parity), not "".
+    assert_eq!(model._get_text("B1"), "0");
 
     model._set("A10", "99");
     flush_writes(&mut model);
@@ -1369,30 +1377,46 @@ fn incremental_blocked_spill_respills_after_insert() {
 
 #[test]
 fn incremental_empty_passthrough_counts_as_blank() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "=COUNTBLANK(D1:E1)");
-    model._set("D1", "=A1");
-    model._set("E1", "x");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "1");
-
-    model._set("E1", "y");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "1");
+    // Excel counts a blank *cell* as blank but a formula that returned a
+    // blank coerces to 0 (Excel parity), so D1 is not counted: COUNTBLANK
+    // stays 1 (only E1 before it holds text... actually 0) — the invariant
+    // pinned here is mode parity across an unrelated edit to E1.
+    let run = |mode: crate::RecalcMode| {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model._set("C1", "=COUNTBLANK(D1:E1)");
+        model._set("D1", "=A1");
+        model._set("E1", "x");
+        model.evaluate();
+        let first = model._get_text("C1");
+        model._set("E1", "y");
+        model.evaluate();
+        (first, model._get_text("C1"))
+    };
+    assert_eq!(
+        run(crate::RecalcMode::Full),
+        ("0".to_string(), "0".to_string())
+    );
+    assert_eq!(
+        run(crate::RecalcMode::Full),
+        run(crate::RecalcMode::Incremental)
+    );
 }
 
 #[test]
 fn incremental_empty_passthrough_concat() {
+    // A blank formula result coerces to 0 at the result boundary (Excel parity),
+    // so `D1&G1` with D1 blank renders "01"/"02" — see the D1 table: A2&"x"
+    // is "0x", matching main and Excel.
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "=D1&G1");
     model._set("D1", "=IF(TRUE,A1,1)");
     model._set("G1", "1");
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B1"), "01");
 
     model._set("G1", "2");
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "2");
+    assert_eq!(model._get_text("B1"), "02");
 }
 
 #[test]
@@ -1535,18 +1559,24 @@ fn incremental_blocked_spill_sum_agrees_with_full() {
 }
 
 #[test]
-fn stored_empty_formula_is_live_empty() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "=A1");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "");
-    match model.workbook.worksheet(0).unwrap().cell(1, 2) {
-        Some(crate::types::Cell::CellFormula {
-            v: crate::types::FormulaValue::Empty,
-            ..
-        }) => {}
-        other => panic!("expected stored Empty, got {other:?}"),
-    }
+fn stored_empty_formula_is_live_zero() {
+    // Excel coerces a blank formula result to 0 at the result boundary
+    // (cached `<v>0</v>`), and the store must agree with what same-pass and
+    // out-of-cone readers see, in every mode.
+    let run = |mode: crate::RecalcMode| {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model._set("B1", "=A1");
+        model.evaluate();
+        (
+            model._get_text("B1"),
+            model.get_cell_value_by_index(0, 1, 2).unwrap(),
+        )
+    };
+    assert_eq!(run(crate::RecalcMode::Full).0, "0");
+    assert_eq!(
+        run(crate::RecalcMode::Incremental),
+        run(crate::RecalcMode::Full)
+    );
 }
 
 #[test]
@@ -1656,7 +1686,9 @@ fn name_reader_redirty_on_insert() {
 
     model.insert_rows(0, 5, 1).unwrap();
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "");
+    // The name now reads a blank cell: a blank formula result coerces to 0
+    // (Excel parity), not "".
+    assert_eq!(model._get_text("B1"), "0");
 
     model._set("A10", "99");
     model.evaluate();
@@ -1677,7 +1709,9 @@ fn name_reader_redirty_on_insert_sheet_scoped() {
 
     model.insert_rows(0, 5, 1).unwrap();
     model.evaluate();
-    assert_eq!(model._get_text("B1"), "");
+    // The name now reads a blank cell: a blank formula result coerces to 0
+    // (Excel parity), not "".
+    assert_eq!(model._get_text("B1"), "0");
 
     model._set("A10", "99");
     model.evaluate();

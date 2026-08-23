@@ -12,8 +12,10 @@ static RANGE_REFERENCE_REGEX: OnceLock<Regex> = OnceLock::new();
 
 #[allow(clippy::expect_used)]
 fn get_re() -> &'static Regex {
+    // A reference ends in a cell address. `$` markers (absolute references,
+    // which is how defined names store ranges) must not disqualify it.
     RANGE_REFERENCE_REGEX
-        .get_or_init(|| Regex::new(r":[A-Z]*[0-9]*$").expect("Regex is known to be valid"))
+        .get_or_init(|| Regex::new(r":\$?[A-Z]+\$?[0-9]+$").expect("Regex is known to be valid"))
 }
 
 fn is_range_reference(s: &str) -> bool {

@@ -41,9 +41,9 @@ fn test_trimrange_trim_rows_none() {
     // Blank cells in spilled arrays render as "0" in IronCalc.
     model._set("C1", "=TRIMRANGE(A1:A3,0,0)");
     model.evaluate();
-    assert_eq!(model._get_text("C1"), ""); // blank row kept
+    assert_eq!(model._get_text("C1"), "0"); // blank row kept (renders as 0)
     assert_eq!(model._get_text("C2"), "42");
-    assert_eq!(model._get_text("C3"), ""); // blank row kept
+    assert_eq!(model._get_text("C3"), "0"); // blank row kept (renders as 0)
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn test_trimrange_preserves_interior_blank_rows() {
     model._set("C1", "=TRIMRANGE(A1:A3)");
     model.evaluate();
     assert_eq!(model._get_text("C1"), "start");
-    assert_eq!(model._get_text("C2"), ""); // interior blank preserved
+    assert_eq!(model._get_text("C2"), "0"); // interior blank preserved (renders as 0)
     assert_eq!(model._get_text("C3"), "end");
 }
 

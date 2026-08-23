@@ -71,7 +71,9 @@ impl Worksheet {
         let is_formula = new_formula.is_some() && old_formula != new_formula;
         let changed = old.as_ref() != Some(&new_cell);
         // A style on a blank cell materializes EmptyCell; that is not a
-        // value or formula edit and must not dirty the graph.
+        // value or formula edit and must not dirty the graph. The public API
+        // does not distinguish a missing cell from an EmptyCell (both read as
+        // value None, type Number), so nothing observable moves.
         let style_only = matches!(new_cell, Cell::EmptyCell { .. })
             && matches!(old.as_ref(), None | Some(Cell::EmptyCell { .. }));
 

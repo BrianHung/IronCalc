@@ -180,12 +180,38 @@ impl SheetRanges {
         }
     }
 
-    /// Drops `dependent` from this range. Leaves `bands`/`wide` (index, not truth).
+    /// Drops `dependent` from this range, pruning the `bands`/`wide` index
+    /// entry when the range loses its last dependent. Without the prune, a
+    /// re-read on the next pass would treat the range as "first sight" again
+    /// and append duplicate band entries, so `containing()` scans the same
+    /// area once per historical pass — unbounded growth over a model's life.
     fn remove_dependent(&mut self, range: &Area, dependent: &Position) {
         if let Some(set) = self.dependents.get_mut(range) {
             set.remove(dependent);
             if set.is_empty() {
                 self.dependents.remove(range);
+                self.deindex(range);
+            }
+        }
+    }
+
+    /// Removes one occurrence of `range` from the point-query index.
+    fn deindex(&mut self, range: &Area) {
+        let (first_band, last_band) = (Self::band_of(range.1), Self::band_of(range.3));
+        if last_band - first_band >= RANGE_INDEX_MAX_BANDS {
+            if let Some(pos) = self.wide.iter().position(|a| a == range) {
+                self.wide.swap_remove(pos);
+            }
+            return;
+        }
+        for band in first_band..=last_band {
+            if let Some(list) = self.bands.get_mut(&band) {
+                if let Some(pos) = list.iter().position(|a| a == range) {
+                    list.swap_remove(pos);
+                }
+                if list.is_empty() {
+                    self.bands.remove(&band);
+                }
             }
         }
     }
@@ -814,5 +840,31 @@ mod tests {
                 assert_eq!(got, want, "cell {cell:?}");
             }
         }
+    }
+
+    #[test]
+    fn removing_last_dependent_prunes_the_index() {
+        let mut sheet_ranges = SheetRanges::default();
+        let range: Area = (0, 1, 1, 300, 1);
+        let dependent: Position = (0, 1, 10);
+        sheet_ranges.insert(range, dependent);
+        sheet_ranges.remove_dependent(&range, &dependent);
+        // The stale entry must be gone: re-inserting must not duplicate.
+        sheet_ranges.insert(range, dependent);
+        let count = sheet_ranges
+            .containing((0, 150, 1))
+            .filter(|a| *a == &range)
+            .count();
+        assert_eq!(count, 1, "duplicate band entries after re-insert");
+
+        let wide: Area = (0, 1, 1, 2_000_000, 3);
+        sheet_ranges.insert(wide, (0, 2, 10));
+        sheet_ranges.remove_dependent(&wide, &(0, 2, 10));
+        sheet_ranges.insert(wide, (0, 3, 10));
+        let count = sheet_ranges
+            .containing((0, 500_000, 3))
+            .filter(|a| *a == &wide)
+            .count();
+        assert_eq!(count, 1, "duplicate wide entries after re-insert");
     }
 }
