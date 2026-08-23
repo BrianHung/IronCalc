@@ -33,8 +33,8 @@ fn graph_is_only_notified_by_the_journal() {
     }
     let drain_marks = model.matches("self.graph.mark_dirty(").count();
     assert_eq!(
-        drain_marks, 3,
-        "model/mod.rs should mark_dirty only from drain_write_journal (cell + hidden + FormulaText)"
+        drain_marks, 4,
+        "model/mod.rs should mark_dirty only from drain_write_journal (cell + link + hidden + FormulaText)"
     );
 }
 

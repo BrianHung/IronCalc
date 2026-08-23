@@ -355,20 +355,6 @@ pub(crate) fn get_worksheet_xml(
                         "<c r=\"{cell_name}\" t=\"e\"{style}><f>{formula}</f><v>{ei}</v></c>"
                     ));
                 }
-                Cell::CellFormula {
-                    f,
-                    v: FormulaValue::Empty,
-                    s,
-                } => {
-                    let formula = get_formula_attribute(
-                        worksheet.get_name(),
-                        *row_index,
-                        *column_index,
-                        &parsed_formulas[*f as usize].0,
-                    );
-                    let style = get_cell_style_attribute(*s);
-                    row_data_str.push(format!("<c r=\"{cell_name}\"{style}><f>{formula}</f></c>"));
-                }
                 Cell::SpillCell {
                     v: SpillValue::Text(v),
                     s,
@@ -542,45 +528,6 @@ pub(crate) fn get_worksheet_xml(
                     row_data_str.push(format!(
                         r#"<c r="{cell_name}"{style} t="e"{cm}><f t="array" ref="{range}">{formula}</f><v>{ei}</v></c>"#
                     ));
-                }
-                Cell::ArrayFormula {
-                    f,
-                    v: FormulaValue::Empty,
-                    s,
-                    r,
-                    kind,
-                } => {
-                    let node = match parsed_formulas.get(*f as usize) {
-                        Some(node) => node,
-                        None => continue,
-                    };
-                    let formula = get_formula_attribute(
-                        worksheet.get_name(),
-                        *row_index,
-                        *column_index,
-                        &node.0,
-                    );
-                    let style = get_cell_style_attribute(*s);
-                    let range = match get_range_str(*row_index, *column_index, r.0, r.1) {
-                        Some(range) => range,
-                        None => continue,
-                    };
-                    let cm = if matches!(kind, ArrayKind::Dynamic) {
-                        r#" cm="1""#
-                    } else {
-                        ""
-                    };
-                    row_data_str.push(format!(
-                        r#"<c r="{cell_name}"{style}{cm}><f t="array" ref="{range}">{formula}</f></c>"#
-                    ));
-                }
-                Cell::SpillCell {
-                    v: SpillValue::Empty,
-                    s,
-                    ..
-                } => {
-                    let style = get_cell_style_attribute(*s);
-                    row_data_str.push(format!("<c r=\"{cell_name}\"{style}/>"));
                 }
             }
         }

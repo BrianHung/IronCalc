@@ -24,7 +24,7 @@ fn cell_and_function() {
     model.evaluate();
 
     // This is the cell LOG10
-    assert_eq!(model._get_text("A1"), *"");
+    assert_eq!(model._get_text("A1"), *"0");
 
     model._set("LOG10", "1000");
     model._set("A2", "=LOG10(LOG10)");

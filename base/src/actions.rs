@@ -16,14 +16,24 @@ use crate::types::{ArrayKind, Cell, Link, Worksheet};
 /// Applies `map` to the (row, column) key of every link in the worksheet, so
 /// that links follow their cells when rows or columns are inserted, deleted or
 /// moved: `Some((row, column))` moves the link there, `None` removes it.
-fn displace_links<F>(worksheet: &mut Worksheet, map: F)
+/// Every moved, added or removed position is journaled: a link is part of the
+/// cell's observable state and its readers must re-run.
+fn displace_links<F>(worksheet: &mut Worksheet, sheet: u32, map: F)
 where
     F: Fn(i32, i32) -> Option<(i32, i32)>,
 {
     let links = std::mem::take(&mut worksheet.links);
     worksheet.links = links
         .into_iter()
-        .filter_map(|((row, column), link)| map(row, column).map(|key| (key, link)))
+        .filter_map(|((row, column), link)| {
+            let new_key = map(row, column);
+            if new_key != Some((row, column)) {
+                worksheet.write_log.push(crate::recalc::Write::Link {
+                    at: (sheet, row, column),
+                });
+            }
+            new_key.map(|key| (key, link))
+        })
         .collect();
 }
 
@@ -610,7 +620,7 @@ impl<'a> Model<'a> {
         }
 
         // Links move with their cells
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if c >= column {
                 Some((r, c + column_count))
             } else {
@@ -711,7 +721,7 @@ impl<'a> Model<'a> {
             }
         }
         // Links move with their cells; the links of the deleted columns are removed
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if c < column_start {
                 Some((r, c))
             } else if c <= column_end {
@@ -966,7 +976,7 @@ impl<'a> Model<'a> {
         self.workbook.worksheets[sheet as usize].rows = new_rows;
 
         // Links move with their cells
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if r >= row {
                 Some((r + row_count, c))
             } else {
@@ -1047,7 +1057,7 @@ impl<'a> Model<'a> {
         self.workbook.worksheets[sheet as usize].rows = new_rows;
 
         // Links move with their cells; the links of the deleted rows are removed
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if r < row {
                 Some((r, c))
             } else if r < row + row_count {
@@ -1084,7 +1094,7 @@ impl<'a> Model<'a> {
             .filter(|(&(_, c), _)| c == column)
             .map(|(&(r, _), link)| (r, link.clone()))
             .collect();
-        displace_links(worksheet, |r, c| {
+        displace_links(worksheet, sheet, |r, c| {
             if c == column {
                 None
             } else if delta > 0 && c > column && c <= target_column {
@@ -1207,11 +1217,29 @@ impl<'a> Model<'a> {
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, hidden, style)?;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created
+        // Re-attach the moved links, discarding any link the rebuild auto-created.
+        // Both the discarded positions and the re-attached ones are journaled:
+        // readers of either cell must re-run.
+        let discarded: Vec<(i32, i32)> = self
+            .workbook
+            .worksheet(sheet)?
+            .links
+            .keys()
+            .filter(|(_, c)| *c == target_column)
+            .copied()
+            .collect();
         let worksheet = self.workbook.worksheet_mut(sheet)?;
+        for (r, c) in &discarded {
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, *r, *c),
+            });
+        }
         worksheet.links.retain(|&(_, c), _| c != target_column);
         for (r, link) in moved_links {
             worksheet.links.insert((r, target_column), link);
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, r, target_column),
+            });
         }
 
         let disp = DisplaceData::ColumnMove {
@@ -1240,7 +1268,7 @@ impl<'a> Model<'a> {
             .filter(|(&(r, _), _)| r == row)
             .map(|(&(_, c), link)| (c, link.clone()))
             .collect();
-        displace_links(worksheet, |r, c| {
+        displace_links(worksheet, sheet, |r, c| {
             if r == row {
                 None
             } else if delta > 0 && r > row && r <= target_row {
@@ -1358,11 +1386,27 @@ impl<'a> Model<'a> {
         }
         worksheet.rows = new_rows;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created
+        // Re-attach the moved links, discarding any link the rebuild auto-created.
+        // Both the discarded positions and the re-attached ones are journaled:
+        // readers of either cell must re-run.
+        let discarded: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .filter(|(r, _)| *r == target_row)
+            .copied()
+            .collect();
         let worksheet = self.workbook.worksheet_mut(sheet)?;
+        for (r, c) in &discarded {
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, *r, *c),
+            });
+        }
         worksheet.links.retain(|&(r, _), _| r != target_row);
         for (c, link) in moved_links {
             worksheet.links.insert((target_row, c), link);
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, target_row, c),
+            });
         }
 
         let disp = DisplaceData::RowMove { sheet, row, delta };
