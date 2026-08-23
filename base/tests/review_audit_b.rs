@@ -53,15 +53,17 @@ fn b3_cse_range_cell_guard() {
     println!("B3 G5: full={f} incr={i}");
     assert_eq!(f, i);
 }
-// B5: which formula shapes force a Full pass every time?
+// B5: a dynamic anchor whose last result was 1x1 behaves as a scalar and must
+// not force a Full pass: `=LET`, a called LAMBDA, and `=INDEX` are everyday
+// formulas, and falling back for them silently removes the feature.
 #[test]
-fn b5_full_fallback_shapes() {
-    for f in [
-        "=A1+1",
-        "=LET(y,A1*2,y+1)",
-        "=LAMBDA(x,x+A1)(3)",
-        "=INDEX(A1:A3,1)",
-        "=IF(A1>1,A2,A3)",
+fn b5_scalar_dynamic_anchors_stay_incremental() {
+    for (f, expected) in [
+        ("=A1+1", "Number(3.0)"),
+        ("=LET(y,A1*2,y+1)", "Number(5.0)"),
+        ("=LAMBDA(x,x+A1)(3)", "Number(5.0)"),
+        ("=INDEX(A1:A3,1)", "Number(2.0)"),
+        ("=IF(A1>1,A2,A3)", "Number(1.0)"),
     ] {
         let mut x = m(RecalcMode::Incremental);
         for r in 1..=3 {
@@ -72,10 +74,57 @@ fn b5_full_fallback_shapes() {
         let _ = x.take_changed_cells();
         x.set_user_input(0, 1, 1, "2".to_string()).unwrap();
         x.evaluate();
+        assert_eq!(v(&x, "Sheet1!B1"), expected, "{f} value after edit");
         let d = match x.take_changed_cells() {
             ChangedSinceRead::Everything => "FULL".to_string(),
             ChangedSinceRead::Cells(c) => format!("incremental ({} cells)", c.len()),
         };
         println!("B5 {f:<22} -> {d}");
+        assert!(
+            d.starts_with("incremental"),
+            "{f} fell back to a Full pass: {d}"
+        );
     }
+}
+
+// B5b: a 1x1 dynamic anchor whose result grows must spill correctly; the pass
+// that creates the spill falls back to Full via the post-pass arrays check.
+// Every step compares Incremental against a Full model fed the same edits.
+#[test]
+fn b5_growing_dynamic_anchor_spills() {
+    let mut inc = m(RecalcMode::Incremental);
+    let mut full = m(RecalcMode::Full);
+    let both = |ops: &[(i32, i32, &str)], inc: &mut Model, full: &mut Model| {
+        for &(r, c, val) in ops {
+            inc.set_user_input(0, r, c, val.to_string()).unwrap();
+            full.set_user_input(0, r, c, val.to_string()).unwrap();
+        }
+        inc.evaluate();
+        full.evaluate();
+        for cell in ["Sheet1!F1", "Sheet1!F2", "Sheet1!F3"] {
+            assert_eq!(v(inc, cell), v(full, cell), "{cell} diverged");
+        }
+    };
+    both(
+        &[
+            (1, 1, "1"),
+            (1, 2, "10"),
+            (2, 2, "20"),
+            // Dynamic at parse (a range in one branch); 1x1 while A1=1.
+            (1, 6, "=IF(A1=1,5,B1:B2)"),
+        ],
+        &mut inc,
+        &mut full,
+    );
+    assert_eq!(v(&inc, "Sheet1!F1"), "Number(5.0)");
+    // A precedent edit while the result is 1x1 stays incremental.
+    let _ = inc.take_changed_cells();
+    both(&[(1, 1, "1")], &mut inc, &mut full);
+    // Flip: the result becomes B1:B2 and must spill into F1:F2.
+    both(&[(1, 1, "2")], &mut inc, &mut full);
+    assert_eq!(v(&inc, "Sheet1!F1"), "Number(10.0)");
+    assert_eq!(v(&inc, "Sheet1!F2"), "Number(20.0)");
+    // And back: the spill retracts.
+    both(&[(1, 1, "1")], &mut inc, &mut full);
+    assert_eq!(v(&inc, "Sheet1!F1"), "Number(5.0)");
 }

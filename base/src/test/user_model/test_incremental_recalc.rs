@@ -441,9 +441,13 @@ fn incremental_indirect_through_helper_reads_updated_target() {
     assert_eq!(model._get_text("E2"), "20");
     assert_eq!(model._get_text("D2"), "20");
     assert_eq!(model._get_text("A1"), "20");
-    // INDIRECT is stored as a 1×1 dynamic array, so the cone takes the
-    // array/spill full path. That is Everything, not an incremental delta.
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
+    // INDIRECT is stored as a 1×1 dynamic array; its last result was 1×1, so
+    // the pass stays incremental and the delta is the precise chain
+    // C1 → F2 → E2 → D2 → A1, traced through both INDIRECT hops.
+    match model.take_changed_cells() {
+        ChangedSinceRead::Cells(cells) => assert_eq!(cells.len(), 5),
+        other => panic!("expected a precise delta, got {other:?}"),
+    }
 }
 
 #[test]

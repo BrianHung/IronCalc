@@ -78,7 +78,9 @@ impl Model<'_> {
                     }
                     match cell {
                         Cell::ArrayFormula {
-                            r: (width, height), ..
+                            kind: ArrayKind::Cse,
+                            r: (width, height),
+                            ..
                         } => {
                             // The anchor plus every position it may spill into,
                             // including ones currently empty or deleted.
@@ -88,8 +90,37 @@ impl Model<'_> {
                                 }
                             }
                         }
-                        Cell::SpillCell { .. } => {
+                        Cell::ArrayFormula {
+                            kind: ArrayKind::Dynamic,
+                            v,
+                            ..
+                        } => {
+                            // A dynamic anchor whose last result was a 1x1 scalar
+                            // has no spill cells and behaves as one (`=LET(..)`,
+                            // a called LAMBDA, `=INDEX(..)`); it must not force
+                            // Full. If it spilled, its SpillCells index it below;
+                            // if it grows during an incremental pass, the
+                            // post-pass arrays comparison falls back to Full.
+                            //
+                            // A blocked anchor (stored `#SPILL!`) still forces
+                            // Full: Full-mode same-pass readers observe the live
+                            // array's top-left value, not the stored error, and
+                            // Incremental can only match that through the full
+                            // pass. An unevaluated anchor's extent is unknown.
+                            let scalar_result = match v {
+                                crate::types::FormulaValue::Error { ei, .. } => {
+                                    *ei != crate::expressions::token::Error::SPILL
+                                }
+                                crate::types::FormulaValue::Unevaluated => false,
+                                _ => true,
+                            };
+                            if !scalar_result {
+                                array_cells.insert((sheet, row, col));
+                            }
+                        }
+                        Cell::SpillCell { a, .. } => {
                             array_cells.insert((sheet, row, col));
+                            array_cells.insert((sheet, a.0, a.1));
                         }
                         _ => {}
                     }
@@ -354,11 +385,14 @@ impl Model<'_> {
         // Array and spill cells need the full pass's two-phase ordering.
         // Parse-time dynamic formulas (`=SEQUENCE`, `=E15#`) are ArrayFormula
         // before the first eval, but are not in `graph.arrays` until we see
-        // them. Treating them as scalar Incremental is a *second* spill pass
-        // (recursive evaluate_cell) and diverges from a cold Full first pass.
-        if affected
-            .iter()
-            .any(|cell| self.graph.arrays.contains(cell) || self.is_dynamic_array_anchor(*cell))
+        // them; a fresh or re-dirtied dynamic anchor is a seed, so seeds are
+        // checked for anchors directly. An already-evaluated dynamic anchor
+        // whose last result was 1x1 has no spill cells, is not in `arrays`,
+        // and behaves as a scalar (`=LET(..)`, a called LAMBDA, `=INDEX(..)`);
+        // it stays incremental. If its result grows during the pass, the
+        // post-pass arrays comparison below falls back to Full.
+        if affected.iter().any(|cell| self.graph.arrays.contains(cell))
+            || seeds.iter().any(|cell| self.is_dynamic_array_anchor(*cell))
         {
             self.evaluate_full_untracked();
             return EvalPass::Full;
