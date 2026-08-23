@@ -1,6 +1,6 @@
 # Incremental recalculation
 
-Incremental recalculation recomputes only the cells an edit affects, instead of the whole workbook. It is opt-in through `RecalcMode::Incremental`; the default stays full recalculation. Anything the incremental path does not model falls back to a full pass, so results always match full recalculation.
+Incremental recalculation recomputes only the cells an edit affects, instead of the whole workbook. It is opt-in through `RecalcMode::Incremental`. The default stays full recalculation. Anything the incremental path does not model falls back to a full pass, so results always match full recalculation.
 
 The engine records every write as it happens, observes what each formula reads while it evaluates, and uses the resulting dependency graph to recompute just the affected cells in dependency order. Recalculation stops early wherever a recomputed value turns out unchanged.
 
@@ -33,7 +33,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 
 | File | Role |
 |---|---|
-| `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled; they are not edits. |
+| `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges, so `SUM(A:A)` stays one edge. |
 | `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. |
 | `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, the change cutoff, `take_changed_cells`, and the Verify assertions. This is the only module whose behavior depends on the mode. |
@@ -67,7 +67,7 @@ cargo test -p ironcalc_base --lib
 # Full suite with incremental recalculation forced on
 IRONCALC_RECALC=incremental cargo test -p ironcalc_base --lib
 
-# Same suite plus a shadow full-recalculation pass; asserts both agree
+# Same suite plus a shadow full-recalculation pass that asserts both agree
 IRONCALC_RECALC=verify cargo test -p ironcalc_base --features recalc_verify --lib
 
 # Randomized comparison of both modes in lockstep, as run in CI
@@ -77,4 +77,4 @@ cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
 cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
 ```
 
-`RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts the change report is complete and sound, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the oracle cannot repair the state it checks.
+`RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts that the change report lists every change and nothing else, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the check cannot repair the state it is checking.
