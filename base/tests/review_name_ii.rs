@@ -3,6 +3,8 @@
 //! reparse must wrap it in the implicit-intersection operator, or a 1×N array
 //! reaches a scalar-context cell and trips the debug guard.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ironcalc_base::{Model, RecalcMode};
 
 #[test]

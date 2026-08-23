@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use ironcalc_base::{ChangedSinceRead, Model, RecalcMode};
 fn delta(x: &mut Model) -> String {
     match x.take_changed_cells() {
