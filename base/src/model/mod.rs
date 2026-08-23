@@ -3506,13 +3506,26 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        // Deleting the contents of a cell also removes its link
-        ws.links.retain(|&(row, column), _| {
-            row < range.row
-                || row >= range.row + range.height
-                || column < range.column
-                || column >= range.column + range.width
-        });
+        // Deleting the contents of a cell also removes its link. Each removal
+        // is journaled: a stranded link can sit at a position with no cell, so
+        // the cell clears above do not cover it and the delta would miss it.
+        let removed_links: Vec<(i32, i32)> = ws
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= range.row
+                    && row < range.row + range.height
+                    && column >= range.column
+                    && column < range.column + range.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            ws.links.remove(&(row, column));
+            ws.write_log.push(crate::recalc::Write::Link {
+                at: (range.sheet, row, column),
+            });
+        }
         Ok(())
     }
 
@@ -3615,13 +3628,26 @@ impl<'a> Model<'a> {
         for (row, column) in to_clear {
             let _ = worksheet.remove_cell(row, column);
         }
-        // Deleting the cells also removes their links
-        worksheet.links.retain(|&(row, column), _| {
-            row < area.row
-                || row >= area.row + area.height
-                || column < area.column
-                || column >= area.column + area.width
-        });
+        // Deleting the cells also removes their links. Each removal is
+        // journaled: a stranded link can sit at a position with no cell, so
+        // the cell removals above do not cover it and the delta would miss it.
+        let removed_links: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= area.row
+                    && row < area.row + area.height
+                    && column >= area.column
+                    && column < area.column + area.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            worksheet.links.remove(&(row, column));
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (area.sheet, row, column),
+            });
+        }
         Ok(())
     }
 
