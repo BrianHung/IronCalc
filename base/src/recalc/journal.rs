@@ -11,6 +11,9 @@ pub(crate) enum Write {
         was_formula: bool,
         is_formula: bool,
     },
+    /// A hyperlink was attached to or removed from a cell. The link is part of
+    /// the cell's observable key, so its readers and any delta must see it.
+    Link { at: Position },
     Hidden {
         sheet: u32,
         row: Option<i32>,

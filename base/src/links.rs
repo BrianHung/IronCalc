@@ -103,10 +103,11 @@ impl Model<'_> {
         link: Link,
     ) -> Result<(), String> {
         check_valid_cell(row, column)?;
-        self.workbook
-            .worksheet_mut(sheet)?
-            .links
-            .insert((row, column), link);
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        worksheet.links.insert((row, column), link);
+        worksheet.write_log.push(crate::recalc::Write::Link {
+            at: (sheet, row, column),
+        });
         Ok(())
     }
 
@@ -114,10 +115,11 @@ impl Model<'_> {
     /// if the cell has no link.
     pub fn delete_cell_link(&mut self, sheet: u32, row: i32, column: i32) -> Result<(), String> {
         check_valid_cell(row, column)?;
-        self.workbook
-            .worksheet_mut(sheet)?
-            .links
-            .remove(&(row, column));
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        worksheet.links.remove(&(row, column));
+        worksheet.write_log.push(crate::recalc::Write::Link {
+            at: (sheet, row, column),
+        });
         Ok(())
     }
 

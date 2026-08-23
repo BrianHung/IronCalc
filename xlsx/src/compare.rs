@@ -149,7 +149,6 @@ pub fn compare(model1: &Model, model2: &Model) -> CompareResult<Vec<Diff>> {
                     (FormulaValue::Error { ei: e1, .. }, FormulaValue::Error { ei: e2, .. }) => {
                         e1 != e2
                     }
-                    (FormulaValue::Empty, FormulaValue::Empty) => false,
                     // Some xlsx files store formula errors as t="str" with the error code as
                     // text instead of the correct t="e". Treat them as equivalent.
                     (FormulaValue::Text(s), FormulaValue::Error { ei, .. })
@@ -178,7 +177,6 @@ pub fn compare(model1: &Model, model2: &Model) -> CompareResult<Vec<Diff>> {
                     }
                     (SpillValue::Text(a), SpillValue::Text(b)) => a != b,
                     (SpillValue::Error(a), SpillValue::Error(b)) => a != b,
-                    (SpillValue::Empty, SpillValue::Empty) => false,
                     _ => true,
                 };
                 if mismatch {
@@ -251,14 +249,6 @@ fn cell_display(cell: &Cell) -> String {
             v: FormulaValue::Error { ei, .. },
             ..
         } => format!("{ei} (error)"),
-        Cell::CellFormula {
-            v: FormulaValue::Empty,
-            ..
-        }
-        | Cell::ArrayFormula {
-            v: FormulaValue::Empty,
-            ..
-        } => "(empty formula)".to_string(),
         Cell::ArrayFormula {
             v: FormulaValue::Unevaluated,
             s,
@@ -295,13 +285,6 @@ fn cell_display(cell: &Cell) -> String {
             a,
         } => {
             format!("\"{v}\" (spill, size={s}, area={a:?})")
-        }
-        Cell::SpillCell {
-            v: SpillValue::Empty,
-            s,
-            a,
-        } => {
-            format!("(empty spill, size={s}, area={a:?})")
         }
     }
 }

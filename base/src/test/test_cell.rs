@@ -62,9 +62,9 @@ fn cell_is_always_dynamic() {
         b2_cell,
         Cell::ArrayFormula {
             kind: ArrayKind::Dynamic,
-            v: FormulaValue::Empty,
+            v: FormulaValue::Number(v),
             ..
-        }
+        } if v == 0.0
     ));
 }
 #[test]

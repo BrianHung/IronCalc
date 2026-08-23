@@ -6,7 +6,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ironcalc_base::expressions::types::Area;
-use ironcalc_base::types::{Color, Style};
+use ironcalc_base::types::{CellType, Color, Style};
 use ironcalc_base::{Model, RecalcMode};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -523,9 +523,13 @@ pub fn snapshot(model: &Model<'_>) -> Snapshot {
         l.sort_by_key(|v| (v.row, v.column));
         for view in &l {
             let pos = (s, view.row, view.column);
+            // A linked position with no cell reads exactly like an EmptyCell
+            // through the public API (value None, type Number), so synthesize
+            // the same key; a style write that materializes the EmptyCell is
+            // not an observable change and is not journaled.
             let entry = cells.entry(pos).or_insert_with(|| CellKey {
                 value: "Ok(None)".to_string(),
-                ty: String::new(),
+                ty: format!("{:?}", Ok::<CellType, String>(CellType::Number)),
                 formatted: String::new(),
                 formula: None,
                 link: String::new(),
