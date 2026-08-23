@@ -253,8 +253,7 @@ impl Model<'_> {
         } else {
             let mut acc = reducer.identity();
             for row in row1..=base {
-                let (next, row_circ) =
-                    self.fold_row(sheet, row, column1, column2, reducer, acc);
+                let (next, row_circ) = self.fold_row(sheet, row, column1, column2, reducer, acc);
                 acc = next;
                 circ_seen |= row_circ;
                 if matches!(acc, RangeAgg::Error(_)) {
