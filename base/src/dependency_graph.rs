@@ -18,10 +18,9 @@ pub enum RecalcMode {
     Full,
     /// Recompute only the cells reachable from the dirty set.
     ///
-    /// Multi-column `SUM` may re-associate by composing per-row subtotals, so
-    /// floating-point order can differ from default Full's left-to-right
-    /// row-major scan. That difference is intentional and isolated to this
-    /// mode and Verify; default Full stays a single accumulator.
+    /// Composed aggregates (`SUM`/`MIN`/`MAX`/`COUNT` over cached range
+    /// prefixes) fold in the same row-major scan order as default Full's
+    /// direct scan, so their results are bit-identical to Full.
     Incremental,
     /// On Incremental passes, run full as well and `assert_eq!` the two agree.
     /// Formula, first-eval, and array/spill fallbacks are Full and are not

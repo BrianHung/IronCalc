@@ -211,8 +211,10 @@ impl Model<'_> {
         column2: i32,
         reducer: RangeReducer,
     ) -> RangeAgg {
-        // Default Full must match pre-composition fn_sum: one accumulator,
-        // left-to-right then down. Per-row subtotals re-associate floats.
+        // Default Full keeps the pre-composition fn_sum scan: one accumulator,
+        // left-to-right then down, with no cache. Composition below folds in
+        // that same order, so its results are bit-identical; Full still scans
+        // directly so the default path carries zero composition machinery.
         if self.recalc_mode == RecalcMode::Full {
             return self.reduce_range_direct(
                 sheet,
@@ -251,9 +253,10 @@ impl Model<'_> {
         } else {
             let mut acc = reducer.identity();
             for row in row1..=base {
-                let (row_agg, row_circ) = self.reduce_row(sheet, row, column1, column2, reducer);
+                let (next, row_circ) =
+                    self.fold_row(sheet, row, column1, column2, reducer, acc);
+                acc = next;
                 circ_seen |= row_circ;
-                acc = reducer.combine(acc, row_agg);
                 if matches!(acc, RangeAgg::Error(_)) {
                     break;
                 }
@@ -262,25 +265,31 @@ impl Model<'_> {
             acc
         };
         // Fold the remaining rows one at a time, caching every prefix so that
-        // overlapping ranges reuse them. Once an error is seen it wins for every
-        // longer prefix, so stop scanning and just record it.
+        // overlapping ranges reuse them. Each prefix continues the same
+        // row-major fold, so it is bit-identical to a direct scan of that
+        // prefix. Once an error is seen it wins for every longer prefix, so
+        // stop scanning and just record it.
         for row in (base + 1)..=row2 {
             let prefix_key = ((sheet, row1, column1, row, column2), reducer);
             if matches!(acc, RangeAgg::Error(_)) {
                 self.cache_agg(prefix_key, acc.clone(), circ_seen);
                 continue;
             }
-            let (row_agg, row_circ) = self.reduce_row(sheet, row, column1, column2, reducer);
+            let (next, row_circ) = self.fold_row(sheet, row, column1, column2, reducer, acc);
+            acc = next;
             circ_seen |= row_circ;
-            acc = reducer.combine(acc, row_agg);
             self.cache_agg(prefix_key, acc.clone(), circ_seen);
         }
         acc
     }
 
-    /// Streams the range into `acc` in Full, or combines `acc` with a composed
-    /// subtotal in Incremental. Full callers pass the outer SUM/MIN/COUNT
-    /// accumulator so `=SUM(5, A1:A3)` keeps pre-composition association.
+    /// Streams the range into `acc` in Full, or serves a composed subtotal in
+    /// Incremental. Composition folds from the identity in row-major scan
+    /// order, so it is bit-identical to the direct scan only when `acc` is
+    /// still the identity (`=SUM(A1:A3)`, or an earlier argument that summed
+    /// back to it). A non-identity accumulator (`=SUM(5, A1:A3)`) streams
+    /// directly so the association matches default Full exactly; those shapes
+    /// forgo the prefix cache.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn fold_range(
         &mut self,
@@ -295,10 +304,12 @@ impl Model<'_> {
         if self.recalc_mode == RecalcMode::Full {
             return self.reduce_range_direct(sheet, row1, column1, row2, column2, reducer, acc);
         }
-        reducer.combine(
-            acc,
-            self.reduce_range(sheet, row1, column1, row2, column2, reducer),
-        )
+        match &acc {
+            RangeAgg::Number(n) if n.to_bits() == reducer.identity_value().to_bits() => {
+                self.reduce_range(sheet, row1, column1, row2, column2, reducer)
+            }
+            _ => self.reduce_range_direct(sheet, row1, column1, row2, column2, reducer, acc),
+        }
     }
 
     /// Pre-composition scan: one accumulator in row-major order. Used in Full
@@ -348,29 +359,29 @@ impl Model<'_> {
         }
     }
 
-    /// Reduces a single row of a range across `column1..=column2`, evaluating each
-    /// cell so its value and the range's dependency edge are recorded just as a
-    /// direct scan would. Returns on the first error, left to right.
-    ///
-    /// The row is reduced into its own accumulator before being combined with the
-    /// other rows, so a multi-row, multi-column SUM adds in a different order than
-    /// a single left-to-right scan. This re-association (which HyperFormula also
-    /// does) can shift the result by a floating-point rounding step; the aggregate
-    /// is preserved, not the exact summation order. Min/Max/Count are associative,
-    /// so their result is independent of order.
-    fn reduce_row(
+    /// Folds one row of a range across `column1..=column2` into `acc`, in the
+    /// same left-to-right order as a direct scan, evaluating each cell so its
+    /// value and the range's dependency edge are recorded just as a direct scan
+    /// would. Because every cached prefix is built by continuing this one
+    /// row-major fold, a composed aggregate is bit-identical to
+    /// `reduce_range_direct` started from the same accumulator: same operand
+    /// order, same association, no rounding difference. Stops at the first
+    /// error, left to right.
+    fn fold_row(
         &mut self,
         sheet: u32,
         row: i32,
         column1: i32,
         column2: i32,
         reducer: RangeReducer,
+        mut acc: RangeAgg,
     ) -> (RangeAgg, bool) {
-        let mut acc = reducer.identity_value();
         let mut circ_seen = false;
         for column in column1..=column2 {
             match self.evaluate_cell(CellReferenceIndex { sheet, row, column }) {
-                CalcResult::Number(value) => acc = reducer.merge(acc, reducer.contribution(value)),
+                CalcResult::Number(value) => {
+                    acc = reducer.combine(acc, RangeAgg::Number(reducer.contribution(value)));
+                }
                 error @ CalcResult::Error {
                     error: Error::CIRC, ..
                 } => {
@@ -385,6 +396,6 @@ impl Model<'_> {
                 _ => {}
             }
         }
-        (RangeAgg::Number(acc), circ_seen)
+        (acc, circ_seen)
     }
 }

@@ -545,18 +545,12 @@ pub fn snapshot(model: &Model<'_>) -> Snapshot {
     }
 }
 
-/// Numbers that differ only by floating-point association noise are not a
-/// divergence per the documented `RecalcMode::Incremental` contract.
-fn fp_noise(a: &str, b: &str) -> bool {
-    let parse = |s: &str| -> Option<f64> {
-        s.strip_prefix("Ok(Number(")
-            .and_then(|s| s.strip_suffix("))"))
-            .and_then(|s| s.parse::<f64>().ok())
-    };
-    match (parse(a), parse(b)) {
-        (Some(x), Some(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
-        _ => false,
-    }
+/// Composed aggregates fold in the same row-major scan order as a direct
+/// scan, so Incremental numbers are bit-identical to Full: any numeric
+/// difference is a divergence. (This was a 1e-9 relative tolerance while
+/// range composition re-associated per-row subtotals.)
+fn fp_noise(_a: &str, _b: &str) -> bool {
+    false
 }
 
 #[derive(Clone, Debug)]

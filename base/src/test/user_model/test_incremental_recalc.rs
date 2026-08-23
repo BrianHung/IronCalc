@@ -456,7 +456,9 @@ fn incremental_running_totals_compose_after_offset_and_insert() {
     assert_eq!(model._get_text("B1"), "1");
     assert_eq!(model._get_text("B3"), "10"); // 1 + 4 + 5
     assert_eq!(model._get_text("B4"), "13"); // 1 + 4 + 5 + 3
-    assert_eq!(model._get_text("C1"), ""); // still OFFSET(D1,1,0); D2 is the new blank
+    // Still OFFSET(D1,1,0); D2 is the new blank, and a blank formula result
+    // coerces to 0 at the formula boundary, as in Excel and default Full.
+    assert_eq!(model._get_text("C1"), "0");
 }
 
 #[test]
