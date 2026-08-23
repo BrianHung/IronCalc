@@ -1138,68 +1138,20 @@ impl<'a> Model<'a> {
                     return Ok(());
                 }
                 None => {
-                    // Scalar formula produced an array at runtime. A 1x1 array is
-                    // genuinely a single value just wrapped; coerce it. For larger
-                    // arrays Excel applies implicit intersection: do the same, so a
-                    // formula written before a defined name existed (parsed as a
-                    // scalar `NamedVariable`, no `@` inserted at parse time) keeps
-                    // working once the name resolves to a range.
-                    let coerced = if array_width == 1 && array_height == 1 {
-                        match self.get_value_from_array(array, 1, 1) {
-                            Some(node) => array_node_to_formula_value(node),
-                            None => FormulaValue::Error {
-                                ei: Error::VALUE,
-                                o: "".to_string(),
-                                m: "Unexpected array result".to_string(),
-                            },
-                        }
-                    } else {
-                        let left = CellReferenceIndex { sheet, row, column };
-                        match implicit_intersection(
-                            &left,
-                            &crate::calc_result::Range {
-                                left: CellReferenceIndex { sheet, row, column },
-                                right: CellReferenceIndex {
-                                    sheet,
-                                    row: row + array_height - 1,
-                                    column: column + array_width - 1,
-                                },
-                            },
-                        ) {
-                            Some(target) => match self.evaluate_cell(target) {
-                                CalcResult::Number(v) => FormulaValue::Number(v),
-                                CalcResult::String(v) => FormulaValue::Text(v),
-                                CalcResult::Boolean(v) => FormulaValue::Boolean(v),
-                                CalcResult::Error {
-                                    error,
-                                    origin,
-                                    message,
-                                } => {
-                                    let o =
-                                        self.cell_reference_to_string(&origin).unwrap_or_default();
-                                    FormulaValue::Error {
-                                        ei: error,
-                                        o,
-                                        m: message,
-                                    }
-                                }
-                                CalcResult::EmptyCell | CalcResult::EmptyArg => {
-                                    FormulaValue::Number(0.0)
-                                }
-                                CalcResult::Range { .. }
-                                | CalcResult::Array(_)
-                                | CalcResult::Lambda(_) => FormulaValue::Error {
-                                    ei: Error::VALUE,
-                                    o: "".to_string(),
-                                    m: "Array result in scalar context".to_string(),
-                                },
-                            },
-                            None => FormulaValue::Error {
-                                ei: Error::VALUE,
-                                o: "".to_string(),
-                                m: "Implicit intersection found no value".to_string(),
-                            },
-                        }
+                    // Scalar formula produced a computed array at runtime. A 1x1
+                    // array is a single value just wrapped; unwrap it. A larger
+                    // array has no source coordinates to intersect against, so it
+                    // takes its top-left element, the legacy behavior for
+                    // positionless arrays. Ranges never reach here: evaluate_cell
+                    // applies implicit intersection while their coordinates are
+                    // still known.
+                    let coerced = match self.get_value_from_array(array, 1, 1) {
+                        Some(node) => array_node_to_formula_value(node),
+                        None => FormulaValue::Error {
+                            ei: Error::VALUE,
+                            o: "".to_string(),
+                            m: "Unexpected array result".to_string(),
+                        },
                     };
                     *self.workbook.worksheets[sheet as usize]
                         .sheet_data
@@ -1735,6 +1687,20 @@ impl<'a> Model<'a> {
                     {
                         // it is a single cell range, we can just return the value of the cell
                         self.evaluate_cell(left)
+                    } else if !matches!(original_cell, Cell::ArrayFormula { .. }) {
+                        // A scalar formula produced a multi-cell range at runtime,
+                        // e.g. a name defined as a range after the formula was
+                        // parsed, so no `@` was inserted. Apply implicit
+                        // intersection here, while the range's true coordinates
+                        // are known; materializing it into an array loses them.
+                        match implicit_intersection(&cell_reference, &Range { left, right }) {
+                            Some(target) => self.evaluate_cell(target),
+                            None => CalcResult::new_error(
+                                Error::VALUE,
+                                cell_reference,
+                                "Implicit intersection found no value".to_string(),
+                            ),
+                        }
                     } else {
                         let array_height = right.row - left.row + 1;
                         let array_width = right.column - left.column + 1;
@@ -1793,51 +1759,13 @@ impl<'a> Model<'a> {
                 // return the result of the evaluation.
                 match result {
                     CalcResult::Array(a) => {
-                        // The cell ended up holding an array. Coerce it to a scalar so
-                        // that dependents observe the same value `set_cells_with_result`
-                        // wrote into the cell:
-                        //   * Array formula anchor (CSE/Dynamic): return a[0][0] (the
-                        //     anchor's "first cell" value, matching the existing model).
-                        //   * Plain scalar formula: 1x1 -> unwrap to the single value;
-                        //     larger -> `#VALUE!`. This must mirror the coercion in
-                        //     `set_cells_with_result` so that dependents evaluated via
-                        //     `ReferenceKind -> evaluate_cell` in the same recalculation
-                        //     pass do not observe a different value than what is stored.
-                        let is_array_formula = matches!(original_cell, Cell::ArrayFormula { .. });
-                        let array_height = a.len() as i32;
-                        let array_width = if array_height > 0 {
-                            a[0].len() as i32
-                        } else {
-                            0
-                        };
-                        if !is_array_formula && (array_width != 1 || array_height != 1) {
-                            // A scalar-context formula produced a larger array at
-                            // runtime. Mirror the implicit intersection applied in
-                            // `set_cells_with_result` so in-pass dependents observe
-                            // exactly the stored value.
-                            match implicit_intersection(
-                                &cell_reference,
-                                &crate::calc_result::Range {
-                                    left: CellReferenceIndex {
-                                        sheet: cell_reference.sheet,
-                                        row: cell_reference.row,
-                                        column: cell_reference.column,
-                                    },
-                                    right: CellReferenceIndex {
-                                        sheet: cell_reference.sheet,
-                                        row: cell_reference.row + array_height - 1,
-                                        column: cell_reference.column + array_width - 1,
-                                    },
-                                },
-                            ) {
-                                Some(target) => self.evaluate_cell(target),
-                                None => CalcResult::new_error(
-                                    Error::VALUE,
-                                    cell_reference,
-                                    "Implicit intersection found no value".to_string(),
-                                ),
-                            }
-                        } else if array_height == 0 || array_width == 0 {
+                        // The cell ended up holding an array. Dependents must
+                        // observe the same scalar `set_cells_with_result` wrote:
+                        // the top-left element. That is the anchor value for a
+                        // CSE/dynamic formula and the coerced value for a computed
+                        // array in a scalar context. An empty element reads as the
+                        // stored 0, never as a blank.
+                        if a.is_empty() || a[0].is_empty() {
                             CalcResult::new_error(
                                 Error::CALC,
                                 cell_reference,
@@ -1852,7 +1780,7 @@ impl<'a> Model<'a> {
                                     let message = error.to_localized_error_string(self.language);
                                     CalcResult::new_error(error.clone(), cell_reference, message)
                                 }
-                                ArrayNode::Empty => CalcResult::EmptyCell,
+                                ArrayNode::Empty => CalcResult::Number(0.0),
                             }
                         }
                     }

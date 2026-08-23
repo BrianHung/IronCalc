@@ -363,6 +363,15 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
+        // Per-evaluation scratch. `support` feeds only the full pass's spill
+        // ordering and is rebuilt there; `variable_stack` and `lambdas` are
+        // repopulated by the formulas that evaluate below. Without these clears
+        // the scratch of every historical pass accumulates for the lifetime of
+        // the model. `links` must persist: out-of-cone HYPERLINK cells keep
+        // theirs, and `change_key` reads it.
+        self.support.clear();
+        self.clear_variable_stack();
+        self.clear_lambdas();
         // Recompute the affected cells and collect the ones whose value actually
         // moved. A cycle in the affected set has no topological order, so fall
         // back to recomputing the whole set, where `evaluate_cell`'s recursion
