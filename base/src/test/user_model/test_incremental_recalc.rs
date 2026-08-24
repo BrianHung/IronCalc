@@ -1838,3 +1838,213 @@ fn undo_redo_under_incremental_stays_incremental() {
         ChangedSinceRead::Cells(_) => {}
     }
 }
+
+/// A read of a multi-column rectangle must be recorded as a rectangle, not
+/// dropped. `SUM(B:C)` clips its per-cell walk to the used range, so the only
+/// edge that can connect a write below the last used row to the sum is the
+/// recorded rect. Dropping wide rects from the read set leaves A1 stale.
+#[test]
+fn multi_column_range_edits_propagate() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("A1", "=SUM(B:C)");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+
+    // Second column of the rect, past the used range: only the rectangle
+    // connects this write to A1.
+    model._set("C100", "5");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "6");
+
+    // ... and the first column of the same rect.
+    model._set("B50", "4");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+}
+
+/// The whole-row twin: `SUM(2:3)` is a two-row rect spanning every column, and
+/// the per-cell walk stops at the used column. A write to the right of it must
+/// still re-fire the sum.
+#[test]
+fn multi_column_whole_row_range_edits_propagate() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B2", "1");
+    model._set("A1", "=SUM(2:3)");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+
+    model._set("Z3", "5");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "6");
+
+    // A write outside the two rows must not be mistaken for one inside them.
+    model._set("Z4", "1000");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "6");
+}
+
+/// Criteria functions read two cross-column rectangles (the criteria range and
+/// the value range) and clip their walk to the used range, exactly like SUM.
+/// Both rects must be recorded, so a write past the used range in either one
+/// re-fires the formula.
+#[test]
+fn cross_column_criteria_range_edits_propagate() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "5");
+    model._set("E1", "10"); // pairs with B1 in the value rect
+                            // Criteria rect B:D (3 columns), value rect E:G (3 columns).
+    model._set("A1", "=SUMIFS(E:G,B:D,\">1\")");
+    model._set("A2", "=COUNTIF(B:D,\">1\")");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+    assert_eq!(model._get_text("A2"), "1");
+
+    // Second column of the criteria rect, past the used range. C100 pairs with
+    // F100 in the value rect, which is empty, so only the count moves.
+    model._set("C100", "7");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "10");
+    assert_eq!(model._get_text("A2"), "2");
+
+    // Now fill the paired cell in the value rect.
+    model._set("F100", "3");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "13");
+    assert_eq!(model._get_text("A2"), "2");
+}
+
+/// A bounded multi-column rect. Unlike the clipped forms above, `SUM(B1:C50)`
+/// also walks every cell it covers, so the per-cell edges are a second path to
+/// the same dependents; this is a plain correctness guard, not an isolation of
+/// the rect edge.
+#[test]
+fn bounded_multi_column_rect_edits_propagate() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("B1", "1");
+    model._set("A1", "=SUM(B1:C50)");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "1");
+
+    model._set("C30", "5");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "6");
+
+    // A write outside the rect must not be mistaken for one inside it.
+    model._set("D30", "1000");
+    model.evaluate();
+    assert_eq!(model._get_text("A1"), "6");
+}
+
+/// A volatile cell must re-roll on every incremental pass, not only on a full
+/// one. Editing an unrelated cell keeps the pass incremental; RAND() has to
+/// move anyway, and the delta has to name it.
+#[test]
+fn volatile_rerolls_on_an_incremental_pass() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=RAND()");
+    model._set("B2", "1");
+    model.evaluate();
+    let _ = model.take_changed_cells(); // the first pass is a full one
+    let first = model.get_cell_value_by_index(0, 1, 1).unwrap();
+
+    // A value edit on a cell A1 does not read: the pass stays incremental.
+    model._set("B2", "2");
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+
+    let second = model.get_cell_value_by_index(0, 1, 1).unwrap();
+    assert_ne!(first, second, "RAND() must re-roll on an incremental pass");
+
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("an unrelated value edit must stay incremental");
+    };
+    assert!(
+        cells
+            .iter()
+            .any(|c| (c.sheet, c.row, c.column) == (0, 1, 1)),
+        "the delta must name the volatile cell: {cells:?}"
+    );
+}
+
+/// The same invariant with a wider draw and repeated passes, so a single
+/// unlucky collision cannot make the test flaky: over several incremental
+/// evaluates at least one re-roll has to differ.
+#[test]
+fn volatile_rerolls_across_repeated_incremental_passes() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=RANDBETWEEN(1,1000000000)");
+    model._set("A2", "=A1+0"); // a dependent: the re-roll must propagate
+    model._set("B2", "0");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    let first = model.get_cell_value_by_index(0, 1, 1).unwrap();
+    let first_dependent = model.get_cell_value_by_index(0, 2, 1).unwrap();
+    let mut rerolled = false;
+    let mut dependent_rerolled = false;
+    for pass in 1..=5 {
+        model._set("B2", &pass.to_string());
+        flush_writes(&mut model);
+        assert!(!model.graph.should_recompute_full());
+        model.evaluate();
+        if model.get_cell_value_by_index(0, 1, 1).unwrap() != first {
+            rerolled = true;
+        }
+        if model.get_cell_value_by_index(0, 2, 1).unwrap() != first_dependent {
+            dependent_rerolled = true;
+        }
+        let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+            panic!("an unrelated value edit must stay incremental");
+        };
+        assert!(
+            cells
+                .iter()
+                .any(|c| (c.sheet, c.row, c.column) == (0, 1, 1)),
+            "the delta must name the volatile cell on every pass: {cells:?}"
+        );
+    }
+    assert!(rerolled, "RANDBETWEEN never re-rolled over five passes");
+    assert!(
+        dependent_rerolled,
+        "the volatile's dependent never followed the re-roll"
+    );
+}
+
+/// NOW() is volatile too, and the clock is mocked in the test build, so its
+/// value cannot be used to detect a re-roll. What is observable is that it
+/// stays in the always-dirty set and is reported on every incremental pass.
+#[test]
+fn clock_volatile_is_reported_on_every_incremental_pass() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=NOW()");
+    model._set("A2", "=TODAY()");
+    model._set("B2", "0");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    for pass in 1..=3 {
+        model._set("B2", &pass.to_string());
+        flush_writes(&mut model);
+        assert!(!model.graph.should_recompute_full());
+        model.evaluate();
+        let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+            panic!("an unrelated value edit must stay incremental");
+        };
+        for position in [(0, 1, 1), (0, 2, 1)] {
+            assert!(
+                cells.iter().any(|c| (c.sheet, c.row, c.column) == position),
+                "the delta must name the clock volatile {position:?}: {cells:?}"
+            );
+        }
+    }
+}

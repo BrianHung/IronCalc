@@ -201,6 +201,17 @@ impl Model<'_> {
                         "cell {position:?} is in the delta but did not change"
                     );
                 }
+                // Liveness. Both checks above consult the always-dirty set to
+                // excuse a cell, and the value comparison below strips its
+                // whole cone, so a pass that silently stopped re-running the
+                // volatiles would read as clean everywhere else. Being
+                // reported on every pass is what is left to assert.
+                for position in self.graph.always_dirty_cells() {
+                    assert!(
+                        delta.contains(&position),
+                        "always-dirty cell {position:?} was not reported"
+                    );
+                }
             }
             self.changed_cells = merge_changed_cells(consumer, this_pass);
             // Shadow Full: run it on this model, then restore Incremental
