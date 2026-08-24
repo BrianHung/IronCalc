@@ -50,6 +50,14 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - Row or column moves. Inserts and deletes stay incremental; the graph shifts positions and edges in place.
 - A dynamic array or spill anchor is among the affected cells. Spills need the full pass's two-phase ordering.
 - The edit reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one, and Verify disables it.
+- The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is ordered by position instead, which is the order the full pass walks in.
+- The previous pass left convergence debt (see below).
+
+## Convergence debt
+
+A full pass is not a fixed point. Its phase 1 spills arrays and its phase 2 evaluates the rest, so a formula can read a spill member before the anchor refills it, and a cycle that runs through an array member resolves against that member's stored value. Full recalculation heals those readers on its *next* pass, because it rescans everything unconditionally.
+
+Incremental has to match that pass for pass. So a full pass run from the incremental scheduler compares the array footprint's values across the pass: if a footprint cell moved and something read it (or a cycle resolved through the array), the pass left debt, and the graph records it so the next pass is full too. The debt clears itself, because the healing pass moves nothing and the pass after it is selective again. A workbook with no arrays never records debt, so plain editing is unaffected.
 
 ## Design rules
 
