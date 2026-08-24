@@ -1838,3 +1838,251 @@ fn undo_redo_under_incremental_stays_incremental() {
         ChangedSinceRead::Cells(_) => {}
     }
 }
+
+// ---------------------------------------------------------------------------
+// Convergence: incremental must equal full after *every* evaluate, including
+// the passes where full heals debt its own previous pass left behind. Each
+// test below drives both modes in lockstep over a minimized shape from the
+// differential fuzzer and compares the whole workbook after each evaluate.
+// ---------------------------------------------------------------------------
+
+/// Every populated cell's value, for a mode-vs-mode comparison.
+fn workbook_values(model: &crate::Model) -> Vec<(u32, i32, i32, String)> {
+    let mut cells: Vec<(u32, i32, i32, String)> = model
+        .get_all_cells()
+        .into_iter()
+        .map(|c| {
+            (
+                c.index,
+                c.row,
+                c.column,
+                model
+                    .get_formatted_cell_value(c.index, c.row, c.column)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    cells.sort();
+    cells
+}
+
+fn assert_same_workbook(full: &crate::Model, incremental: &crate::Model, label: &str) {
+    assert_eq!(
+        workbook_values(full),
+        workbook_values(incremental),
+        "incremental diverged from full after {label}"
+    );
+}
+
+/// (a) A row move forces a full pass, but that pass leaves spill debt: `G12`
+/// read `E16:E17` before `E15`'s `SEQUENCE` refilled them. Full heals on its
+/// next unconditional pass; incremental used to serve `G12` its stored 0 for
+/// ever, because no later cone ever named it.
+#[test]
+fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("E15", "=SEQUENCE(3)");
+        m._set("G12", "=SUM(E19:E20)");
+        m._set("F14", "=SEQUENCE(3)+G12");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        m.move_rows_action(0, 19, 2, -3).unwrap();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the move's own full pass");
+    // The healing pass. The edit is deliberately unrelated to the spill: the
+    // dirty cone cannot reach G12, so only the debt signal brings it back.
+    for m in [&mut full, &mut inc] {
+        m._set("B5", "1");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("G12"), "5");
+    assert_same_workbook(&full, &inc, "the healing pass");
+}
+
+/// (b) A newly set formula closes a cycle. The closing edge is only observed
+/// while the pass runs, so the cone was ordered without it and `#CIRC!` landed
+/// on a different member than full's recursion picks.
+#[test]
+fn incremental_places_circ_like_full_when_an_edit_closes_a_cycle() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("F7", "=AVERAGE(A1:B10)");
+        m._set("C10", "=SUM(F4,F7)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        // A7 is inside A1:B10, so F7 now reads a cell that reads F7's column.
+        m._set("A7", "=COUNTBLANK(A1:D12)");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("F7"), "#CIRC!");
+    assert_same_workbook(&full, &inc, "the cycle-closing pass");
+}
+
+/// (b) The same, with the cycle closing through a range read rather than a
+/// direct reference: `C11` reads `E1:E6`, `E6` reads `A1:D12`.
+#[test]
+fn incremental_places_circ_like_full_for_a_range_cycle() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("E6", "=COUNT(A1:D12)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        m._set("C11", "=SUBTOTAL(9,E1:E6)");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("C11"), "#CIRC!");
+    assert_eq!(full._get_text("E6"), "0");
+    assert_same_workbook(&full, &inc, "the range-cycle pass");
+}
+
+/// (b) An error-absorbing function makes the divergence a value, not just a
+/// placement: the frontier evaluated `B1` once through `A1`'s recursion (the
+/// mid-cycle value full keeps) and then a second time at `B1`'s own topological
+/// slot, against the settled `A1`. Full evaluates each cell once per pass.
+#[test]
+fn incremental_does_not_re_evaluate_a_mid_cycle_cell() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("A1", "1");
+        m._set("B1", "=IFERROR(A1+1,50)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        m._set("A1", "=B1");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A1"), "50");
+    assert_eq!(full._get_text("B1"), "50");
+    assert_same_workbook(&full, &inc, "the IFERROR cycle pass");
+}
+
+/// (b) The same second-evaluation divergence with no formula edit at all: a
+/// value edit flips an `IF` branch, and the branch it turns on closes the
+/// cycle. Nothing in the graph predicts the new read.
+#[test]
+fn incremental_does_not_re_evaluate_a_mid_cycle_cell_reached_by_a_branch() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "-1");
+        m._set("A1", "=IF(D1>0,IFERROR(B1,7),5)");
+        m._set("B1", "=A1+1");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        m._set("D1", "1");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A1"), "7");
+    assert_eq!(full._get_text("B1"), "#CIRC!");
+    assert_same_workbook(&full, &inc, "the branch-closed cycle pass");
+}
+
+/// (c) A CSE anchor rebuilt by column moves, whose refilled rectangle is read
+/// by a formula the anchor itself reads. The full pass resolves that cycle
+/// against the members' stored values, so the refill leaves the reader holding
+/// the old ones; full heals on its next unconditional pass, and incremental
+/// used to keep the stale pair for ever.
+#[test]
+fn incremental_heals_cse_refill_debt() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m.set_user_array_formula(0, 1, 3, 1, 3, "=A1:A3+1").unwrap();
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        // B3 reads A2:C2, which contains the anchor's own member C2.
+        m._set("A3", "=SUM(B2:C2)");
+        m.move_columns_action(0, 1, 1, 1).unwrap();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the move's own full pass");
+    // Full's own value moves on this pass with nothing relevant edited: that is
+    // the debt the previous pass left, and incremental has to move with it.
+    assert_eq!(full._get_text("B3"), "1");
+    for m in [&mut full, &mut inc] {
+        m._set("B4", "3");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("B3"), "0");
+    assert_same_workbook(&full, &inc, "the CSE healing pass");
+}
+
+/// (c) A dynamic anchor left pending a re-spill by a structural delete. The
+/// delete's own full pass re-spills `G4`'s `SEQUENCE` after `H2` has read into
+/// it, so `H2` keeps `#VALUE!`; full heals on its next pass, and the later edit
+/// never brings the anchor into an incremental cone.
+#[test]
+fn incremental_heals_dynamic_respill_debt_after_a_delete() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("G4", "=SEQUENCE(3)+F18");
+        m.insert_columns(0, 5, 1).unwrap();
+        m.delete_rows(0, 2, 2).unwrap();
+        m.move_columns_action(0, 7, 1, -1).unwrap();
+        m.delete_rows(0, 7, 2).unwrap();
+        m.delete_rows(0, 5, 2).unwrap();
+        m.move_columns_action(0, 5, 1, 2).unwrap();
+        m.insert_rows(0, 11, 1).unwrap();
+        m.set_user_array_formula(0, 12, 5, 1, 3, "=A1:A3+1")
+            .unwrap();
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        m.delete_rows(0, 8, 2).unwrap();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the delete's full pass");
+    for m in [&mut full, &mut inc] {
+        m._set("A8", "8");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("H2"), "2");
+    assert_same_workbook(&full, &inc, "the respill healing pass");
+}
+
+/// Plain edits with no arrays, no structural ops and no cycles must not pay for
+/// any of the above: the pass stays selective and reports a cell delta.
+#[test]
+fn convergence_guard_leaves_plain_edits_selective() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("B1", "=A1+1");
+    model._set("C1", "=B1+1");
+    model.evaluate();
+    for value in ["2", "3", "4"] {
+        let _ = model.take_changed_cells();
+        model._set("A1", value);
+        model.evaluate();
+        match model.take_changed_cells() {
+            ChangedSinceRead::Everything => panic!("a plain edit fell back to a full pass"),
+            ChangedSinceRead::Cells(cells) => assert!(!cells.is_empty()),
+        }
+    }
+    assert_eq!(model._get_text("C1"), "6");
+}
