@@ -25,11 +25,13 @@ fn cse_ghost_member_reader_matches_full_after_column_delete() {
             "anchor value before the delete"
         );
         model.delete_columns(0, 7, 1).unwrap();
+        // The reader sits outside the displaced rectangle: writing inside it
+        // is rejected (review_cse_member_writes).
         model
-            .set_user_input(0, 5, 7, "=IFERROR(G6,-1)".to_string())
+            .set_user_input(0, 5, 8, "=IFERROR(G5,-1)".to_string())
             .unwrap();
         model.evaluate();
-        model.get_formatted_cell_value(0, 5, 7).unwrap()
+        model.get_formatted_cell_value(0, 5, 8).unwrap()
     };
     assert_eq!(run(RecalcMode::Full), run(RecalcMode::Incremental));
 }

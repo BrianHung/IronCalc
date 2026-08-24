@@ -4,6 +4,10 @@ use crate::dependency_graph::{Area, Position};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Input {
     RowHidden(u32, i32),
+    /// No function records this yet: `SUBTOTAL(1xx)` excludes hidden rows
+    /// only, matching Excel, so column visibility is not an input to anything
+    /// implemented. The variant, its journal write, and its drain consumer are
+    /// wired end-to-end for a future reader (e.g. `CELL("width")`).
     #[allow(dead_code)]
     ColHidden(u32, i32),
     OwnCoord(Position),
