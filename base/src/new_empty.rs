@@ -706,6 +706,7 @@ impl<'a> Model<'a> {
             formula_cell_count: 0,
             formula_count_stale: false,
             wrote_array_cells: false,
+            saw_circular_reference: false,
             cse_rects: None,
             cse_member_guard_suspended: false,
             read_stack: Vec::new(),
