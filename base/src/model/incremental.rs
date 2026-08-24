@@ -51,15 +51,68 @@ pub(crate) enum EvalPass {
     Full,
 }
 
+/// The positions `cell` contributes to the array index: every position of a
+/// CSE anchor's declared rectangle (a structural delete can drop a member cell
+/// while the anchor still owns and refills the rectangle), a spill cell plus
+/// its anchor, and a dynamic anchor unless its last result was a plain 1x1
+/// scalar. A scalar dynamic anchor (`=LET(..)`, a called LAMBDA, `=INDEX(..)`)
+/// stays out so it does not force a Full pass; a blocked anchor (stored
+/// `#SPILL!`) stays in, because full-mode same-pass readers observe the live
+/// array's top-left value rather than the stored error, which incremental can
+/// only match through the full pass; an unevaluated anchor's extent is unknown,
+/// so it stays in too. Shared by the full-pass rebuild and the journal drain so
+/// both index by the same rules.
+pub(super) fn array_footprint(
+    cell: &Cell,
+    sheet: u32,
+    row: i32,
+    col: i32,
+    out: &mut dyn FnMut(Position),
+) {
+    match cell {
+        Cell::ArrayFormula {
+            kind: ArrayKind::Cse,
+            r: (width, height),
+            ..
+        } => {
+            for r in row..row + height {
+                for c in col..col + width {
+                    out((sheet, r, c));
+                }
+            }
+        }
+        Cell::ArrayFormula {
+            kind: ArrayKind::Dynamic,
+            v,
+            ..
+        } => {
+            let scalar_result = match v {
+                crate::types::FormulaValue::Error { ei, .. } => {
+                    *ei != crate::expressions::token::Error::SPILL
+                }
+                crate::types::FormulaValue::Unevaluated => false,
+                _ => true,
+            };
+            if !scalar_result {
+                out((sheet, row, col));
+            }
+        }
+        Cell::SpillCell { a, .. } => {
+            out((sheet, row, col));
+            out((sheet, a.0, a.1));
+        }
+        _ => {}
+    }
+}
+
 impl Model<'_> {
     /// Records the positions of array and spill cells after a full pass, so the
     /// incremental path can fall back to full for any edit that reaches one. Must
-    /// run after spilling, when the spill output cells exist.
-    ///
-    /// For an ArrayFormula anchor, every position in its declared `r` rectangle
-    /// is indexed, not just occupied cells: a structural delete can drop a CSE
-    /// member (leaving no cell to inspect) while the anchor still owns the
-    /// rectangle and refills it on the next full pass.
+    /// run after spilling, when the spill output cells exist. Between full
+    /// passes the index is maintained without this walk: the journal drain adds
+    /// the footprint of user-written cells, structural edits shift positions,
+    /// and evaluation writes that change a footprint set `wrote_array_cells`,
+    /// which sends the pass to Full and back here.
     pub(crate) fn collect_array_cells(&mut self) {
         let mut array_cells = HashSet::new();
         let mut formula_cell_count = 0;
@@ -76,59 +129,33 @@ impl Model<'_> {
                     if cell.get_formula().is_some() {
                         formula_cell_count += 1;
                     }
-                    match cell {
-                        Cell::ArrayFormula {
-                            kind: ArrayKind::Cse,
-                            r: (width, height),
-                            ..
-                        } => {
-                            // The anchor plus every position it may spill into,
-                            // including ones currently empty or deleted.
-                            for r in row..row + height {
-                                for c in col..col + width {
-                                    array_cells.insert((sheet, r, c));
-                                }
-                            }
-                        }
-                        Cell::ArrayFormula {
-                            kind: ArrayKind::Dynamic,
-                            v,
-                            ..
-                        } => {
-                            // A dynamic anchor whose last result was a 1x1 scalar
-                            // has no spill cells and behaves as one (`=LET(..)`,
-                            // a called LAMBDA, `=INDEX(..)`); it must not force
-                            // Full. If it spilled, its SpillCells index it below;
-                            // if it grows during an incremental pass, the
-                            // post-pass arrays comparison falls back to Full.
-                            //
-                            // A blocked anchor (stored `#SPILL!`) still forces
-                            // Full: Full-mode same-pass readers observe the live
-                            // array's top-left value, not the stored error, and
-                            // Incremental can only match that through the full
-                            // pass. An unevaluated anchor's extent is unknown.
-                            let scalar_result = match v {
-                                crate::types::FormulaValue::Error { ei, .. } => {
-                                    *ei != crate::expressions::token::Error::SPILL
-                                }
-                                crate::types::FormulaValue::Unevaluated => false,
-                                _ => true,
-                            };
-                            if !scalar_result {
-                                array_cells.insert((sheet, row, col));
-                            }
-                        }
-                        Cell::SpillCell { a, .. } => {
-                            array_cells.insert((sheet, row, col));
-                            array_cells.insert((sheet, a.0, a.1));
-                        }
-                        _ => {}
+                    array_footprint(cell, sheet, row, col, &mut |p| {
+                        array_cells.insert(p);
+                    });
+                }
+            }
+        }
+        self.formula_cell_count = formula_cell_count;
+        self.formula_count_stale = false;
+        self.graph.replace_arrays(array_cells);
+    }
+
+    /// Recounts formula cells without touching the array index. Used after a
+    /// structural edit, which can add or remove whole rows of formula cells
+    /// without a cell write for the journal to account against.
+    pub(crate) fn recount_formula_cells(&mut self) {
+        let mut formula_cell_count = 0;
+        for worksheet in &self.workbook.worksheets {
+            for row_data in worksheet.sheet_data.values() {
+                for cell in row_data.values() {
+                    if cell.get_formula().is_some() {
+                        formula_cell_count += 1;
                     }
                 }
             }
         }
         self.formula_cell_count = formula_cell_count;
-        self.graph.replace_arrays(array_cells);
+        self.formula_count_stale = false;
     }
 
     /// When the pass stayed Incremental, runs a full pass and asserts they agree,
@@ -268,6 +295,16 @@ impl Model<'_> {
             ) {
                 continue;
             }
+            // A cycle has no fixpoint: a cell on one stores a value computed
+            // from mid-cycle reads (COUNT swallows a mid-cycle #CIRC! into a
+            // number), so stored == live cannot hold there. Skipping when the
+            // cell's cone has no topological order over-skips cells that
+            // merely feed a downstream cycle, which is an acceptable loss of
+            // oracle coverage in exchange for no false alarms.
+            let cone = self.graph.reachable(vec![position]);
+            if self.graph.topo_order(&cone).is_none() {
+                continue;
+            }
             let before = self.change_key(position);
             self.recompute_scope = Some(HashSet::from([position]));
             self.cells.remove(&position);
@@ -311,6 +348,10 @@ impl Model<'_> {
 
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         let write_seeds = std::mem::take(&mut self.write_seeds);
+        // Any leftover flag belongs to a pass that ended in a full rebuild of
+        // the array index; only footprint writes from this pass's frontier
+        // matter below.
+        self.wrote_array_cells = false;
         if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
@@ -378,6 +419,9 @@ impl Model<'_> {
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
         // Verify skips this: it is a performance fallback, not a correctness one.
+        if self.formula_count_stale {
+            self.recount_formula_cells();
+        }
         if self.should_fallback_fanout(affected.len()) {
             self.evaluate_full_untracked();
             return EvalPass::Full;
@@ -416,17 +460,11 @@ impl Model<'_> {
             }
             None => self.recompute_all(affected, &always_report),
         };
-        // A new dynamic array is not in `arrays` until we see it. If this pass
-        // created one, fall back to Full so spill dependents are not missed.
-        let arrays_before = self.graph.arrays.snapshot();
-        self.collect_array_cells();
-        if self
-            .graph
-            .arrays
-            .snapshot()
-            .into_iter()
-            .any(|p| !arrays_before.contains(&p))
-        {
+        // An evaluation write changed an array footprint: a spill landed, a
+        // CSE range filled, or an anchor stored #SPILL!. Fall back to Full so
+        // spill dependents are not missed and `collect_array_cells` rebuilds
+        // the index exactly.
+        if self.wrote_array_cells {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
