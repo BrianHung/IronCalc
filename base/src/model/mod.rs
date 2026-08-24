@@ -3758,7 +3758,12 @@ impl<'a> Model<'a> {
         if !self.can_clear_range(area)? {
             return Err("Cannot clear the range because it contains array formulas".to_string());
         }
-        let mut to_clear: Vec<(i32, i32)> = Vec::new();
+        // The spill of a dynamic array reached from the range goes away whole,
+        // but only the part of it inside the range was selected for clearing.
+        // The cells outside keep their style, so the spill is torn down with
+        // `cell_clear_contents` (which materializes an `EmptyCell` holding the
+        // style) instead of a removal, which would drop it.
+        let mut spill_to_clear: Vec<(i32, i32)> = Vec::new();
         {
             let worksheet = self.workbook.worksheet(area.sheet)?;
             for row in area.row..area.row + area.height {
@@ -3772,19 +3777,27 @@ impl<'a> Model<'a> {
                         let (width, height) = *r;
                         for r in row..row + height {
                             for c in column..column + width {
-                                to_clear.push((r, c));
+                                spill_to_clear.push((r, c));
                             }
                         }
                     }
-                    to_clear.push((row, column));
                 }
             }
         }
-        to_clear.sort_unstable();
-        to_clear.dedup();
+        spill_to_clear.sort_unstable();
+        spill_to_clear.dedup();
         let worksheet = self.workbook.worksheet_mut(area.sheet)?;
-        for (row, column) in to_clear {
-            let _ = worksheet.remove_cell(row, column);
+        // Cells in the range lose content and style alike. This runs before the
+        // spill teardown so a spill cell inside the range is cleared of its own
+        // style first and only inherits the row/column one.
+        for row in area.row..area.row + area.height {
+            for column in area.column..area.column + area.width {
+                let _ = worksheet.remove_cell(row, column);
+            }
+        }
+        for (row, column) in spill_to_clear {
+            // Errors are ignored: the cell may already be gone with the range.
+            let _ = worksheet.cell_clear_contents(row, column);
         }
         // Deleting the cells also removes their links. Each removal is
         // journaled: a stranded link can sit at a position with no cell, so
