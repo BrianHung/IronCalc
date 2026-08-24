@@ -345,6 +345,13 @@ pub(crate) struct DependencyGraph {
     /// Insert/delete can move data cells the dirty cone does not name. Cleared
     /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
     structural_unknown: bool,
+    /// The pass that just ran left values another full pass would still move: a
+    /// spill or CSE footprint changed after something had already read it. Full
+    /// mode heals that on its next unconditional pass, so incremental must run
+    /// a full pass then too, or the two modes drift apart by exactly one
+    /// evaluate. Survives [`Self::after_pass`]; the next pass consumes it
+    /// through [`Self::take_convergence_debt`].
+    convergence_debt: bool,
 }
 
 impl DependencyGraph {
@@ -484,6 +491,18 @@ impl DependencyGraph {
     /// Forces the next evaluation to be full and rebuild the graph.
     pub(crate) fn force_full(&mut self) {
         self.state = GraphState::MustRebuild;
+    }
+
+    /// Records that the pass that just ran is not a fixed point: another full
+    /// pass over the same state would still move values. See
+    /// [`Self::convergence_debt`].
+    pub(crate) fn note_convergence_debt(&mut self) {
+        self.convergence_debt = true;
+    }
+
+    /// Whether the previous pass left convergence debt, clearing the record.
+    pub(crate) fn take_convergence_debt(&mut self) -> bool {
+        std::mem::replace(&mut self.convergence_debt, false)
     }
 
     /// Whether the next evaluation must be full. True unless the graph is ready

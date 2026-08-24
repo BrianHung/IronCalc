@@ -545,6 +545,32 @@ pub fn snapshot(model: &Model<'_>) -> Snapshot {
     }
 }
 
+/// Whether `formula` mentions a volatile (non-sheet) input. Volatility in the
+/// engine is *observed*, not static: a volatile call that a short circuit never
+/// reaches is not an input of that formula. So this is only ever used to *skip*
+/// a check, never to demand one; see `ALWAYS_VOLATILE` for the other direction.
+pub fn is_volatile_formula(formula: &str) -> bool {
+    let upper = formula.to_uppercase();
+    ["RAND(", "RANDBETWEEN(", "RANDARRAY(", "NOW(", "TODAY("]
+        .iter()
+        .any(|name| upper.contains(name))
+}
+
+/// Zoo formulas whose volatile call is reached on every evaluation: no
+/// arguments that can error, no branch that can skip it, and no references, so
+/// a displacement leaves the text alone. A cell holding one of these must be
+/// re-run and reported on every incremental pass. The zoo keeps volatile
+/// *values* deterministic (the two models roll their own RNG and could never be
+/// compared otherwise), so this delta membership is the only observable trace
+/// that the always-dirty set is still firing.
+pub const ALWAYS_VOLATILE: &[&str] = &[
+    "=RAND()*0",
+    "=INT(RAND())",
+    "=RANDBETWEEN(1,1)",
+    "=TODAY()*0",
+    "=NOW()*0",
+];
+
 /// Composed aggregates fold in the same row-major scan order as a direct
 /// scan, so Incremental numbers are bit-identical to Full: any numeric
 /// difference is a divergence. (This was a 1e-9 relative tolerance while
@@ -828,12 +854,35 @@ impl Harness {
                         if self.visibility_edit && formula.to_uppercase().contains("SUBTOTAL") {
                             continue;
                         }
+                        // A volatile re-runs every pass and is reported whether
+                        // or not its value moved; that is the contract, not a
+                        // spurious report.
+                        if is_volatile_formula(&formula) {
+                            continue;
+                        }
                         return Err(Failure {
                             step: index,
                             kind: "delta-unsound".into(),
                             detail: format!(
                                 "cell {pos:?} formula={formula:?} is in the delta but did not change (value {after:?}); seeds={:?}",
                                 self.seeds
+                            ),
+                        });
+                    }
+                    // Liveness: an unconditional volatile re-runs on every
+                    // pass, so the incremental delta must name it every time.
+                    for (pos, key) in &incr.cells {
+                        let Some(formula) = &key.formula else {
+                            continue;
+                        };
+                        if !ALWAYS_VOLATILE.contains(&formula.as_str()) || delta.contains(pos) {
+                            continue;
+                        }
+                        return Err(Failure {
+                            step: index,
+                            kind: "volatile-not-reported".into(),
+                            detail: format!(
+                                "volatile cell {pos:?} formula={formula:?} was not reported; delta={delta:?}"
                             ),
                         });
                     }
@@ -1018,6 +1067,9 @@ impl Default for GenConfig {
         }
     }
 }
+
+/// One in this many seeds plants volatiles (see `Generator::volatiles`).
+pub const VOLATILE_SEED_EVERY: u64 = 5;
 
 pub const DATA_ROWS: i32 = 12;
 pub const DATA_COLS: i32 = 4; // A..D on Sheet1
@@ -1226,6 +1278,22 @@ pub const ZOO: &[&str] = &[
     "=TRUE",
     "=\"text\"",
     "=42",
+    // volatiles. Every one of these has a *deterministic value* on purpose:
+    // the two models roll their own RNG, so a live RAND could never be
+    // compared across them. What the fuzzer checks instead is that the
+    // incremental pass keeps reporting them; the ref-free, unconditional ones
+    // are listed in `ALWAYS_VOLATILE` and carry that check, the composed ones
+    // are here to put a volatile inside ranges, criteria and branches. Only
+    // one seed in `VOLATILE_SEED_EVERY` plants them.
+    "=RAND()*0",
+    "=INT(RAND())",
+    "=RANDBETWEEN(1,1)",
+    "=SUM(A1:A5)+RAND()*0",
+    "=IF(RAND()<2,SUM(B1:B6),0)",
+    "=COUNTIF(A1:A12,\">{N}\")+RANDBETWEEN(0,0)",
+    "=TODAY()*0",
+    "=NOW()*0",
+    "={F}+RANDBETWEEN(0,0)",
     // circular pair (placed as fixed cells too)
     "=G19+1",
     "=E20",
@@ -1309,6 +1377,11 @@ pub struct Generator {
     pub ops: Vec<Op>,
     /// Set once the shadow model panicked; generation stops there.
     pub panicked: bool,
+    /// Whether this seed plants volatile formulas. One volatile cell makes
+    /// every Full pass report `Everything` (a full re-rolls it), which would
+    /// wash out the delta coverage of the whole run, so only a slice of the
+    /// seeds carries them.
+    pub volatiles: bool,
 }
 
 impl Generator {
@@ -1319,6 +1392,7 @@ impl Generator {
             shadow: fresh(RecalcMode::Full),
             ops: Vec::new(),
             panicked: false,
+            volatiles: seed.is_multiple_of(VOLATILE_SEED_EVERY),
         }
     }
 
@@ -1367,6 +1441,9 @@ impl Generator {
     }
 
     fn template_allowed(&self, t: &str) -> bool {
+        if !self.volatiles && is_volatile_formula(t) {
+            return false;
+        }
         !self.cfg.avoid_formulas.iter().any(|a| t.contains(a))
     }
 

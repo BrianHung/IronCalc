@@ -797,3 +797,52 @@ fn test_column_move_right_two_updates_intermediate_refs_by_one() {
 
 // A  B  C  D  E  F  G   H  I  J   K   L   M   N   O   P   Q   R
 // 1  2  3  4  5  6  7   8  9  10  11  12  13  14  15  16  17  18
+
+/// A range whose two endpoints resolve to the same row but carry different
+/// absolute flags (`A$4:A4` written in row 4). Displacing it must keep each
+/// endpoint's flag on its own end: `A$5:A5`, never `A5:A$5`. Values are
+/// identical either way, so only the formula text sees the difference.
+#[test]
+fn test_insert_rows_keeps_mixed_absolute_flags_on_equal_rows() {
+    let mut model = new_empty_model();
+    model._set("A4", "7");
+    // A running total in B4: both endpoints resolve to row 4.
+    model
+        .set_user_input(0, 4, 2, "=SUM(A$4:A4)".to_string())
+        .unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("B4"), "7");
+
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+
+    assert_eq!(
+        model.get_localized_cell_content(0, 5, 2).unwrap(),
+        "=SUM(A$5:A5)"
+    );
+    assert_eq!(model._get_formula("B5"), "=SUM(A$5:A5)");
+    assert_eq!(model._get_text("B5"), "7");
+}
+
+/// The column twin: `$B2:B2` in column B, displaced by an inserted column.
+/// Both endpoints resolve to the same column, with different absolute flags.
+#[test]
+fn test_insert_columns_keeps_mixed_absolute_flags_on_equal_columns() {
+    let mut model = new_empty_model();
+    model._set("B2", "7");
+    model
+        .set_user_input(0, 2, 4, "=SUM($B2:B2)".to_string())
+        .unwrap();
+    model.evaluate();
+    assert_eq!(model._get_text("D2"), "7");
+
+    model.insert_columns(0, 1, 1).unwrap();
+    model.evaluate();
+
+    assert_eq!(
+        model.get_localized_cell_content(0, 2, 5).unwrap(),
+        "=SUM($C2:C2)"
+    );
+    assert_eq!(model._get_formula("E2"), "=SUM($C2:C2)");
+    assert_eq!(model._get_text("E2"), "7");
+}
