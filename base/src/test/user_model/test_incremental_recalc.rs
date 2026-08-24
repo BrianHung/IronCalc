@@ -4,7 +4,7 @@
 use crate::recalc::Input;
 use crate::test::util::{incremental_mode, new_empty_model};
 use crate::types::CellType;
-use crate::{ChangedSinceRead, UserModel};
+use crate::{ChangedSinceRead, RecalcMode, UserModel};
 
 fn reads_random(model: &crate::Model, p: (u32, i32, i32)) -> bool {
     model.graph.cell_reads(p, |i| matches!(i, Input::Random))
@@ -1836,5 +1836,51 @@ fn undo_redo_under_incremental_stays_incremental() {
     match model.model.take_changed_cells() {
         ChangedSinceRead::Everything => panic!("undo of a value edit must stay Incremental"),
         ChangedSinceRead::Cells(_) => {}
+    }
+}
+
+#[test]
+fn moving_a_column_with_a_cse_anchor_always_succeeds() {
+    // The column move rebuilds the moved column one cell at a time, and the
+    // rebuild writes the anchor of the CSE array before the placeholders of
+    // the rectangle it re-declares. That is an interim state of the move, not
+    // a user write, so the member guard has to stay suspended for it the way
+    // `move_cell` suspends it. Repeated because the rebuild used to follow
+    // `sheet_data` hash order, so only the orders that put the anchor first
+    // hit the guard -- about half the runs.
+    for _ in 0..10 {
+        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
+        model
+            .set_user_array_formula(0, 1, 5, 1, 2, "=B1:B2")
+            .unwrap();
+        model.move_columns_action(0, 5, 1, 2).unwrap();
+        model.evaluate();
+        assert_eq!(model._get_formula("G1"), "=B1:B2");
+    }
+}
+
+#[test]
+fn moving_a_column_with_a_cse_anchor_succeeds_under_incremental() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model
+        .set_user_array_formula(0, 1, 5, 1, 2, "=B1:B2")
+        .unwrap();
+    model.move_columns_action(0, 5, 1, 2).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_formula("G1"), "=B1:B2");
+}
+
+#[test]
+fn moving_a_row_with_a_cse_anchor_always_succeeds() {
+    // The same rebuild along the other axis: the anchor and the placeholders
+    // of a horizontal rectangle are written back one by one.
+    for _ in 0..10 {
+        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
+        model
+            .set_user_array_formula(0, 5, 1, 2, 1, "=A1:B1")
+            .unwrap();
+        model.move_rows_action(0, 5, 1, 2).unwrap();
+        model.evaluate();
+        assert_eq!(model._get_formula("A7"), "=A1:B1");
     }
 }
