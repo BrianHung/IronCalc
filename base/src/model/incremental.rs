@@ -359,6 +359,11 @@ impl Model<'_> {
         // pass behind, so this pass is full too. Consumed here, and set again
         // below if the full pass leaves debt of its own.
         let convergence_debt = self.graph.take_convergence_debt();
+        // Debt alone forces the pass full. When that pass also carries pending
+        // edits, the cell diff below cannot see them (a user write lands before
+        // evaluate, so it is already in the "before" snapshot), and a delta that
+        // silently drops the edit is worse than reporting Everything.
+        let debt_over_pending_edits = convergence_debt && !self.graph.should_recompute_full();
         if convergence_debt || self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
@@ -368,7 +373,8 @@ impl Model<'_> {
             // A redundant full with nothing pending keeps the delta, unless
             // RAND/NOW/TODAY are present: a full pass re-rolls those.
             // OFFSET does not re-roll and must not wipe the delta.
-            if self.graph.take_structural_unknown()
+            if debt_over_pending_edits
+                || self.graph.take_structural_unknown()
                 || self.graph.full_reflects_change()
                 || !self.graph.always_dirty_cells().is_empty()
             {
@@ -396,11 +402,6 @@ impl Model<'_> {
                     .collect();
                 if let ChangedCells::Delta(delta) = &mut self.changed_cells {
                     let mut seen = HashSet::new();
-                    // A pass forced full by convergence debt can still carry a
-                    // user edit. `_set` writes before evaluate, so the edited
-                    // cell never shows up in the diff below; report it as the
-                    // selective path would.
-                    delta.extend(write_seeds.iter().copied());
                     for (p, now) in after {
                         seen.insert(p);
                         if before.get(&p) != Some(&now) {
