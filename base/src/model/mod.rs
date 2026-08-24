@@ -288,6 +288,9 @@ pub struct Model<'a> {
     /// incremental pass that observes it falls back to Full, whose
     /// `collect_array_cells` rebuilds the array index exactly.
     pub(crate) wrote_array_cells: bool,
+    /// Set whenever an evaluation re-enters a cell that is already evaluating,
+    /// i.e. reports `#CIRC!`. Read (and reset) by the incremental scheduler.
+    pub(crate) saw_circular_reference: bool,
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
     pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
@@ -1657,6 +1660,11 @@ impl<'a> Model<'a> {
                 if let Some(state) = self.cells.get(&key) {
                     match state {
                         CellState::Evaluating => {
+                            // The incremental scheduler watches this: a cycle
+                            // the dependency graph did not already contain was
+                            // ordered wrong, and only a full pass reproduces
+                            // Full's `#CIRC!` placement.
+                            self.saw_circular_reference = true;
                             return CalcResult::new_error(
                                 Error::CIRC,
                                 cell_reference,
@@ -1950,6 +1958,7 @@ impl<'a> Model<'a> {
             formula_cell_count: 0,
             formula_count_stale: false,
             wrote_array_cells: false,
+            saw_circular_reference: false,
             cse_rects: None,
             cse_member_guard_suspended: false,
             read_stack: Vec::new(),

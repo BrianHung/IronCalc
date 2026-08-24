@@ -352,7 +352,14 @@ impl Model<'_> {
         // the array index; only footprint writes from this pass's frontier
         // matter below.
         self.wrote_array_cells = false;
-        if self.graph.should_recompute_full() {
+        // The previous pass was not a fixed point: a spill or CSE footprint
+        // moved after a reader had already read it, so its readers still hold
+        // the pre-spill value. Full mode heals that on its next unconditional
+        // pass; incremental would serve the stored values forever and land one
+        // pass behind, so this pass is full too. Consumed here, and set again
+        // below if the full pass leaves debt of its own.
+        let convergence_debt = self.graph.take_convergence_debt();
+        if convergence_debt || self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
             // (nothing below to shift) while still emptying cells; catch that
@@ -389,6 +396,11 @@ impl Model<'_> {
                     .collect();
                 if let ChangedCells::Delta(delta) = &mut self.changed_cells {
                     let mut seen = HashSet::new();
+                    // A pass forced full by convergence debt can still carry a
+                    // user edit. `_set` writes before evaluate, so the edited
+                    // cell never shows up in the diff below; report it as the
+                    // selective path would.
+                    delta.extend(write_seeds.iter().copied());
                     for (p, now) in after {
                         seen.insert(p);
                         if before.get(&p) != Some(&now) {
@@ -454,12 +466,25 @@ impl Model<'_> {
         // moved. A cycle in the affected set has no topological order, so fall
         // back to recomputing the whole set, where `evaluate_cell`'s recursion
         // still reports `#CIRC!`.
-        let changed = match self.graph.topo_order(&affected) {
-            Some(order) => {
-                self.recompute_frontier(affected, &seeds, &always_report, order, HashSet::new())
-            }
-            None => self.recompute_all(affected, &always_report),
+        self.saw_circular_reference = false;
+        let (changed, cycle_was_known) = match self.graph.topo_order(&affected) {
+            Some(order) => (
+                self.recompute_frontier(&affected, &seeds, &always_report, &order, HashSet::new()),
+                false,
+            ),
+            None => (self.recompute_all(&affected, &always_report), true),
         };
+        // A cycle the cone did not know about: the closing edge is only observed
+        // while the pass runs, so the ordering above was computed on a graph that
+        // did not have it and `#CIRC!` landed on a different member than Full's
+        // recursion picks. Full sees the cycle on this same pass, so redo the
+        // pass as full rather than land one evaluate behind. An already-known
+        // cycle went through `recompute_all`, which walks the cone in Full's own
+        // row-major order and places `#CIRC!` the same way.
+        if self.saw_circular_reference && !cycle_was_known {
+            self.evaluate_full_untracked();
+            return EvalPass::Full;
+        }
         // An evaluation write changed an array footprint: a spill landed, a
         // CSE range filled, or an anchor stored #SPILL!. Fall back to Full so
         // spill dependents are not missed and `collect_array_cells` rebuilds
@@ -517,10 +542,10 @@ impl Model<'_> {
     /// unscoped.
     fn recompute_frontier(
         &mut self,
-        affected: HashSet<Position>,
+        affected: &HashSet<Position>,
         must_run: &[Position],
         always_report: &[Position],
-        order: Vec<Position>,
+        order: &[Position],
         extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
         let before: HashMap<Position, Option<ChangeKey>> =
@@ -535,10 +560,10 @@ impl Model<'_> {
             .iter()
             .filter_map(|&p| self.cells.get(&p).cloned().map(|state| (p, state)))
             .collect();
-        for &position in &affected {
+        for &position in affected {
             self.cells.remove(&position);
         }
-        for position in order {
+        for &position in order {
             if !stale.contains(&position) {
                 continue;
             }
@@ -550,7 +575,7 @@ impl Model<'_> {
                 stale.extend(self.graph.dependents_of(position));
             }
         }
-        for &position in &affected {
+        for &position in affected {
             if let std::collections::hash_map::Entry::Vacant(entry) = self.cells.entry(position) {
                 if let Some(state) = saved.get(&position) {
                     entry.insert(state.clone());
@@ -560,7 +585,7 @@ impl Model<'_> {
         self.recompute_scope = None;
         // OFFSET/INDIRECT can recompute a helper via evaluate_cell before this
         // loop reaches it; that cell never entered `stale`.
-        for &position in &affected {
+        for &position in affected {
             if report.contains(&position) || self.change_key(position) != before[&position] {
                 changed.insert(position);
             }
@@ -572,7 +597,7 @@ impl Model<'_> {
     /// Returns `always_report` plus every other cell whose value moved.
     fn recompute_all(
         &mut self,
-        affected: HashSet<Position>,
+        affected: &HashSet<Position>,
         always_report: &[Position],
     ) -> Vec<Position> {
         let mut order: Vec<Position> = affected.iter().copied().collect();
@@ -582,7 +607,7 @@ impl Model<'_> {
         for &position in &order {
             self.invalidate(position);
         }
-        self.recompute_scope = Some(affected);
+        self.recompute_scope = Some(affected.clone());
         for &(sheet, row, column) in &order {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
@@ -592,6 +617,23 @@ impl Model<'_> {
             .into_iter()
             .filter(|p| report.contains(p) || self.change_key(*p) != before[p])
             .collect()
+    }
+
+    /// Whether `position` holds an array formula that has never been evaluated.
+    /// It is in the array index precisely because its extent is unknown, and it
+    /// has no pre-pass value to compare against: every first evaluation would
+    /// look like a mid-pass move.
+    fn is_unevaluated_array(&self, (sheet, row, column): Position) -> bool {
+        matches!(
+            self.workbook
+                .worksheet(sheet)
+                .ok()
+                .and_then(|ws| ws.cell(row, column)),
+            Some(Cell::ArrayFormula {
+                v: crate::types::FormulaValue::Unevaluated,
+                ..
+            })
+        )
     }
 
     /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
@@ -622,7 +664,22 @@ impl Model<'_> {
     /// matches a second Full-mode pass.
     fn evaluate_full_and_follow_up_new_arrays(&mut self) {
         let before = self.graph.arrays.snapshot();
+        // The array footprint's values entering the pass. Full's two phases are
+        // not a fixed point: a formula outside phase 1 can read a spill member
+        // before the anchor refills it (after a move, a delete, or a first
+        // spill), and only Full's next unconditional pass heals that reader.
+        let footprint_before: Vec<(Position, Option<ChangeKey>)> = before
+            .iter()
+            .filter(|&&p| !self.is_unevaluated_array(p))
+            .map(|&p| (p, self.change_key(p)))
+            .collect();
+        self.saw_circular_reference = false;
         self.evaluate_full();
+        // A cycle that runs through the array (a member read while its anchor is
+        // still evaluating) resolves against the member's pre-pass value, so a
+        // footprint that then moves leaves the reader holding the old one even
+        // when no edge records the read.
+        let circular = self.saw_circular_reference;
         let new: Vec<Position> = self
             .graph
             .arrays
@@ -632,6 +689,17 @@ impl Model<'_> {
             .collect();
         for p in new {
             self.graph.mark_dirty(p);
+        }
+        // A footprint cell that moved this pass and that something read this
+        // pass may have been read before it moved. The reads are exactly the
+        // edges the pass just recorded, so a dependent means a reader exists.
+        // Conservative by one pass at worst: if the reader in fact read after
+        // the write, the forced full pass moves nothing and clears the debt.
+        let debt = footprint_before.into_iter().any(|(p, was)| {
+            self.change_key(p) != was && (circular || !self.graph.dependents_of(p).is_empty())
+        });
+        if debt {
+            self.graph.note_convergence_debt();
         }
     }
 
