@@ -2481,3 +2481,59 @@ fn acyclic_cone_orders_a_scalar_anchor_by_edges_not_position() {
     }
     assert_eq!(full._get_text("A1"), "31");
 }
+
+/// Verify's liveness check asserts against the always-dirty set as it stood at
+/// pass start, because that is the set `evaluate_selective` seeds
+/// `always_report` from. A cell whose branch flips *into* `RAND()` records the
+/// input only while it evaluates, so it was never seeded; with `RAND()*0` its
+/// value does not move either, and the delta rightly leaves it out. Asserting
+/// against the post-pass set panicked on exactly this.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_allows_a_cell_that_becomes_volatile_mid_pass() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("D1", "-1");
+    model._set("A1", "=IF(D1>0,RAND()*0,0)");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    model._set("D1", "1");
+    model.evaluate();
+    assert!(reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "0");
+    // Steady state: from here A1 is in the pre-pass set on every pass, so the
+    // assertion binds and each pass has to report it.
+    for value in ["2", "3"] {
+        model._set("D1", value);
+        model.evaluate();
+        assert!(reads_random(&model, (0, 1, 1)));
+    }
+}
+
+/// The reverse transition keeps the assertion strong. `A1` is volatile entering
+/// the pass, so it is in the pre-pass set, seeds `always_report`, and has to be
+/// in the delta -- even though `RAND()*0` means its value never moved and the
+/// post-pass set no longer contains it. Asserting against the post-pass set
+/// would let a pass drop a volatile cell from its delta unnoticed.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("D1", "1");
+    model._set("A1", "=IF(D1>0,RAND()*0,0)");
+    model.evaluate();
+    assert!(reads_random(&model, (0, 1, 1)));
+    let _ = model.take_changed_cells();
+    model._set("D1", "-1");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "0");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => {}
+        ChangedSinceRead::Cells(cells) => assert!(
+            cells
+                .iter()
+                .any(|c| (c.sheet, c.row, c.column) == (0, 1, 1)),
+            "the pass that dropped A1's volatility did not report it"
+        ),
+    }
+}

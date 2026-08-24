@@ -171,6 +171,10 @@ impl Model<'_> {
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
         // Capture before evaluate: after_pass clears dirty.
         let seeds = self.graph.always_report_seeds();
+        // The pre-pass always-dirty set, which is the set `evaluate_selective`
+        // reads at pass start to seed `always_report`. Liveness is asserted
+        // against this one, not against the post-pass set: see below.
+        let always_dirty_before = self.graph.always_dirty_cells();
         let pass = self.evaluate_selective();
         let this_pass =
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
@@ -206,9 +210,20 @@ impl Model<'_> {
                 // whole cone, so a pass that silently stopped re-running the
                 // volatiles would read as clean everywhere else. Being
                 // reported on every pass is what is left to assert.
-                for position in self.graph.always_dirty_cells() {
+                //
+                // Against the PRE-pass set, because that is the set the pass
+                // seeded `always_report` from. A cell whose branch flips INTO
+                // `RAND()` on this pass records the input only as it evaluates:
+                // it joins the always-dirty set mid-pass, was never a seed, and
+                // if its value did not move the delta rightly leaves it out.
+                // It is asserted from the next pass on. The reverse transition
+                // is still asserted here -- a cell leaving volatility was in
+                // the pre-pass set, so it seeded `always_report` and must be
+                // reported on the pass that drops it -- and so is the steady
+                // state, where the two sets are the same.
+                for position in &always_dirty_before {
                     assert!(
-                        delta.contains(&position),
+                        delta.contains(position),
                         "always-dirty cell {position:?} was not reported"
                     );
                 }
