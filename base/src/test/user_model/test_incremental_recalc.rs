@@ -2342,3 +2342,142 @@ fn convergence_guard_leaves_plain_edits_selective() {
     }
     assert_eq!(model._get_text("C1"), "6");
 }
+
+/// A cycle the graph already knows about, closed through a dynamic-array anchor
+/// whose result is 1x1. The anchor spills nothing, so it is not in
+/// `graph.arrays` and the arrays→Full fallback does not fire; the cycle drops
+/// the pass into `recompute_all`. Full evaluates the anchor in phase 1, before
+/// everything else, so `#CIRC!` lands inside `B2`'s recursion and `A1` absorbs
+/// it. A one-phase row-major walk would enter at `A1` instead and settle on the
+/// other side of the cycle, for ever.
+#[test]
+fn incremental_places_circ_like_full_through_a_scalar_dynamic_anchor() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m._set("B2", "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    // A plain value edit: no structural op, no new formula, and the cycle is
+    // already an edge, so the pass stays selective and reaches `recompute_all`.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A1"), "101");
+    assert_eq!(full._get_text("B2"), "102");
+    assert_same_workbook(&full, &inc, "the known-cycle pass through the anchor");
+    // The divergence used to be permanent: once the two sides settled
+    // differently nothing ever brought them back.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "3");
+        m.evaluate();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// The mechanism in isolation: the same cycle, once through the anchor and once
+/// through a plain formula in the same cell. Both must match full, and the two
+/// must land on opposite sides of the cycle -- that difference *is* phase 1. If
+/// the anchor row ever stopped being walked first, the two rows below would
+/// agree and the test would fail on the inequality rather than on a divergence.
+#[test]
+fn phase_one_ordering_is_what_places_circ_through_an_anchor() {
+    let run = |mode, b2: &str| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m._set("B2", b2);
+        m.evaluate();
+        m._set("D1", "2");
+        m.evaluate();
+        (m._get_text("A1"), m._get_text("B2"))
+    };
+    let anchor = "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)";
+    let plain = "=IFERROR(A1,200)+1";
+    assert_eq!(
+        run(crate::RecalcMode::Full, anchor),
+        run(incremental_mode(), anchor)
+    );
+    assert_eq!(
+        run(crate::RecalcMode::Full, plain),
+        run(incremental_mode(), plain)
+    );
+    assert_ne!(
+        run(crate::RecalcMode::Full, anchor),
+        run(crate::RecalcMode::Full, plain),
+        "the anchor no longer evaluates ahead of the rest of the cone"
+    );
+}
+
+/// The CSE variant of the same shape. A CSE anchor is in `graph.arrays` whatever
+/// its size, so this one leaves through the arrays→Full fallback rather than
+/// through `recompute_all`'s ordering; either way the placement has to match.
+#[test]
+fn incremental_places_circ_like_full_through_a_cse_anchor() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m.set_user_array_formula(0, 2, 2, 1, 1, "=IFERROR(A1,200)+1")
+            .unwrap();
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the known-cycle pass through the CSE anchor");
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "3");
+        m.evaluate();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// The audit of the acyclic path: `recompute_frontier` orders by edges, not by
+/// position, so a scalar anchor's readers are already ordered after it and the
+/// phase-1 gap cannot bite -- there is no cycle for a walk order to break, and
+/// a dependency-respecting order is unique in what it produces. Here the anchor
+/// sits *below* its reader in row-major order, so a one-phase positional walk
+/// would be wrong and the topological one is right.
+#[test]
+fn acyclic_cone_orders_a_scalar_anchor_by_edges_not_position() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        // A1 (walked first, row-major) reads B9, the anchor (walked last).
+        m._set("A1", "=B9+1");
+        m._set("B9", "=SEQUENCE(1,1,D1*10,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    for value in ["2", "3"] {
+        for m in [&mut full, &mut inc] {
+            m._set("D1", value);
+            m.evaluate();
+        }
+        assert_same_workbook(&full, &inc, "an acyclic edit reaching a scalar anchor");
+    }
+    assert_eq!(full._get_text("A1"), "31");
+}

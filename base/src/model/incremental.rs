@@ -607,6 +607,17 @@ impl Model<'_> {
 
     /// Recomputes the whole affected set, used when a cycle prevents ordering.
     /// Returns `always_report` plus every other cell whose value moved.
+    ///
+    /// With no topological order the walk order is what decides which member of
+    /// a cycle `evaluate_cell`'s recursion enters first, and so where `#CIRC!`
+    /// lands. That has to be Full's order, and Full's order is two phases, not
+    /// one: `evaluate_full` runs `collect_spill_cells` (every
+    /// `Cell::ArrayFormula`, row-major) and evaluates those before walking the
+    /// rest of the workbook row-major. The cone is walked the same way: array
+    /// formulas first, then the rest, each row-major. Anything with a real
+    /// spill footprint took the arrays→Full fallback before reaching here, so
+    /// the only anchors left are scalar-result (1x1) ones; they write no
+    /// members, which is why phase 1's spill-order correction has nothing to do.
     fn recompute_all(
         &mut self,
         affected: &HashSet<Position>,
@@ -619,8 +630,12 @@ impl Model<'_> {
         for &position in &order {
             self.invalidate(position);
         }
+        let (mut walk, rest): (Vec<Position>, Vec<Position>) = order
+            .iter()
+            .partition(|&&position| self.is_array_formula(position));
+        walk.extend(rest);
         self.recompute_scope = Some(affected.clone());
-        for &(sheet, row, column) in &order {
+        for (sheet, row, column) in walk {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
         self.recompute_scope = None;
@@ -645,6 +660,19 @@ impl Model<'_> {
                 v: crate::types::FormulaValue::Unevaluated,
                 ..
             })
+        )
+    }
+
+    /// Whether `position` holds an array formula of either kind. This is
+    /// exactly `collect_spill_cells`'s phase-1 membership test, so that
+    /// `recompute_all` can reproduce the full pass's two-phase walk order.
+    fn is_array_formula(&self, (sheet, row, column): Position) -> bool {
+        matches!(
+            self.workbook
+                .worksheet(sheet)
+                .ok()
+                .and_then(|ws| ws.cell(row, column)),
+            Some(Cell::ArrayFormula { .. })
         )
     }
 
