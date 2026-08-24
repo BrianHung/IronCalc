@@ -2537,3 +2537,62 @@ fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
         ),
     }
 }
+
+/// The other ways a cell leaves the always-dirty set: overwritten by a value,
+/// overwritten by a non-volatile formula, and cleared outright. Each one shrinks
+/// the set during the pass, so the pre-pass snapshot is what the liveness
+/// assertion has to hold the pass to, and the passes after it must stay quiet.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_survives_every_way_a_volatile_disappears() {
+    let clear_a1 = |model: &mut crate::Model| {
+        model
+            .range_clear_contents(&crate::expressions::types::Area {
+                sheet: 0,
+                row: 1,
+                column: 1,
+                width: 1,
+                height: 1,
+            })
+            .unwrap();
+    };
+    // Overwritten by a plain value.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=RAND()*0");
+    model._set("A2", "=A1+1");
+    model.evaluate();
+    model._set("A1", "5");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A2"), "6");
+
+    // Overwritten by a non-volatile formula.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=RANDBETWEEN(1,1)");
+    model.evaluate();
+    model._set("A1", "=1+1");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "2");
+
+    // Cleared outright.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=NOW()*0");
+    model.evaluate();
+    clear_a1(&mut model);
+    model.evaluate();
+
+    // And a couple of ordinary selective passes after each transition, which is
+    // where a stale snapshot would surface.
+    for _ in 0..2 {
+        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+        model._set("A1", "=RAND()*0");
+        model.evaluate();
+        model._set("A1", "5");
+        model.evaluate();
+        for value in ["1", "2"] {
+            model._set("C3", value);
+            model.evaluate();
+        }
+    }
+}

@@ -723,6 +723,9 @@ impl Model<'_> {
         // not a fixed point: a formula outside phase 1 can read a spill member
         // before the anchor refills it (after a move, a delete, or a first
         // spill), and only Full's next unconditional pass heals that reader.
+        // This is a snapshot taken across `evaluate_full`, not a lazy view: the
+        // comparison below is against the values as they were before the pass,
+        // so the iterator cannot be fused into it.
         let footprint_before: Vec<(Position, Option<ChangeKey>)> = before
             .iter()
             .filter(|&&p| !self.is_unevaluated_array(p))
@@ -750,8 +753,8 @@ impl Model<'_> {
         // edges the pass just recorded, so a dependent means a reader exists.
         // Conservative by one pass at worst: if the reader in fact read after
         // the write, the forced full pass moves nothing and clears the debt.
-        let debt = footprint_before.into_iter().any(|(p, was)| {
-            self.change_key(p) != was && (circular || !self.graph.dependents_of(p).is_empty())
+        let debt = footprint_before.iter().any(|(p, was)| {
+            self.change_key(*p) != *was && (circular || !self.graph.dependents_of(*p).is_empty())
         });
         if debt {
             self.graph.note_convergence_debt();
