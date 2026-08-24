@@ -1077,6 +1077,14 @@ impl Default for GenConfig {
 /// One in this many seeds plants volatiles (see `Generator::volatiles`).
 pub const VOLATILE_SEED_EVERY: u64 = 5;
 
+/// Whether `seed` is one of the volatile-planting seeds. The delta-coverage
+/// floor has to know: a planted volatile re-rolls on every pass, so those runs
+/// sit near all-`Everything` by construction and measure the planting rate
+/// rather than incremental coverage.
+pub fn seed_plants_volatiles(seed: u64) -> bool {
+    seed.is_multiple_of(VOLATILE_SEED_EVERY)
+}
+
 pub const DATA_ROWS: i32 = 12;
 pub const DATA_COLS: i32 = 4; // A..D on Sheet1
 pub const FORMULA_COL_FIRST: i32 = 5; // E
@@ -1398,7 +1406,7 @@ impl Generator {
             shadow: fresh(RecalcMode::Full),
             ops: Vec::new(),
             panicked: false,
-            volatiles: seed.is_multiple_of(VOLATILE_SEED_EVERY),
+            volatiles: seed_plants_volatiles(seed),
         }
     }
 
