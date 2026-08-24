@@ -277,6 +277,13 @@ impl ArrayCells {
         self.0 .0.clone()
     }
 
+    /// Adds one position. Journal draining indexes newly written array and
+    /// spill cells here; a stale extra entry only forces a conservative Full
+    /// fallback, and the next full pass rebuilds the set exactly.
+    pub(crate) fn insert(&mut self, cell: Position) {
+        self.0 .0.insert(cell);
+    }
+
     fn replace(&mut self, cells: HashSet<Position>) {
         self.0.replace(cells);
     }

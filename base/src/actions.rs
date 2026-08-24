@@ -423,18 +423,46 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// The write half of [`Model::move_cell`].
+    ///
+    /// An array formula rewrites its whole range. A plain formula is written
+    /// graph-neutrally, rather than through `set_user_input` which forces a
+    /// full recompute, so the structural edit's edge shift can keep the next
+    /// pass incremental. A value goes through the normal input path.
+    fn move_cell_write(
+        &mut self,
+        sheet: u32,
+        target_row: i32,
+        target_column: i32,
+        array: Option<(i32, i32)>,
+        formula_or_value: &str,
+    ) -> Result<(), String> {
+        if let Some((width, height)) = array {
+            self.set_user_array_formula(
+                sheet,
+                target_row,
+                target_column,
+                width,
+                height,
+                formula_or_value,
+            )?;
+        } else if let Some(formula) = formula_or_value.strip_prefix('=') {
+            self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
+        } else {
+            self.set_user_input(
+                sheet,
+                target_row,
+                target_column,
+                formula_or_value.to_string(),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Moves the contents of cell (source_row, source_column) to (target_row, target_column).
     ///
     /// It assumes that the caller has already checked that the move is valid
     /// (e.g. it does not split an array formula). And that dynamic array spills have been reset.
-    ///
-    /// # Arguments
-    ///
-    /// * `sheet` - The sheet number to retrieve columns from.
-    /// * `source_row` - The row index of the cell's current location.
-    /// * `source_column` - The column index of the cell's current location.
-    /// * `target_row` - The row index of the cell's new location.
-    /// * `target_column` - The column index of the cell's new location.
     fn move_cell(
         &mut self,
         sheet: u32,
@@ -500,29 +528,15 @@ impl<'a> Model<'a> {
                 )
             });
 
-        if let Some((width, height)) = array {
-            // We are moving an array formula, we need to move the whole range
-            self.set_user_array_formula(
-                sheet,
-                target_row,
-                target_column,
-                width,
-                height,
-                &formula_or_value,
-            )?;
-        } else if let Some(formula) = formula_or_value.strip_prefix('=') {
-            // Relocating a formula only moves it; its references are shifted by
-            // the surrounding displacement. Write it graph-neutrally (rather than
-            // through `set_user_input`, which forces a full recompute for any
-            // formula) so the structural edit's edge shift can keep the next pass
-            // incremental. The source style is re-applied below, so the cell is
-            // otherwise identical. The rewritten formula holds no cached value, so
-            // mark it dirty at the pre-shift position; the later shift moves that
-            // mark to the target, ensuring the incremental pass evaluates it.
-            self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
-        } else {
-            self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
-        }
+        // Interim states of a structural edit legitimately write into positions
+        // the member guard would refuse for a user: the anchor relocates into
+        // its own former rectangle, and refilled placeholders are re-shifted by
+        // later rows. The guard is for user writes; suspend it for the move.
+        self.cse_member_guard_suspended = true;
+        let moved =
+            self.move_cell_write(sheet, target_row, target_column, array, &formula_or_value);
+        self.cse_member_guard_suspended = false;
+        moved?;
 
         let worksheet = self.workbook.worksheet_mut(sheet)?;
         // copy style
@@ -539,6 +553,11 @@ impl<'a> Model<'a> {
     /// recompute. The match is exhaustive so a new `DisplaceData` variant cannot
     /// silently skip graph maintenance.
     fn record_structural_edit(&mut self, disp: &DisplaceData) {
+        // Inserted or deleted rows and columns add or remove formula cells
+        // without cell writes; recount before the next fanout decision. CSE
+        // rectangles move with their anchors, so the memo is stale too.
+        self.formula_count_stale = true;
+        self.cse_rects = None;
         let (sheet, axis, boundary, delta) = match *disp {
             DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
             DisplaceData::Column {

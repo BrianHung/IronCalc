@@ -45,10 +45,11 @@ fn b3_cse_range_cell_guard() {
         x.evaluate();
         x.delete_columns(0, 7, 1).unwrap();
         // A reader over the displaced CSE area must agree across modes even
-        // though the delete dropped a member cell.
-        x.set_user_input(0, 5, 7, "=IFERROR(G6,-1)".to_string())
+        // though the delete dropped a member cell. The reader sits outside the
+        // rectangle: writing inside it is rejected (review_cse_member_writes).
+        x.set_user_input(0, 5, 8, "=IFERROR(G5,-1)".to_string())
             .unwrap();
-        v(&x, "Sheet1!G5")
+        v(&x, "Sheet1!H5")
     };
     let (f, i) = (run(RecalcMode::Full), run(RecalcMode::Incremental));
     println!("B3 G5: full={f} incr={i}");
@@ -128,4 +129,38 @@ fn b5_growing_dynamic_anchor_spills() {
     // And back: the spill retracts.
     both(&[(1, 1, "1")], &mut inc, &mut full);
     assert_eq!(v(&inc, "Sheet1!F1"), "Number(5.0)");
+}
+
+// B6: the cost of an incremental pass must depend on the cone, not on the
+// total number of cells in the workbook. A whole-workbook walk per pass
+// (the old post-pass collect_array_cells) makes this ratio grow with size.
+#[test]
+fn b6_pass_cost_is_independent_of_workbook_size() {
+    let cost = |unrelated: i32| -> u128 {
+        let mut x = m(RecalcMode::Incremental);
+        // A 200-cell chain in column A: the cone for an A1 edit.
+        x.set_user_input(0, 1, 1, "1".to_string()).unwrap();
+        for r in 2..=200 {
+            x.set_user_input(0, r, 1, format!("=A{}+1", r - 1)).unwrap();
+        }
+        // Unrelated formulas, far away, never in the cone.
+        for i in 0..unrelated {
+            x.set_user_input(0, 1000 + i / 20, 10 + i % 20, "=1+0".to_string())
+                .unwrap();
+        }
+        x.evaluate();
+        let t = Instant::now();
+        for i in 0..300 {
+            x.set_user_input(0, 1, 1, format!("{}", i % 97)).unwrap();
+            x.evaluate();
+        }
+        t.elapsed().as_micros()
+    };
+    let small = cost(2_000).max(1);
+    let large = cost(32_000);
+    println!("B6 300 passes, 200-cone: 2k cells {small}us, 32k cells {large}us");
+    assert!(
+        large < small * 3 + 200_000,
+        "pass cost grows with workbook size: 2k={small}us 32k={large}us"
+    );
 }

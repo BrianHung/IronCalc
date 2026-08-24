@@ -99,6 +99,9 @@ pub(crate) enum CellStructure {
     },
 }
 
+/// A CSE array rectangle: `(sheet, row, column, width, height)`.
+type CseRect = (u32, i32, i32, i32, i32);
+
 /// A cell might be evaluated or being evaluated
 #[derive(Clone)]
 pub(crate) enum CellState {
@@ -265,15 +268,34 @@ pub struct Model<'a> {
     /// When `Some`, `evaluate_cell` only recomputes cells in this set and returns
     /// the stored value for any cell outside it. Drives the incremental pass.
     pub(crate) recompute_scope: Option<HashSet<Position>>,
-    /// Number of formula cells at the last full pass. An incremental pass whose
-    /// affected set approaches this recomputes about as much as a full pass but
-    /// with extra bookkeeping, so it falls back to full instead.
+    /// Number of formula cells at the last full pass, maintained by the journal
+    /// between passes. An incremental pass whose affected set approaches this
+    /// recomputes about as much as a full pass but with extra bookkeeping, so it
+    /// falls back to full instead.
     pub(crate) formula_cell_count: usize,
     /// Memoized range reductions for the current pass, keyed by range and reducer.
     pub(crate) range_reduce_cache: RangeReduceCache,
     /// Bumped at the start of every `evaluate_full` restart and `evaluate_selective`.
     /// Range-reduce cache entries from another generation are ignored.
     pub(crate) pass_generation: u64,
+    /// Set by a structural edit: rows or columns of formula cells appeared or
+    /// vanished without cell writes, so `formula_cell_count` must be recounted
+    /// before the next fanout decision.
+    pub(crate) formula_count_stale: bool,
+    /// Lazily built list of CSE array rectangles `(sheet, row, column, width,
+    /// height)`, used to reject writes into a member position even when a
+    /// structural edit dropped the member cell itself. `None` means stale;
+    /// structural edits, sheet changes, and CSE anchor writes reset it.
+    pub(crate) cse_rects: Option<Vec<CseRect>>,
+    /// True while `move_cell` relocates cells through the user entry points
+    /// during a structural edit; the member guard applies to user writes, not
+    /// to the edit's own interim states.
+    pub(crate) cse_member_guard_suspended: bool,
+    /// Set when an evaluation write changes an array footprint: a spill was
+    /// written, a CSE range filled, or a dynamic anchor stored `#SPILL!`. The
+    /// incremental pass that observes it falls back to Full, whose
+    /// `collect_array_cells` rebuilds the array index exactly.
+    pub(crate) wrote_array_cells: bool,
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
     pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
@@ -1076,6 +1098,12 @@ impl<'a> Model<'a> {
                             }
                         }
                     }
+                    if array_width != 1 || array_height != 1 {
+                        // Spill cells are about to be written: the array
+                        // footprint changed, and the array index only rebuilds
+                        // on a full pass.
+                        self.wrote_array_cells = true;
+                    }
                     let worksheet = &mut self.workbook.worksheets[sheet as usize];
                     // Dynamic formula: spill the array into adjacent cells.
                     // Cells are created on demand via update_cell since they may not exist yet.
@@ -1148,6 +1176,7 @@ impl<'a> Model<'a> {
                         }
                     }
                     // All cells (anchor + spills) have been written above.
+                    self.wrote_array_cells = true;
                     return Ok(());
                 }
                 None => {
@@ -1240,6 +1269,18 @@ impl<'a> Model<'a> {
                 } else {
                     (ArrayKind::Cse, (width, height))
                 };
+                if matches!(
+                    formula_value,
+                    FormulaValue::Error {
+                        ei: Error::SPILL,
+                        ..
+                    }
+                ) {
+                    // A blocked anchor belongs in the array index (full-mode
+                    // same-pass readers see the live array, not the stored
+                    // error), and the index only rebuilds on a full pass.
+                    self.wrote_array_cells = true;
+                }
                 Cell::ArrayFormula {
                     f: formula,
                     s,
@@ -1922,6 +1963,10 @@ impl<'a> Model<'a> {
             formula_cell_count: 0,
             range_reduce_cache: HashMap::new(),
             pass_generation: 0,
+            formula_count_stale: false,
+            wrote_array_cells: false,
+            cse_rects: None,
+            cse_member_guard_suspended: false,
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
@@ -2533,7 +2578,16 @@ impl<'a> Model<'a> {
     ) -> Result<(), String> {
         match self.get_cell_structure(sheet, row, column)? {
             CellStructure::SingleCell => {
-                // noop
+                // A structural edit can drop a CSE member cell while the
+                // anchor still owns and refills its rectangle; the position is
+                // still part of the array, and writing there would be silently
+                // undone by the next evaluation.
+                if !self.cse_member_guard_suspended && self.covered_by_cse_rect(sheet, row, column)
+                {
+                    return Err(
+                        "Cannot write in a cell that is part of an array formula".to_string()
+                    );
+                }
             }
             CellStructure::ArrayFormula { range } => {
                 // We cannot write in a cell that is part of an array formula
@@ -2755,6 +2809,9 @@ impl<'a> Model<'a> {
         value: &str,
     ) -> Result<(), String> {
         self.prepare_cell_for_user_input(sheet, row, column)?;
+        // A new CSE rectangle may be about to exist; rebuild the memo on the
+        // next membership query rather than waiting for the journal drain.
+        self.cse_rects = None;
         // If value starts with "'" then we force the style to be quote_prefix
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         if value.strip_prefix('\'').is_none() {
@@ -3215,13 +3272,12 @@ impl<'a> Model<'a> {
                 let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
                 sorted_cols.sort_unstable();
                 for col in &sorted_cols {
-                    if matches!(
-                        &row_data[col],
-                        Cell::ArrayFormula {
-                            kind: ArrayKind::Dynamic,
-                            ..
-                        }
-                    ) {
+                    // CSE anchors are phase-1 too: a freshly set anchor has
+                    // placeholder members, and a reader of a member must not
+                    // evaluate before the anchor fills its rectangle, or the
+                    // first pass stores a stale read that only a second full
+                    // pass would heal.
+                    if matches!(&row_data[col], Cell::ArrayFormula { .. }) {
                         spill_cells.push(CellReferenceIndex {
                             sheet: sheet_index as u32,
                             row: *row,
@@ -3326,6 +3382,8 @@ impl<'a> Model<'a> {
                 writes.push((sheet, write));
             }
         }
+        let mut first_was: std::collections::HashMap<Position, bool> =
+            std::collections::HashMap::new();
         for (sheet, write) in writes {
             match write {
                 crate::recalc::Write::Cell {
@@ -3334,6 +3392,9 @@ impl<'a> Model<'a> {
                     is_formula,
                 } => {
                     let p = (sheet, row, column);
+                    // The first write of a batch carries the pre-batch
+                    // formula-ness; the cell itself carries the final state.
+                    first_was.entry(p).or_insert(was_formula);
                     if was_formula {
                         self.graph.remove_dependent(p);
                     }
@@ -3372,6 +3433,43 @@ impl<'a> Model<'a> {
                 }
             }
         }
+        // Account journaled writes against the formula count and the array
+        // index, so incremental passes need no whole-workbook walk. The cell
+        // holds the batch's final state; `first_was` its pre-batch formula-ness.
+        // A formula that stopped existing leaves a stale array-index entry,
+        // which at worst forces a conservative Full fallback that rebuilds the
+        // index exactly.
+        for ((sheet, row, column), was_formula) in first_was {
+            let cell = self
+                .workbook
+                .worksheet(sheet)
+                .ok()
+                .and_then(|ws| ws.cell(row, column));
+            let is_formula_now = cell.map(|c| c.get_formula().is_some()).unwrap_or(false);
+            let mut footprint = Vec::new();
+            if let Some(cell) = cell {
+                if matches!(
+                    cell,
+                    Cell::ArrayFormula {
+                        kind: ArrayKind::Cse,
+                        ..
+                    }
+                ) {
+                    self.cse_rects = None;
+                }
+                incremental::array_footprint(cell, sheet, row, column, &mut |p| footprint.push(p));
+            }
+            match (was_formula, is_formula_now) {
+                (false, true) => self.formula_cell_count += 1,
+                (true, false) => {
+                    self.formula_cell_count = self.formula_cell_count.saturating_sub(1)
+                }
+                _ => {}
+            }
+            for p in footprint {
+                self.graph.arrays.insert(p);
+            }
+        }
     }
 
     /// Chooses the recalculation strategy for the model's lifetime. See
@@ -3387,6 +3485,66 @@ impl<'a> Model<'a> {
     /// Non-cell invalidation: locale, timezone, or a full reparse.
     pub(crate) fn invalidate_graph(&mut self) {
         self.graph.force_full();
+        self.cse_rects = None;
+    }
+
+    /// Whether `(row, column)` lies inside some CSE array's declared rectangle
+    /// on `sheet`, excluding the anchor itself. Builds the rectangle list on
+    /// demand; anchors are few, so the covering test is a short linear scan.
+    /// A hit is validated against the live anchor cell: an anchor can be
+    /// deleted without an invalidation in between (a paste that covers the
+    /// whole array), in which case the memo rebuilds once and the test
+    /// re-runs.
+    fn covered_by_cse_rect(&mut self, sheet: u32, row: i32, column: i32) -> bool {
+        for _attempt in 0..2 {
+            if self.cse_rects.is_none() {
+                let mut rects = Vec::new();
+                for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
+                    for (r, row_data) in &worksheet.sheet_data {
+                        for (c, cell) in row_data {
+                            if let Cell::ArrayFormula {
+                                kind: ArrayKind::Cse,
+                                r: (width, height),
+                                ..
+                            } = cell
+                            {
+                                rects.push((sheet_index as u32, *r, *c, *width, *height));
+                            }
+                        }
+                    }
+                }
+                self.cse_rects = Some(rects);
+            }
+            let hit = self.cse_rects.as_ref().and_then(|rects| {
+                rects.iter().copied().find(|&(s, r, c, w, h)| {
+                    s == sheet
+                        && row >= r
+                        && row < r + h
+                        && column >= c
+                        && column < c + w
+                        && !(row == r && column == c)
+                })
+            });
+            let Some((s, r, c, w, h)) = hit else {
+                return false;
+            };
+            let anchor_live = matches!(
+                self.workbook
+                    .worksheet(s)
+                    .ok()
+                    .and_then(|ws| ws.cell(r, c)),
+                Some(Cell::ArrayFormula {
+                    kind: ArrayKind::Cse,
+                    r: (width, height),
+                    ..
+                }) if (*width, *height) == (w, h)
+            );
+            if anchor_live {
+                return true;
+            }
+            self.cse_rects = None;
+        }
+        false
     }
 
     /// Recomputes every cell with the two-phase algorithm that handles dynamic

@@ -77,6 +77,9 @@ pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
 #[doc(hidden)]
+// Public only because `Worksheet::write_log` is a public field; the type is
+// an implementation detail of incremental recalculation, not API.
+#[doc(hidden)]
 pub use recalc::WriteLog;
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
