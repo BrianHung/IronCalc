@@ -171,6 +171,10 @@ impl Model<'_> {
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
         // Capture before evaluate: after_pass clears dirty.
         let seeds = self.graph.always_report_seeds();
+        // The pre-pass always-dirty set, which is the set `evaluate_selective`
+        // reads at pass start to seed `always_report`. Liveness is asserted
+        // against this one, not against the post-pass set: see below.
+        let always_dirty_before = self.graph.always_dirty_cells();
         let pass = self.evaluate_selective();
         let this_pass =
             std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
@@ -206,9 +210,20 @@ impl Model<'_> {
                 // whole cone, so a pass that silently stopped re-running the
                 // volatiles would read as clean everywhere else. Being
                 // reported on every pass is what is left to assert.
-                for position in self.graph.always_dirty_cells() {
+                //
+                // Against the PRE-pass set, because that is the set the pass
+                // seeded `always_report` from. A cell whose branch flips INTO
+                // `RAND()` on this pass records the input only as it evaluates:
+                // it joins the always-dirty set mid-pass, was never a seed, and
+                // if its value did not move the delta rightly leaves it out.
+                // It is asserted from the next pass on. The reverse transition
+                // is still asserted here -- a cell leaving volatility was in
+                // the pre-pass set, so it seeded `always_report` and must be
+                // reported on the pass that drops it -- and so is the steady
+                // state, where the two sets are the same.
+                for position in &always_dirty_before {
                     assert!(
-                        delta.contains(&position),
+                        delta.contains(position),
                         "always-dirty cell {position:?} was not reported"
                     );
                 }
@@ -608,6 +623,17 @@ impl Model<'_> {
 
     /// Recomputes the whole affected set, used when a cycle prevents ordering.
     /// Returns `always_report` plus every other cell whose value moved.
+    ///
+    /// With no topological order the walk order is what decides which member of
+    /// a cycle `evaluate_cell`'s recursion enters first, and so where `#CIRC!`
+    /// lands. That has to be Full's order, and Full's order is two phases, not
+    /// one: `evaluate_full` runs `collect_spill_cells` (every
+    /// `Cell::ArrayFormula`, row-major) and evaluates those before walking the
+    /// rest of the workbook row-major. The cone is walked the same way: array
+    /// formulas first, then the rest, each row-major. Anything with a real
+    /// spill footprint took the arrays→Full fallback before reaching here, so
+    /// the only anchors left are scalar-result (1x1) ones; they write no
+    /// members, which is why phase 1's spill-order correction has nothing to do.
     fn recompute_all(
         &mut self,
         affected: &HashSet<Position>,
@@ -620,8 +646,12 @@ impl Model<'_> {
         for &position in &order {
             self.invalidate(position);
         }
+        let (mut walk, rest): (Vec<Position>, Vec<Position>) = order
+            .iter()
+            .partition(|&&position| self.is_array_formula(position));
+        walk.extend(rest);
         self.recompute_scope = Some(affected.clone());
-        for &(sheet, row, column) in &order {
+        for (sheet, row, column) in walk {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
         self.recompute_scope = None;
@@ -646,6 +676,19 @@ impl Model<'_> {
                 v: crate::types::FormulaValue::Unevaluated,
                 ..
             })
+        )
+    }
+
+    /// Whether `position` holds an array formula of either kind. This is
+    /// exactly `collect_spill_cells`'s phase-1 membership test, so that
+    /// `recompute_all` can reproduce the full pass's two-phase walk order.
+    fn is_array_formula(&self, (sheet, row, column): Position) -> bool {
+        matches!(
+            self.workbook
+                .worksheet(sheet)
+                .ok()
+                .and_then(|ws| ws.cell(row, column)),
+            Some(Cell::ArrayFormula { .. })
         )
     }
 
@@ -681,6 +724,9 @@ impl Model<'_> {
         // not a fixed point: a formula outside phase 1 can read a spill member
         // before the anchor refills it (after a move, a delete, or a first
         // spill), and only Full's next unconditional pass heals that reader.
+        // This is a snapshot taken across `evaluate_full`, not a lazy view: the
+        // comparison below is against the values as they were before the pass,
+        // so the iterator cannot be fused into it.
         let footprint_before: Vec<(Position, Option<ChangeKey>)> = before
             .iter()
             .filter(|&&p| !self.is_unevaluated_array(p))
@@ -708,8 +754,8 @@ impl Model<'_> {
         // edges the pass just recorded, so a dependent means a reader exists.
         // Conservative by one pass at worst: if the reader in fact read after
         // the write, the forced full pass moves nothing and clears the debt.
-        let debt = footprint_before.into_iter().any(|(p, was)| {
-            self.change_key(p) != was && (circular || !self.graph.dependents_of(p).is_empty())
+        let debt = footprint_before.iter().any(|(p, was)| {
+            self.change_key(*p) != *was && (circular || !self.graph.dependents_of(*p).is_empty())
         });
         if debt {
             self.graph.note_convergence_debt();

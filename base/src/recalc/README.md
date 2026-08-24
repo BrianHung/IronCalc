@@ -50,7 +50,7 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - Row or column moves. Inserts and deletes stay incremental; the graph shifts positions and edges in place.
 - A dynamic array or spill anchor is among the affected cells. Spills need the full pass's two-phase ordering.
 - The edit reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one, and Verify disables it.
-- The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is ordered by position instead, which is the order the full pass walks in.
+- The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is ordered by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, so `#CIRC!` lands on the same member.
 - The previous pass left convergence debt (see below).
 
 ## Convergence debt
