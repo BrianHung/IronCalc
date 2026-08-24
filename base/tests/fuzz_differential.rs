@@ -43,6 +43,13 @@ fn differential_full_vs_incremental() {
 
     let mut findings: BTreeMap<String, (u64, Failure, Vec<Op>)> = BTreeMap::new();
     let mut total = Stats::default();
+    // The delta-coverage floor is computed over the seeds that plant no
+    // volatiles. A planted volatile re-rolls on every pass, so a volatile seed's
+    // passes report `Everything` by construction; folding them into the
+    // denominator measures `VOLATILE_SEED_EVERY` rather than incremental
+    // coverage, and at enough seeds it drives the ratio under the floor on its
+    // own (40 seeds x 40 steps landed at 662/1384).
+    let mut floor = Stats::default();
     let mut failing_seeds = Vec::new();
     for seed in start..start + seeds {
         let cfg = GenConfig {
@@ -62,6 +69,10 @@ fn differential_full_vs_incremental() {
                 total.everything_deltas += stats.everything_deltas;
                 total.ops_applied += stats.ops_applied;
                 total.ops_rejected += stats.ops_rejected;
+                if !seed_plants_volatiles(seed) {
+                    floor.evaluates += stats.evaluates;
+                    floor.cells_deltas += stats.cells_deltas;
+                }
             }
             Err(f) => {
                 failing_seeds.push(seed);
@@ -90,7 +101,7 @@ fn differential_full_vs_incremental() {
         }
     }
     let summary = format!(
-        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} cells_deltas={} everything_deltas={} ops_applied={} ops_rejected={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?} verify={check_verify}",
+        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} cells_deltas={} everything_deltas={} ops_applied={} ops_rejected={} non_volatile_evaluates={} non_volatile_cells_deltas={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?} verify={check_verify}",
         start,
         start + seeds - 1,
         total.evaluates,
@@ -98,6 +109,8 @@ fn differential_full_vs_incremental() {
         total.everything_deltas,
         total.ops_applied,
         total.ops_rejected,
+        floor.evaluates,
+        floor.cells_deltas,
         failing_seeds
     );
     eprintln!("\n{summary}");
@@ -125,11 +138,12 @@ fn differential_full_vs_incremental() {
     // A statistical guard, not a correctness one: short smoke runs (the 8x40
     // default, or a single structural-heavy seed) legitimately sit near 50%
     // because structural edits force Full passes, so only enforce the floor
-    // on a sample large enough for the ratio to mean something.
-    if total.evaluates >= 1000 && total.cells_deltas < total.evaluates / 2 {
+    // on a sample large enough for the ratio to mean something. Volatile seeds
+    // are out of the sample entirely; see `floor` above.
+    if floor.evaluates >= 1000 && floor.cells_deltas < floor.evaluates / 2 {
         panic!(
-            "fuzz Incremental coverage collapsed: cells_deltas={} of evaluates={} (need at least half Incremental)",
-            total.cells_deltas, total.evaluates
+            "fuzz Incremental coverage collapsed: cells_deltas={} of evaluates={} on the non-volatile seeds (need at least half Incremental)",
+            floor.cells_deltas, floor.evaluates
         );
     }
 }

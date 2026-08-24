@@ -2386,3 +2386,257 @@ fn convergence_guard_leaves_plain_edits_selective() {
     }
     assert_eq!(model._get_text("C1"), "6");
 }
+
+/// A cycle the graph already knows about, closed through a dynamic-array anchor
+/// whose result is 1x1. The anchor spills nothing, so it is not in
+/// `graph.arrays` and the arrays→Full fallback does not fire; the cycle drops
+/// the pass into `recompute_all`. Full evaluates the anchor in phase 1, before
+/// everything else, so `#CIRC!` lands inside `B2`'s recursion and `A1` absorbs
+/// it. A one-phase row-major walk would enter at `A1` instead and settle on the
+/// other side of the cycle, for ever.
+#[test]
+fn incremental_places_circ_like_full_through_a_scalar_dynamic_anchor() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m._set("B2", "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    // A plain value edit: no structural op, no new formula, and the cycle is
+    // already an edge, so the pass stays selective and reaches `recompute_all`.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A1"), "101");
+    assert_eq!(full._get_text("B2"), "102");
+    assert_same_workbook(&full, &inc, "the known-cycle pass through the anchor");
+    // The divergence used to be permanent: once the two sides settled
+    // differently nothing ever brought them back.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "3");
+        m.evaluate();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// The mechanism in isolation: the same cycle, once through the anchor and once
+/// through a plain formula in the same cell. Both must match full, and the two
+/// must land on opposite sides of the cycle -- that difference *is* phase 1. If
+/// the anchor row ever stopped being walked first, the two rows below would
+/// agree and the test would fail on the inequality rather than on a divergence.
+#[test]
+fn phase_one_ordering_is_what_places_circ_through_an_anchor() {
+    let run = |mode, b2: &str| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m._set("B2", b2);
+        m.evaluate();
+        m._set("D1", "2");
+        m.evaluate();
+        (m._get_text("A1"), m._get_text("B2"))
+    };
+    let anchor = "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)";
+    let plain = "=IFERROR(A1,200)+1";
+    assert_eq!(
+        run(crate::RecalcMode::Full, anchor),
+        run(incremental_mode(), anchor)
+    );
+    assert_eq!(
+        run(crate::RecalcMode::Full, plain),
+        run(incremental_mode(), plain)
+    );
+    assert_ne!(
+        run(crate::RecalcMode::Full, anchor),
+        run(crate::RecalcMode::Full, plain),
+        "the anchor no longer evaluates ahead of the rest of the cone"
+    );
+}
+
+/// The CSE variant of the same shape. A CSE anchor is in `graph.arrays` whatever
+/// its size, so this one leaves through the arrays→Full fallback rather than
+/// through `recompute_all`'s ordering; either way the placement has to match.
+#[test]
+fn incremental_places_circ_like_full_through_a_cse_anchor() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
+        m.set_user_array_formula(0, 2, 2, 1, 1, "=IFERROR(A1,200)+1")
+            .unwrap();
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the known-cycle pass through the CSE anchor");
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "3");
+        m.evaluate();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// The audit of the acyclic path: `recompute_frontier` orders by edges, not by
+/// position, so a scalar anchor's readers are already ordered after it and the
+/// phase-1 gap cannot bite -- there is no cycle for a walk order to break, and
+/// a dependency-respecting order is unique in what it produces. Here the anchor
+/// sits *below* its reader in row-major order, so a one-phase positional walk
+/// would be wrong and the topological one is right.
+#[test]
+fn acyclic_cone_orders_a_scalar_anchor_by_edges_not_position() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        // A1 (walked first, row-major) reads B9, the anchor (walked last).
+        m._set("A1", "=B9+1");
+        m._set("B9", "=SEQUENCE(1,1,D1*10,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    for value in ["2", "3"] {
+        for m in [&mut full, &mut inc] {
+            m._set("D1", value);
+            m.evaluate();
+        }
+        assert_same_workbook(&full, &inc, "an acyclic edit reaching a scalar anchor");
+    }
+    assert_eq!(full._get_text("A1"), "31");
+}
+
+/// Verify's liveness check asserts against the always-dirty set as it stood at
+/// pass start, because that is the set `evaluate_selective` seeds
+/// `always_report` from. A cell whose branch flips *into* `RAND()` records the
+/// input only while it evaluates, so it was never seeded; with `RAND()*0` its
+/// value does not move either, and the delta rightly leaves it out. Asserting
+/// against the post-pass set panicked on exactly this.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_allows_a_cell_that_becomes_volatile_mid_pass() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("D1", "-1");
+    model._set("A1", "=IF(D1>0,RAND()*0,0)");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    model._set("D1", "1");
+    model.evaluate();
+    assert!(reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "0");
+    // Steady state: from here A1 is in the pre-pass set on every pass, so the
+    // assertion binds and each pass has to report it.
+    for value in ["2", "3"] {
+        model._set("D1", value);
+        model.evaluate();
+        assert!(reads_random(&model, (0, 1, 1)));
+    }
+}
+
+/// The reverse transition keeps the assertion strong. `A1` is volatile entering
+/// the pass, so it is in the pre-pass set, seeds `always_report`, and has to be
+/// in the delta -- even though `RAND()*0` means its value never moved and the
+/// post-pass set no longer contains it. Asserting against the post-pass set
+/// would let a pass drop a volatile cell from its delta unnoticed.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("D1", "1");
+    model._set("A1", "=IF(D1>0,RAND()*0,0)");
+    model.evaluate();
+    assert!(reads_random(&model, (0, 1, 1)));
+    let _ = model.take_changed_cells();
+    model._set("D1", "-1");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "0");
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => {}
+        ChangedSinceRead::Cells(cells) => assert!(
+            cells
+                .iter()
+                .any(|c| (c.sheet, c.row, c.column) == (0, 1, 1)),
+            "the pass that dropped A1's volatility did not report it"
+        ),
+    }
+}
+
+/// The other ways a cell leaves the always-dirty set: overwritten by a value,
+/// overwritten by a non-volatile formula, and cleared outright. Each one shrinks
+/// the set during the pass, so the pre-pass snapshot is what the liveness
+/// assertion has to hold the pass to, and the passes after it must stay quiet.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_liveness_survives_every_way_a_volatile_disappears() {
+    let clear_a1 = |model: &mut crate::Model| {
+        model
+            .range_clear_contents(&crate::expressions::types::Area {
+                sheet: 0,
+                row: 1,
+                column: 1,
+                width: 1,
+                height: 1,
+            })
+            .unwrap();
+    };
+    // Overwritten by a plain value.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=RAND()*0");
+    model._set("A2", "=A1+1");
+    model.evaluate();
+    model._set("A1", "5");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A2"), "6");
+
+    // Overwritten by a non-volatile formula.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=RANDBETWEEN(1,1)");
+    model.evaluate();
+    model._set("A1", "=1+1");
+    model.evaluate();
+    assert!(!reads_random(&model, (0, 1, 1)));
+    assert_eq!(model._get_text("A1"), "2");
+
+    // Cleared outright.
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+    model._set("A1", "=NOW()*0");
+    model.evaluate();
+    clear_a1(&mut model);
+    model.evaluate();
+
+    // And a couple of ordinary selective passes after each transition, which is
+    // where a stale snapshot would surface.
+    for _ in 0..2 {
+        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
+        model._set("A1", "=RAND()*0");
+        model.evaluate();
+        model._set("A1", "5");
+        model.evaluate();
+        for value in ["1", "2"] {
+            model._set("C3", value);
+            model.evaluate();
+        }
+    }
+}

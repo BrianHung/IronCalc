@@ -846,3 +846,30 @@ fn test_insert_columns_keeps_mixed_absolute_flags_on_equal_columns() {
     assert_eq!(model._get_formula("E2"), "=SUM($C2:C2)");
     assert_eq!(model._get_text("E2"), "7");
 }
+
+/// `sheet_data` is a hash map, so `column_cell_references` must sort: a column
+/// move rewrites the moved column cell by cell in exactly this order, and an
+/// unsorted walk made the rebuild nondeterministic (the CSE anchor landing
+/// after its placeholders on some runs). 60 rows inserted out of order make an
+/// accidentally-sorted hash walk effectively impossible.
+#[test]
+fn test_column_cell_references_are_sorted_by_row() {
+    let mut model = new_empty_model();
+    // Insert rows in a scrambled order so the map's insertion history cannot
+    // accidentally match row order either.
+    let mut rows: Vec<i32> = (1..=60).collect();
+    // Deterministic shuffle: multiply by a unit mod 61.
+    rows.sort_by_key(|r| (r * 37) % 61);
+    for r in rows {
+        model.set_user_input(0, r, 3, format!("{r}")).unwrap();
+    }
+    let refs = model
+        .workbook
+        .worksheet(0)
+        .unwrap()
+        .column_cell_references(3)
+        .unwrap();
+    let got: Vec<i32> = refs.iter().map(|r| r.row).collect();
+    let want: Vec<i32> = (1..=60).collect();
+    assert_eq!(got, want, "column_cell_references must be sorted by row");
+}
