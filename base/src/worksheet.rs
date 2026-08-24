@@ -691,6 +691,10 @@ impl Worksheet {
                 });
             }
         }
+        // `sheet_data` is a hash map: sort so callers that rewrite the column
+        // cell by cell, such as a column move, do it in the same order every
+        // run. Matches the ascending order of `Model::get_columns_for_row`.
+        column_cell_references.sort_unstable_by_key(|r| r.row);
         Ok(column_cell_references)
     }
 

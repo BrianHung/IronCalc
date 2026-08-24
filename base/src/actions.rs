@@ -16,6 +16,11 @@ use crate::locale::get_default_locale;
 use crate::model::{CellStructure, Model};
 use crate::types::{ArrayKind, Cell, Link, Worksheet};
 
+/// A cell lifted out of a moved row or column, ready to be written back:
+/// target row and column, formula or value, style index, and the CSE
+/// rectangle it anchors, if any.
+type MovedCell = (i32, i32, String, i32, Option<(i32, i32)>);
+
 /// Applies `map` to the (row, column) key of every link in the worksheet, so
 /// that links follow their cells when rows or columns are inserted, deleted or
 /// moved: `Some((row, column))` moves the link there, `None` removes it.
@@ -517,6 +522,28 @@ impl<'a> Model<'a> {
                 target_column,
                 formula_or_value.to_string(),
             )?;
+        }
+        Ok(())
+    }
+
+    /// Writes the cells lifted out of a moved row or column back at their new
+    /// positions.
+    ///
+    /// Extracted so the caller can suspend the CSE member guard for the whole
+    /// rebuild, the way [`Model::move_cell`] does for a single cell: the
+    /// rebuild writes the anchor of a CSE array and, right after it, the
+    /// placeholders of the rectangle the anchor has just re-declared. Those
+    /// are interim states of a structural edit, not user writes.
+    fn rebuild_moved_cells(&mut self, sheet: u32, cells: Vec<MovedCell>) -> Result<(), String> {
+        for (row, column, value, style_index, array) in cells {
+            if let Some((width, height)) = array {
+                self.set_user_array_formula(sheet, row, column, width, height, &value)?;
+            } else {
+                self.set_user_input(sheet, row, column, value)?;
+            }
+            self.workbook
+                .worksheet_mut(sheet)?
+                .set_cell_style(row, column, style_index)?;
         }
         Ok(())
     }
@@ -1284,16 +1311,14 @@ impl<'a> Model<'a> {
                     .set_column_width_and_style(c + 1, w, h, s)?;
             }
         }
-        for (r, value, style_idx, array) in original_cells {
-            if let Some(a) = array {
-                self.set_user_array_formula(sheet, r, target_column, a.0, a.1, &value)?;
-            } else {
-                self.set_user_input(sheet, r, target_column, value)?;
-            }
-            self.workbook
-                .worksheet_mut(sheet)?
-                .set_cell_style(r, target_column, style_idx)?;
-        }
+        let rebuilt: Vec<MovedCell> = original_cells
+            .into_iter()
+            .map(|(r, value, style_idx, array)| (r, target_column, value, style_idx, array))
+            .collect();
+        self.cse_member_guard_suspended = true;
+        let written = self.rebuild_moved_cells(sheet, rebuilt);
+        self.cse_member_guard_suspended = false;
+        written?;
         self.workbook
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, hidden, style)?;
@@ -1429,23 +1454,14 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        for (c, value, style_idx, array) in original_cells {
-            if let Some(array_range) = array {
-                self.set_user_array_formula(
-                    sheet,
-                    target_row,
-                    c,
-                    array_range.0,
-                    array_range.1,
-                    &value,
-                )?;
-            } else {
-                self.set_user_input(sheet, target_row, c, value)?;
-            }
-            self.workbook
-                .worksheet_mut(sheet)?
-                .set_cell_style(target_row, c, style_idx)?;
-        }
+        let rebuilt: Vec<MovedCell> = original_cells
+            .into_iter()
+            .map(|(c, value, style_idx, array)| (target_row, c, value, style_idx, array))
+            .collect();
+        self.cse_member_guard_suspended = true;
+        let written = self.rebuild_moved_cells(sheet, rebuilt);
+        self.cse_member_guard_suspended = false;
+        written?;
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
         let mut new_rows = Vec::new();
         for r in worksheet.rows.iter() {

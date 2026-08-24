@@ -153,3 +153,48 @@ fn issue_454b() {
     );
     model.undo().unwrap();
 }
+
+// range_clear_all over part of a dynamic-array spill tears down the whole
+// spill, but the cells outside the cleared range are not part of the user's
+// selection: their style must survive, exactly as when the contents alone are
+// cleared. Regression: rewriting the sweep as a plain cell removal deleted
+// those cells outright and dropped the style with them.
+#[test]
+fn clear_all_keeps_style_of_spill_cells_outside_the_range() {
+    let mut model = new_empty_user_model();
+    model.set_user_input(0, 2, 1, "5").unwrap();
+    model.set_user_input(0, 3, 1, "1").unwrap();
+    // B1 spills over B1:B2
+    model.set_user_input(0, 1, 2, "=SORT(A2:A3)").unwrap();
+    assert_eq!(model.get_formatted_cell_value(0, 1, 2), Ok("1".to_string()));
+    assert_eq!(model.get_formatted_cell_value(0, 2, 2), Ok("5".to_string()));
+
+    let spill = Area {
+        sheet: 0,
+        row: 1,
+        column: 2,
+        width: 1,
+        height: 2,
+    };
+    model.update_range_style(&spill, "font.b", "true").unwrap();
+    assert!(model.get_cell_style(0, 1, 2).unwrap().font.b);
+    assert!(model.get_cell_style(0, 2, 2).unwrap().font.b);
+
+    // Clear only the anchor. The spill goes away with it, but B2 was never
+    // selected, so it keeps its style.
+    model
+        .range_clear_all(&Area {
+            sheet: 0,
+            row: 1,
+            column: 2,
+            width: 1,
+            height: 1,
+        })
+        .unwrap();
+
+    assert_eq!(model.get_formatted_cell_value(0, 1, 2), Ok("".to_string()));
+    assert_eq!(model.get_formatted_cell_value(0, 2, 2), Ok("".to_string()));
+    // B1 was in the cleared range: style gone. B2 was not: style kept.
+    assert!(!model.get_cell_style(0, 1, 2).unwrap().font.b);
+    assert!(model.get_cell_style(0, 2, 2).unwrap().font.b);
+}
