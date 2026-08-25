@@ -428,27 +428,6 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Runs `f` with the CSE member guard suspended, restoring the previous
-    /// state afterwards whether or not `f` succeeds.
-    ///
-    /// Interim states of a structural edit legitimately write into positions
-    /// the member guard would refuse for a user: the anchor of a CSE array
-    /// relocates into its own former rectangle, and refilled placeholders are
-    /// re-shifted by later rows. The guard is for user writes; every rebuild
-    /// write-back suspends it through this scope, so the flag can never be
-    /// left set by an early `?` return. The grep-gate
-    /// `unchecked_rebuild_paths_suspend_the_cse_member_guard` enforces that
-    /// this helper is the only place in this file that touches the flag.
-    fn with_cse_guard_suspended<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let previous = std::mem::replace(&mut self.cse_member_guard_suspended, true);
-        let result = f(self);
-        self.cse_member_guard_suspended = previous;
-        result
-    }
-
     /// The write half of [`Model::move_cell`].
     ///
     /// An array formula rewrites its whole range. A plain formula is written
@@ -551,6 +530,9 @@ impl<'a> Model<'a> {
                 // This the spill of an array formula. Because dynamic arrays spills have been deleted
                 // We delete the spill
                 let worksheet = self.workbook.worksheet_mut(sheet)?;
+                // Sanctioned: vacating the source of a cell move. The position is meant
+                // to lose its style too, unlike a footprint teardown.
+                #[allow(clippy::disallowed_methods)]
                 worksheet.remove_cell(source_row, source_column)?;
                 return Ok(());
             }
@@ -592,6 +574,9 @@ impl<'a> Model<'a> {
         worksheet.set_cell_style(target_row, target_column, style)?;
 
         // delete source cell content and style
+        // Sanctioned: vacating the source of a cell move. The position is meant
+        // to lose its style too, unlike a footprint teardown.
+        #[allow(clippy::disallowed_methods)]
         worksheet.remove_cell(source_row, source_column)?;
         Ok(())
     }
@@ -783,6 +768,9 @@ impl<'a> Model<'a> {
                     if col > column_end {
                         self.move_cell(sheet, r, col, r, col - column_count)?;
                     } else {
+                        // Sanctioned: the column itself is being deleted, so its cells lose
+                        // content and style alike.
+                        #[allow(clippy::disallowed_methods)]
                         self.workbook.worksheet_mut(sheet)?.remove_cell(r, col)?;
                     }
                 }
@@ -1211,6 +1199,9 @@ impl<'a> Model<'a> {
                     // This the spill of an array formula. Because dynamic arrays spills have been deleted
                     // We delete the spill
                     let worksheet = self.workbook.worksheet_mut(sheet)?;
+                    // Sanctioned: vacating the source of a column move. The position is
+                    // meant to lose its style too, unlike a footprint teardown.
+                    #[allow(clippy::disallowed_methods)]
                     worksheet.remove_cell(r.row, column)?;
                     continue;
                 }
@@ -1236,6 +1227,9 @@ impl<'a> Model<'a> {
 
             original_cells.push((r.row, formula_or_value, style_idx, array));
             let ws = self.workbook.worksheet_mut(sheet)?;
+            // Sanctioned: vacating the source of a column move; the cell is
+            // re-created at the target with its captured style.
+            #[allow(clippy::disallowed_methods)]
             ws.remove_cell(r.row, column)?;
         }
         let width = self
@@ -1370,6 +1364,9 @@ impl<'a> Model<'a> {
                     // This the spill of an array formula. Because dynamic arrays spills have been deleted
                     // We delete the spill
                     let worksheet = self.workbook.worksheet_mut(sheet)?;
+                    // Sanctioned: vacating the source of a row move. The position is meant
+                    // to lose its style too, unlike a footprint teardown.
+                    #[allow(clippy::disallowed_methods)]
                     worksheet.remove_cell(row, *c)?;
                     continue;
                 }
@@ -1394,6 +1391,9 @@ impl<'a> Model<'a> {
             }
             original_cells.push((*c, formula_or_value, style_idx, array));
             let ws = self.workbook.worksheet_mut(sheet)?;
+            // Sanctioned: vacating the source of a row move; the cell is re-created
+            // at the target with its captured style.
+            #[allow(clippy::disallowed_methods)]
             ws.remove_cell(row, *c)?;
         }
         if delta > 0 {

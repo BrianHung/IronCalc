@@ -1097,6 +1097,12 @@ fn incremental_argless_row_updates_after_insert() {
     assert_eq!(model._get_text("A2"), "2");
 }
 
+/// The semantic behind the journal pause in `write_displaced_formula`: the raw
+/// write runs with the journal off (a displacement is not a formula edit) and
+/// the function substitutes a value-write entry for it. If the pause swallowed
+/// the write instead of standing in for it, FORMULATEXT would keep reporting
+/// the pre-displacement text. This behaviour is the point;
+/// `JournalRecordingPaused` is only the mechanism.
 #[test]
 fn incremental_formulatext_sees_displaced_formula() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());

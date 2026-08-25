@@ -38,6 +38,7 @@ use crate::{
 
 use crate::{cf_types::CfCellResult, tz::Tz};
 
+pub(crate) mod cse_guard;
 mod incremental;
 
 #[cfg(any(test, feature = "mock_time"))]
@@ -279,10 +280,12 @@ pub struct Model<'a> {
     /// structural edit dropped the member cell itself. `None` means stale;
     /// structural edits, sheet changes, and CSE anchor writes reset it.
     pub(crate) cse_rects: Option<Vec<CseRect>>,
-    /// True while `move_cell` relocates cells through the user entry points
-    /// during a structural edit; the member guard applies to user writes, not
-    /// to the edit's own interim states.
-    pub(crate) cse_member_guard_suspended: bool,
+    /// Suspended while `move_cell` relocates cells through the user entry
+    /// points during a structural edit; the member guard applies to user
+    /// writes, not to the edit's own interim states. The flag inside is
+    /// private to [`crate::model::cse_guard`]: only
+    /// [`Model::with_cse_guard_suspended`] can flip it.
+    pub(crate) cse_member_guard: cse_guard::CseMemberGuard,
     /// Set when an evaluation write changes an array footprint: a spill was
     /// written, a CSE range filled, or a dynamic anchor stored `#SPILL!`. The
     /// incremental pass that observes it falls back to Full, whose
@@ -1980,7 +1983,7 @@ impl<'a> Model<'a> {
             wrote_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
-            cse_member_guard_suspended: false,
+            cse_member_guard: cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
@@ -2532,16 +2535,12 @@ impl<'a> Model<'a> {
             .cell(row, column)
             .and_then(Cell::get_formula)
             .is_some();
-        let prev = self.workbook.worksheets[sheet as usize]
-            .write_log
-            .is_recording();
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(false);
-        let result = self.write_formula_bytes(sheet, row, column, formula);
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(prev);
+        let result = {
+            // The raw write would be journaled as a formula edit. Substitute
+            // our own entry below instead of suppressing it.
+            let mut paused = self.pause_journal_for_sheet(sheet);
+            paused.write_formula_bytes(sheet, row, column, formula)
+        };
         if result.is_ok() {
             self.workbook.worksheets[sheet as usize]
                 .write_log
@@ -2596,7 +2595,8 @@ impl<'a> Model<'a> {
                 // anchor still owns and refills its rectangle; the position is
                 // still part of the array, and writing there would be silently
                 // undone by the next evaluation.
-                if !self.cse_member_guard_suspended && self.covered_by_cse_rect(sheet, row, column)
+                if !self.cse_member_guard.is_suspended()
+                    && self.covered_by_cse_rect(sheet, row, column)
                 {
                     return Err(
                         "Cannot write in a cell that is part of an array formula".to_string()
@@ -3358,21 +3358,18 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         self.drain_write_journal();
-        self.set_journal_recording(false);
-        match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full_untracked(),
+        let mode = self.recalc_mode;
+        // Storing a formula result is not a user edit, so the journal stays
+        // paused for the whole pass. The guard restores it however the pass
+        // ends, panic included.
+        let mut evaluating = self.pause_journal();
+        match mode {
+            RecalcMode::Full => evaluating.evaluate_full_untracked(),
             RecalcMode::Incremental => {
-                self.evaluate_selective();
+                evaluating.evaluate_selective();
             }
             #[cfg(feature = "recalc_verify")]
-            RecalcMode::Verify => self.verify_incremental_matches_full(),
-        }
-        self.set_journal_recording(true);
-    }
-
-    fn set_journal_recording(&mut self, on: bool) {
-        for ws in &mut self.workbook.worksheets {
-            ws.write_log.set_recording(on);
+            RecalcMode::Verify => evaluating.verify_incremental_matches_full(),
         }
     }
 
@@ -3810,6 +3807,10 @@ impl<'a> Model<'a> {
         // style first and only inherits the row/column one.
         for row in area.row..area.row + area.height {
             for column in area.column..area.column + area.width {
+                // Sanctioned: the user selected these cells, so they lose content and
+                // style alike. The spill reaching outside the range is torn down below
+                // with the style-preserving `clear_array_footprint`.
+                #[allow(clippy::disallowed_methods)]
                 let _ = worksheet.remove_cell(row, column);
             }
         }
