@@ -2512,16 +2512,12 @@ impl<'a> Model<'a> {
             .cell(row, column)
             .and_then(Cell::get_formula)
             .is_some();
-        let prev = self.workbook.worksheets[sheet as usize]
-            .write_log
-            .is_recording();
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(false);
-        let result = self.write_formula_bytes(sheet, row, column, formula);
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(prev);
+        let result = {
+            // The raw write would be journaled as a formula edit. Substitute
+            // our own entry below instead of suppressing it.
+            let mut paused = self.pause_journal_for_sheet(sheet);
+            paused.write_formula_bytes(sheet, row, column, formula)
+        };
         if result.is_ok() {
             self.workbook.worksheets[sheet as usize]
                 .write_log
@@ -3338,21 +3334,18 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         self.drain_write_journal();
-        self.set_journal_recording(false);
-        match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full_untracked(),
+        let mode = self.recalc_mode;
+        // Storing a formula result is not a user edit, so the journal stays
+        // paused for the whole pass. The guard restores it however the pass
+        // ends, panic included.
+        let mut evaluating = self.pause_journal();
+        match mode {
+            RecalcMode::Full => evaluating.evaluate_full_untracked(),
             RecalcMode::Incremental => {
-                self.evaluate_selective();
+                evaluating.evaluate_selective();
             }
             #[cfg(feature = "recalc_verify")]
-            RecalcMode::Verify => self.verify_incremental_matches_full(),
-        }
-        self.set_journal_recording(true);
-    }
-
-    fn set_journal_recording(&mut self, on: bool) {
-        for ws in &mut self.workbook.worksheets {
-            ws.write_log.set_recording(on);
+            RecalcMode::Verify => evaluating.verify_incremental_matches_full(),
         }
     }
 
