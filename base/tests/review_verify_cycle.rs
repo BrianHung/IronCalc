@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[cfg(feature = "recalc_verify")]
 use ironcalc_base::{Model, RecalcMode};
 #[test]
 #[cfg(feature = "recalc_verify")]
