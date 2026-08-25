@@ -3779,6 +3779,10 @@ impl<'a> Model<'a> {
         // style first and only inherits the row/column one.
         for row in area.row..area.row + area.height {
             for column in area.column..area.column + area.width {
+                // Sanctioned: the user selected these cells, so they lose content and
+                // style alike. The spill reaching outside the range is torn down below
+                // with the style-preserving `clear_array_footprint`.
+                #[allow(clippy::disallowed_methods)]
                 let _ = worksheet.remove_cell(row, column);
             }
         }

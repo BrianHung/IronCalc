@@ -184,9 +184,15 @@ fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
 /// the ones outside must keep their style. The one footprint-teardown
 /// primitive is `Worksheet::clear_array_footprint`, built on the
 /// style-preserving `cell_clear_contents` (it materializes `EmptyCell { s }`;
-/// `remove_cell` drops the style). `range_clear_all` must go through the
-/// helper — never a hand-rolled sweep that could pick the wrong primitive —
-/// and its only `remove_cell` must stay the in-range sweep.
+/// `remove_cell` drops the style).
+///
+/// The "do not reach for `remove_cell`" half of that rule is no longer a
+/// grep-gate: `clippy.toml` bans `Worksheet::remove_cell` workspace-wide, so a
+/// new call anywhere fails the build until someone writes an explicit
+/// `#[allow(clippy::disallowed_methods)]` with a justification. What clippy
+/// cannot say is "this function must call that helper", or "only
+/// `clear_array_footprint` may reach for `cell_clear_contents`" — a positive
+/// obligation and a one-caller restriction. Those two clauses stay here.
 #[test]
 fn range_clear_all_spill_teardown_preserves_style() {
     let model = include_str!("../model/mod.rs");
@@ -195,13 +201,6 @@ fn range_clear_all_spill_teardown_preserves_style() {
         .find(|(name, _)| name == "range_clear_all")
         .map(|(_, body)| body)
         .expect("range_clear_all must exist in model/mod.rs (update this gate if renamed)");
-    assert_eq!(
-        body.matches("remove_cell(").count(),
-        1,
-        "range_clear_all must call remove_cell exactly once (the in-range \
-         sweep); the spill footprint is torn down with the style-preserving \
-         clear_array_footprint"
-    );
     assert!(
         body.contains("clear_array_footprint("),
         "range_clear_all must tear the spill footprint down through \
@@ -215,7 +214,8 @@ fn range_clear_all_spill_teardown_preserves_style() {
     );
 
     // The helper itself must stay on the style-preserving primitive, or the
-    // guarantee above is hollow.
+    // guarantee above is hollow. (That it does *not* use `remove_cell` is
+    // clippy's job now.)
     let worksheet = include_str!("../worksheet.rs");
     let helper = fn_items(worksheet)
         .into_iter()
@@ -223,8 +223,8 @@ fn range_clear_all_spill_teardown_preserves_style() {
         .map(|(_, body)| body)
         .expect("clear_array_footprint must exist in worksheet.rs (update this gate if renamed)");
     assert!(
-        helper.contains("cell_clear_contents(") && !helper.contains("remove_cell("),
+        helper.contains("cell_clear_contents("),
         "clear_array_footprint must clear with the style-preserving \
-         cell_clear_contents, never remove_cell"
+         cell_clear_contents"
     );
 }
