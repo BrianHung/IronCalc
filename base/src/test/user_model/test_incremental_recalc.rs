@@ -2182,17 +2182,16 @@ fn convergence_guard_leaves_plain_edits_selective() {
     assert_eq!(model._get_text("C1"), "6");
 }
 
-/// A cycle the graph already knows about, closed through a dynamic-array
-/// anchor whose result is 1x1. The anchor spills nothing, so it is not in
-/// `graph.arrays` and the arrays→Full fallback does not fire; a plain value
-/// edit drops the known cycle into `recompute_all`, which must reproduce
-/// Full's two-phase walk: anchors first, then the rest, each row-major. That
-/// order is what makes `#CIRC!` land inside `B2`'s recursion so `A1` absorbs
-/// it, pass after pass -- a one-phase row-major walk would enter at `A1` and
-/// settle on the other side of the cycle, for ever. The plain-formula run
-/// pins that phase 1 is what decides the side: if the anchor ever stopped
-/// being walked first, the two runs would agree and the inequality below
-/// fails before any real divergence can.
+/// A cycle closed through a dynamic-array anchor whose result is 1x1. The
+/// anchor spills nothing, so it is not in `graph.arrays`; what routes the pass
+/// to Full is that a cycle member is a seed on every pass and this seed is an
+/// anchor. It has to: Full evaluates anchors in a phase of their own, ahead of
+/// the row-major walk, so `#CIRC!` lands inside `B2`'s recursion and `A1`
+/// absorbs it -- and the cone walk `recompute_all` would otherwise do is
+/// row-major only, entering at `A1` and settling the cycle on the other side,
+/// for ever. The plain-formula run pins that the anchor's phase is what decides
+/// the side: with a plain formula in `B2` the two runs would agree, and the
+/// inequality below fails before any real divergence can.
 #[test]
 fn recompute_all_places_circ_through_a_scalar_anchor_like_full() {
     let run = |mode, b2: &str| {
@@ -2236,47 +2235,6 @@ fn recompute_all_places_circ_through_a_scalar_anchor_like_full() {
     );
 }
 
-/// Phase 1 must walk its anchors in Full's own row-major order, not merely
-/// ahead of the rest of the cone. Two scalar anchors close the cycle between
-/// themselves, so which one `collect_spill_cells` enters first decides which
-/// side absorbs `#CIRC!`; a phase 1 that reordered its anchors (walking them
-/// in reverse, say) would settle the cycle on the wrong side and, like every
-/// placement divergence, never recover.
-#[test]
-fn phase_one_walks_two_anchors_in_row_major_order() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("D1", "1");
-        m._set("B1", "=SEQUENCE(1,1,IFERROR(C2,100)+1+D1*0,1)");
-        m._set("C2", "=SEQUENCE(1,1,IFERROR(B1,200)+1,1)");
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the first evaluate");
-    // A plain value edit keeps the pass selective; the known cycle drops it
-    // into `recompute_all`, where both anchors are phase 1 and only the
-    // row-major walk picks the same entry point as Full.
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "2");
-        m.evaluate();
-    }
-    // B1 is walked first: the recursion enters there, so C2's read of B1 is
-    // the one that sees `#CIRC!` and C2 absorbs the fallback.
-    assert_eq!(full._get_text("B1"), "202");
-    assert_eq!(full._get_text("C2"), "201");
-    assert_same_workbook(&full, &inc, "the known-cycle pass through two anchors");
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "3");
-        m.evaluate();
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the following passes");
-}
-
 /// The CSE variant of the same shape. A CSE anchor is in `graph.arrays` whatever
 /// its size, so this one leaves through the arrays→Full fallback rather than
 /// through `recompute_all`'s ordering; either way the placement has to match.
@@ -2307,6 +2265,45 @@ fn incremental_places_circ_like_full_through_a_cse_anchor() {
         m.evaluate();
     }
     assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// A blocked anchor stores `#SPILL!`, but a reader that reaches it while it is
+/// still evaluating gets the live array's top-left instead -- here `B1`, an
+/// anchor of full's phase 1, pulls `A7` in ahead of `E15`, so full's `A7` holds
+/// `1 + D1` and not `-1 + D1`. That value is not a function of the store: a
+/// later cone that names `A7` without naming `E15` would recompute it against
+/// the stored error and land on `-1 + D1` for ever. Only the full pass
+/// evaluates the anchor live, so a cone reaching a blocked anchor's reader has
+/// to fall back to one.
+#[test]
+fn a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("E15", "=SEQUENCE(3)");
+        // E17 blocks the spill, so E15 stores #SPILL!.
+        m._set("E17", "7");
+        m._set("D1", "1");
+        m._set("A7", "=IFERROR(E15,-1)+D1");
+        // A phase-1 anchor above A7: full evaluates it, and so A7, before it
+        // reaches E15 in its own right.
+        m._set("B1", "=SEQUENCE(1,1,A7,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("E15"), "#SPILL!");
+    assert_eq!(full._get_text("A7"), "2");
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    // A plain value edit whose cone names A7 but not E15.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A7"), "3");
+    assert_same_workbook(&full, &inc, "an edit reaching a blocked anchor's reader");
 }
 
 /// The audit of the acyclic path: `recompute_frontier` orders by edges, not by

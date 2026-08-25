@@ -1,7 +1,8 @@
-//! Failing shapes found by coverage-guided differential fuzzing (libFuzzer over
-//! a byte->Op decoder; branch recalc-r3-covfuzz). Each test replays one
-//! minimized crash artifact through the shared lockstep harness; `assert_clean`
-//! pins Full/Incremental/Verify agreement plus the delta contract.
+//! Failing shapes found by differential fuzzing: coverage-guided (libFuzzer
+//! over a byte->Op decoder; branch recalc-r3-covfuzz) and seeded. Each test
+//! replays one minimized artifact through the shared lockstep harness;
+//! `assert_clean` pins Full/Incremental/Verify agreement plus the delta
+//! contract.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
@@ -407,6 +408,63 @@ fn covfuzz_new_reader_near_cycle_gets_spurious_circ() {
             row: 4,
             col: 7,
             value: "=E20".to_string(),
+        },
+        Op::Evaluate,
+    ]);
+}
+
+/// Seeded fuzz (seed 251), minimized. A CSE anchor's member is read by a
+/// formula the anchor's own range covers, so the cycle closes through the
+/// array footprint -- a path no read edge used to record, because the anchor
+/// writes its members as evaluation writes and the reader saw an empty cell.
+/// Nothing then told the scheduler that the reader's stored value was an
+/// artifact of where the cycle was entered, and it diverged from a live
+/// re-evaluation.
+#[test]
+fn cse_footprint_cycle_stored_value_diverges_from_a_live_reeval() {
+    assert_clean(&[
+        Op::ArrayFormula {
+            sheet: 0,
+            row: 1,
+            col: 5,
+            width: 1,
+            height: 3,
+            formula: "=A1:A3+1".to_string(),
+        },
+        Op::DeleteCols {
+            sheet: 0,
+            col: 3,
+            count: 1,
+        },
+        Op::Set {
+            sheet: 0,
+            row: 20,
+            col: 5,
+            value: "48".to_string(),
+        },
+        Op::DeleteCols {
+            sheet: 0,
+            col: 2,
+            count: 1,
+        },
+        Op::Set {
+            sheet: 0,
+            row: 3,
+            col: 1,
+            value: "=SUM(B2:C2)".to_string(),
+        },
+        Op::MoveCols {
+            sheet: 0,
+            col: 1,
+            count: 1,
+            delta: 1,
+        },
+        Op::Evaluate,
+        Op::Evaluate,
+        Op::DeleteRows {
+            sheet: 0,
+            row: 16,
+            count: 2,
         },
         Op::Evaluate,
     ]);
