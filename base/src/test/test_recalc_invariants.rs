@@ -121,46 +121,61 @@ fn fn_items(src: &str) -> Vec<(String, String)> {
 }
 
 /// The CSE member guard blocks user writes into an array rectangle. A
-/// structural rebuild (a row or column move) legitimately rewrites the anchor
-/// and then the placeholders of the rectangle the anchor has just re-declared,
-/// so it must suspend the guard, the way `move_cell` and `rebuild_moved_cells`'s
-/// callers do. Nothing in the type system forces a future `*_unchecked`
-/// rebuild path to do the same: this gate does.
+/// structural rebuild (a cell, row or column move) legitimately rewrites the
+/// anchor and then the placeholders of the rectangle the anchor has just
+/// re-declared, so it must suspend the guard — through the scoped
+/// `with_cse_guard_suspended`, which restores the flag on every exit path.
+/// Nothing in the type system forces a future `*_unchecked` rebuild path to
+/// use the scope, or stops one from flipping the flag by hand and leaking it
+/// on an early return: this gate does both.
 #[test]
 fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
     let actions = include_str!("../actions.rs");
-    // Functions allowed to write cells without referencing the guard, each
-    // with the reason it is safe. Add here only with a comment saying why the
-    // path can never write into a CSE rectangle mid-rebuild.
+    // Functions allowed to write cells without entering the scope, each with
+    // the reason it is safe. Add here only with a comment saying why the path
+    // can never write into a CSE rectangle mid-rebuild.
     const ALLOWLIST: &[&str] = &[];
     let items = fn_items(actions);
     let mut rebuild_writers = 0;
     for (name, body) in &items {
+        // Only the scoped helper may touch the flag: a raw set-then-reset
+        // pair leaks the suspension on an early `?` return between the two.
+        if name != "with_cse_guard_suspended" {
+            assert!(
+                !body.contains("cse_member_guard_suspended"),
+                "{name} in actions.rs manipulates cse_member_guard_suspended \
+                 directly; go through with_cse_guard_suspended so the flag is \
+                 restored on every exit path"
+            );
+        }
         let writes_cells = body.contains("set_user_input(")
             || body.contains("set_user_array_formula(")
-            || (name != "rebuild_moved_cells" && body.contains("rebuild_moved_cells("));
+            || (name != "rebuild_moved_cells" && body.contains("rebuild_moved_cells("))
+            || (name != "move_cell_write" && body.contains("move_cell_write("));
         if !writes_cells || ALLOWLIST.contains(&name.as_str()) {
             continue;
         }
         let is_rebuild_path = name.ends_with("_unchecked")
-            || (name != "rebuild_moved_cells" && body.contains("rebuild_moved_cells("));
+            || (name != "rebuild_moved_cells" && body.contains("rebuild_moved_cells("))
+            || (name != "move_cell_write" && body.contains("move_cell_write("));
         if !is_rebuild_path {
             continue;
         }
         rebuild_writers += 1;
         assert!(
-            body.contains("cse_member_guard_suspended"),
+            body.contains("with_cse_guard_suspended("),
             "{name} in actions.rs rewrites cells during a structural rebuild \
-             but never suspends cse_member_guard_suspended; a CSE anchor in the \
-             moved row/column will make the rebuild error. Suspend the guard \
-             around the write-back (see rebuild_moved_cells) or allowlist the \
-             fn here with a reason."
+             but never suspends the CSE member guard; a CSE anchor in the \
+             moved cell/row/column will make the rebuild error. Wrap the \
+             write-back in with_cse_guard_suspended (see move_cell) or \
+             allowlist the fn here with a reason."
         );
     }
     assert!(
-        rebuild_writers >= 2,
-        "expected at least move_column_unchecked and move_row_unchecked to be \
-         checked; the gate no longer sees the rebuild paths and must be updated"
+        rebuild_writers >= 3,
+        "expected at least move_cell, move_column_unchecked and \
+         move_row_unchecked to be checked; the gate no longer sees the \
+         rebuild paths and must be updated"
     );
 }
 

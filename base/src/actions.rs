@@ -428,6 +428,27 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// Runs `f` with the CSE member guard suspended, restoring the previous
+    /// state afterwards whether or not `f` succeeds.
+    ///
+    /// Interim states of a structural edit legitimately write into positions
+    /// the member guard would refuse for a user: the anchor of a CSE array
+    /// relocates into its own former rectangle, and refilled placeholders are
+    /// re-shifted by later rows. The guard is for user writes; every rebuild
+    /// write-back suspends it through this scope, so the flag can never be
+    /// left set by an early `?` return. The grep-gate
+    /// `unchecked_rebuild_paths_suspend_the_cse_member_guard` enforces that
+    /// this helper is the only place in this file that touches the flag.
+    fn with_cse_guard_suspended<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let previous = std::mem::replace(&mut self.cse_member_guard_suspended, true);
+        let result = f(self);
+        self.cse_member_guard_suspended = previous;
+        result
+    }
+
     /// The write half of [`Model::move_cell`].
     ///
     /// An array formula rewrites its whole range. A plain formula is written
@@ -555,15 +576,9 @@ impl<'a> Model<'a> {
                 )
             });
 
-        // Interim states of a structural edit legitimately write into positions
-        // the member guard would refuse for a user: the anchor relocates into
-        // its own former rectangle, and refilled placeholders are re-shifted by
-        // later rows. The guard is for user writes; suspend it for the move.
-        self.cse_member_guard_suspended = true;
-        let moved =
-            self.move_cell_write(sheet, target_row, target_column, array, &formula_or_value);
-        self.cse_member_guard_suspended = false;
-        moved?;
+        self.with_cse_guard_suspended(|model| {
+            model.move_cell_write(sheet, target_row, target_column, array, &formula_or_value)
+        })?;
 
         let worksheet = self.workbook.worksheet_mut(sheet)?;
         // copy style
@@ -1253,10 +1268,7 @@ impl<'a> Model<'a> {
             .into_iter()
             .map(|(r, value, style_idx, array)| (r, target_column, value, style_idx, array))
             .collect();
-        self.cse_member_guard_suspended = true;
-        let written = self.rebuild_moved_cells(sheet, rebuilt);
-        self.cse_member_guard_suspended = false;
-        written?;
+        self.with_cse_guard_suspended(|model| model.rebuild_moved_cells(sheet, rebuilt))?;
         self.workbook
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, hidden, style)?;
@@ -1396,10 +1408,7 @@ impl<'a> Model<'a> {
             .into_iter()
             .map(|(c, value, style_idx, array)| (target_row, c, value, style_idx, array))
             .collect();
-        self.cse_member_guard_suspended = true;
-        let written = self.rebuild_moved_cells(sheet, rebuilt);
-        self.cse_member_guard_suspended = false;
-        written?;
+        self.with_cse_guard_suspended(|model| model.rebuild_moved_cells(sheet, rebuilt))?;
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
         let mut new_rows = Vec::new();
         for r in worksheet.rows.iter() {
