@@ -181,9 +181,12 @@ fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
 
 /// `range_clear_all` tears down the whole spill of a dynamic array reached
 /// from the cleared range, but only the cells inside the range were selected:
-/// the ones outside must keep their style. `cell_clear_contents` preserves it
-/// (it materializes `EmptyCell { s }`); `remove_cell` drops it. The only
-/// `remove_cell` in the function must stay the in-range sweep.
+/// the ones outside must keep their style. The one footprint-teardown
+/// primitive is `Worksheet::clear_array_footprint`, built on the
+/// style-preserving `cell_clear_contents` (it materializes `EmptyCell { s }`;
+/// `remove_cell` drops the style). `range_clear_all` must go through the
+/// helper — never a hand-rolled sweep that could pick the wrong primitive —
+/// and its only `remove_cell` must stay the in-range sweep.
 #[test]
 fn range_clear_all_spill_teardown_preserves_style() {
     let model = include_str!("../model/mod.rs");
@@ -196,12 +199,32 @@ fn range_clear_all_spill_teardown_preserves_style() {
         body.matches("remove_cell(").count(),
         1,
         "range_clear_all must call remove_cell exactly once (the in-range \
-         sweep); the out-of-range spill footprint is torn down with the \
-         style-preserving cell_clear_contents"
+         sweep); the spill footprint is torn down with the style-preserving \
+         clear_array_footprint"
     );
     assert!(
-        body.contains("cell_clear_contents("),
-        "range_clear_all must tear the spill footprint down with \
-         cell_clear_contents so cells outside the cleared range keep their style"
+        body.contains("clear_array_footprint("),
+        "range_clear_all must tear the spill footprint down through \
+         Worksheet::clear_array_footprint so cells outside the cleared range \
+         keep their style"
+    );
+    assert!(
+        !body.contains("cell_clear_contents("),
+        "range_clear_all must not hand-roll the footprint teardown; go \
+         through Worksheet::clear_array_footprint"
+    );
+
+    // The helper itself must stay on the style-preserving primitive, or the
+    // guarantee above is hollow.
+    let worksheet = include_str!("../worksheet.rs");
+    let helper = fn_items(worksheet)
+        .into_iter()
+        .find(|(name, _)| name == "clear_array_footprint")
+        .map(|(_, body)| body)
+        .expect("clear_array_footprint must exist in worksheet.rs (update this gate if renamed)");
+    assert!(
+        helper.contains("cell_clear_contents(") && !helper.contains("remove_cell("),
+        "clear_array_footprint must clear with the style-preserving \
+         cell_clear_contents, never remove_cell"
     );
 }

@@ -2595,13 +2595,9 @@ impl<'a> Model<'a> {
             CellStructure::DynamicFormula { range } => {
                 // clear the spill of the dynamic formula
                 let (width, height) = range;
-                let ws = self.workbook.worksheet_mut(sheet)?;
-                for r in row..row + height {
-                    for c in column..column + width {
-                        // We ignore errors here
-                        let _ = ws.cell_clear_contents(r, c);
-                    }
-                }
+                self.workbook
+                    .worksheet_mut(sheet)?
+                    .clear_array_footprint(row, column, width, height, false);
             }
             CellStructure::SpillArray { .. } => {
                 return Err("Cannot write in a cell that is part of an array formula".to_string());
@@ -2632,15 +2628,7 @@ impl<'a> Model<'a> {
                     1,
                     1,
                 )?;
-                for r in anchor_row..anchor_row + height {
-                    for c in anchor_column..anchor_column + width {
-                        if r == anchor_row && c == anchor_column {
-                            continue;
-                        }
-                        // We ignore errors here
-                        let _ = ws.cell_clear_contents(r, c);
-                    }
-                }
+                ws.clear_array_footprint(anchor_row, anchor_column, width, height, true);
             }
         };
         Ok(())
@@ -3661,11 +3649,7 @@ impl<'a> Model<'a> {
                     CellStructure::DynamicFormula { range }
                     | CellStructure::ArrayFormula { range, .. } => {
                         let (width, height) = range;
-                        for r in row..row + height {
-                            for c in column..column + width {
-                                let _ = ws.cell_clear_contents(r, c);
-                            }
-                        }
+                        ws.clear_array_footprint(row, column, width, height, false);
                     }
                     _ => {
                         let _ = ws.cell_clear_contents(row, column);
@@ -3769,10 +3753,10 @@ impl<'a> Model<'a> {
         }
         // The spill of a dynamic array reached from the range goes away whole,
         // but only the part of it inside the range was selected for clearing.
-        // The cells outside keep their style, so the spill is torn down with
-        // `cell_clear_contents` (which materializes an `EmptyCell` holding the
-        // style) instead of a removal, which would drop it.
-        let mut spill_to_clear: Vec<(i32, i32)> = Vec::new();
+        // The cells outside keep their style, so the footprint is torn down
+        // with the style-preserving `Worksheet::clear_array_footprint` instead
+        // of a removal, which would drop it.
+        let mut spills: Vec<(i32, i32, i32, i32)> = Vec::new();
         {
             let worksheet = self.workbook.worksheet(area.sheet)?;
             for row in area.row..area.row + area.height {
@@ -3784,17 +3768,11 @@ impl<'a> Model<'a> {
                     }) = worksheet.cell(row, column)
                     {
                         let (width, height) = *r;
-                        for r in row..row + height {
-                            for c in column..column + width {
-                                spill_to_clear.push((r, c));
-                            }
-                        }
+                        spills.push((row, column, width, height));
                     }
                 }
             }
         }
-        spill_to_clear.sort_unstable();
-        spill_to_clear.dedup();
         let worksheet = self.workbook.worksheet_mut(area.sheet)?;
         // Cells in the range lose content and style alike. This runs before the
         // spill teardown so a spill cell inside the range is cleared of its own
@@ -3804,9 +3782,11 @@ impl<'a> Model<'a> {
                 let _ = worksheet.remove_cell(row, column);
             }
         }
-        for (row, column) in spill_to_clear {
-            // Errors are ignored: the cell may already be gone with the range.
-            let _ = worksheet.cell_clear_contents(row, column);
+        for (row, column, width, height) in spills {
+            // The anchor is inside the range, so its removal above is undone
+            // by the teardown re-materializing an `EmptyCell` there, exactly
+            // as it is for the footprint's other in-range cells.
+            worksheet.clear_array_footprint(row, column, width, height, false);
         }
         // Deleting the cells also removes their links. Each removal is
         // journaled: a stranded link can sit at a position with no cell, so
@@ -3894,15 +3874,8 @@ impl<'a> Model<'a> {
                     v: FormulaValue::Unevaluated,
                 },
             );
-            // Delete all spill cells
-            for r in row..row + height {
-                for c in column..column + width {
-                    if r == row && c == column {
-                        continue;
-                    }
-                    let _ = ws.cell_clear_contents(r, c);
-                }
-            }
+            // Delete all spill cells, keeping the just-rewritten anchor.
+            ws.clear_array_footprint(row, column, width, height, true);
         }
         Ok(())
     }
