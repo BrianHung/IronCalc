@@ -21,12 +21,12 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 `Model::evaluate` in incremental mode (`model/incremental.rs::evaluate_selective`):
 
 1. Drain each worksheet's write log and derive the dirty set from it. A cell that stopped being a formula also drops its outgoing edges.
-2. Add every cell that reads the clock or a random source. Those are always dirty.
+2. Add every cell that reads the clock or a random source, and every cell whose last result was not a function value (see below). Those are always dirty.
 3. Collect every cell reachable from the dirty set through cell, range, and input edges.
 4. If the pass cannot be modeled (see fallbacks below), run a full pass instead.
 5. Evaluate the affected cells in topological order. While each formula runs, a tracer records what it reads; when it finishes, those reads replace its edges in the graph.
 6. If a recomputed cell's value, type, and link are unchanged, nothing downstream of it is recomputed.
-7. Cells outside the affected set are served their stored values. Stored values are lossless (`FormulaValue::Empty` preserves blank results), so evaluation order never changes results.
+7. Cells outside the affected set are served their stored values. Stored values are lossless (`FormulaValue::Empty` preserves blank results), so evaluation order never changes results — for every cell whose stored value is a function value.
 8. Changes are accumulated for `Model::take_changed_cells`.
 
 ## Where things live
@@ -40,6 +40,21 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 | `worksheet.rs` | The only producer of journal entries. `sheet_data` is written through mutators that push a `Write`. |
 | `model/mod.rs` | `evaluate_cell` pushes a `ReadSet` frame, the `trace_cell`/`trace_rect`/`trace_input` helpers record into it, and a finished formula commits its reads to the graph. Tracing runs only in incremental mode. |
 
+## Cells that never serve a stored value
+
+Serving a stored value is only sound when that value is a function of the cell's inputs. Two kinds of cell fail that test, and both are found by reading the state the last pass left rather than by matching a shape:
+
+- **A cell on a dependency cycle, anything downstream of one, and any cell that reported `#CIRC!`.** A cycle has no fixed point: what its members hold is an artifact of which member the walk entered first, and a reader of one holds whatever it saw mid-cycle (`COUNT` swallows a `#CIRC!` into a number). Full re-derives all of it from scratch on every pass, so incremental seeds those cells dirty on every pass and recomputes them and their readers. The set is the cells `topo_order` cannot place (those on a cycle plus everything after one), rebuilt over the whole graph after each full pass and over the cone after each incremental one, plus every cell whose stored value is `#CIRC!` — the evaluator's own report that it re-entered itself, which stands even where no edge recorded the read that closed the loop.
+- **A reader of a blocked spill anchor.** The anchor stores `#SPILL!` but hands a same-pass reader the live array's top-left value, so a reader recomputed against the stored error gets something a full pass never produces. Their stored values are served — they are what full computed — but recomputing one takes a full pass, which is the only pass that evaluates the anchor live, so a cone that reaches one falls back.
+
+`RecalcMode::Verify`'s stored-vs-live check skips exactly these cells, because they are exactly the cells a one-cell scratch frame reading the store cannot reproduce. The two lists are the same list.
+
+Cycle cells are recomputed on every pass but are not *reported* on every pass: the delta still names only the cells whose observable state moved. Full's `#CIRC!` placement can shift with any edit, and when it does the recompute sees it and the delta says so.
+
+## Array footprints are edges
+
+An array anchor writes its spill members as evaluation writes, not edits, so nothing journals them. Reading a member is therefore recorded as a read of the anchor: the array index maps every footprint position to its anchor, and `evaluate_cell` records the anchor's position along with the position actually read — including for a footprint cell the anchor has not filled yet, and including reads that the incremental scope answers from the store. Without that edge a cycle running through an array footprint is invisible to the graph, and the cells around it look like ordinary results.
+
 ## Non-cell inputs
 
 Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `RAND` records `Input::Random`, `SUBTOTAL` records row visibility, `ROW()` records its own position, and `OFFSET`/`INDIRECT` record their resolved targets plus `Input::Computed` so structural edits re-run them instead of shifting a stale snapshot. Readers of `Clock` and `Random` are always recalculated. Whether a cell must be recomputed and whether it belongs in the change report are separate facts, so a deterministic formula next to a volatile one is never reported by mistake.
@@ -50,7 +65,8 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - Row or column moves. Inserts and deletes stay incremental; the graph shifts positions and edges in place.
 - A dynamic array or spill anchor is among the affected cells. Spills need the full pass's two-phase ordering.
 - The edit reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one, and Verify disables it.
-- The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is ordered by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, so `#CIRC!` lands on the same member.
+- The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is walked by position instead, row-major, which is the order the full pass reaches those cells in: every cell that can recurse into a cycle member reads one, so it is a reader of an always-dirty cell and is in the cone, in the same relative order. Full's separate anchor phase has no counterpart here because an anchor that a cycle can see is itself always dirty, and an always-dirty anchor sends the pass to full one step earlier.
+- The cone reaches a reader of a blocked spill anchor.
 - The previous pass left convergence debt (see below).
 
 ## Convergence debt

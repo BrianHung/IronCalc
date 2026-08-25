@@ -1609,6 +1609,26 @@ impl<'a> Model<'a> {
             cell_reference.row,
             cell_reference.column,
         );
+        // A cell inside an array's footprint holds a value its anchor wrote, so
+        // reading it is a read of the anchor. Nothing else records that: the
+        // anchor's writes into its footprint are evaluation writes, not edits.
+        // Taken from the array index rather than the cell, so a footprint
+        // position the anchor has not filled yet still names its anchor, and
+        // recorded before the scope gate below, which can serve the stored
+        // value without ever reaching the anchor. Without this edge a cycle
+        // closing through an array footprint is invisible to the graph.
+        if !self.graph.arrays.is_empty() && self.tracing() {
+            let position = (
+                cell_reference.sheet,
+                cell_reference.row,
+                cell_reference.column,
+            );
+            if let Some(anchor) = self.graph.arrays.anchor_of(position) {
+                if anchor != position {
+                    self.trace_cell(anchor.0, anchor.1, anchor.2);
+                }
+            }
+        }
         // Incremental pass: a cell outside the affected set did not change, so
         // return its stored value instead of recomputing it (and its precedents).
         if let Some(scope) = &self.recompute_scope {
@@ -3439,7 +3459,9 @@ impl<'a> Model<'a> {
                 ) {
                     self.cse_rects = None;
                 }
-                incremental::array_footprint(cell, sheet, row, column, &mut |p| footprint.push(p));
+                incremental::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
+                    footprint.push((p, anchor))
+                });
             }
             match (was_formula, is_formula_now) {
                 (false, true) => self.formula_cell_count += 1,
@@ -3448,8 +3470,8 @@ impl<'a> Model<'a> {
                 }
                 _ => {}
             }
-            for p in footprint {
-                self.graph.arrays.insert(p);
+            for (p, anchor) in footprint {
+                self.graph.arrays.insert(p, anchor);
             }
         }
     }
@@ -3598,6 +3620,15 @@ impl<'a> Model<'a> {
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
             self.collect_array_cells();
+            // This pass rebuilt every edge, so the never-served set is rebuilt
+            // over the whole graph: a cycle anywhere in the workbook has to be
+            // known here, because later incremental passes only look at the
+            // cone their seeds reach, and a cycle they do not know about is one
+            // they never seed.
+            let nodes = self.graph.nodes();
+            let cone = self.graph.cycle_cone(&nodes);
+            self.refresh_unstable_cells(cone, &nodes);
+            self.refresh_blocked_array_readers();
             // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();
         } else {
