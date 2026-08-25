@@ -38,6 +38,7 @@ use crate::{
 
 use crate::{cf_types::CfCellResult, tz::Tz};
 
+pub(crate) mod cse_guard;
 mod incremental;
 
 #[cfg(any(test, feature = "mock_time"))]
@@ -279,10 +280,12 @@ pub struct Model<'a> {
     /// structural edit dropped the member cell itself. `None` means stale;
     /// structural edits, sheet changes, and CSE anchor writes reset it.
     pub(crate) cse_rects: Option<Vec<CseRect>>,
-    /// True while `move_cell` relocates cells through the user entry points
-    /// during a structural edit; the member guard applies to user writes, not
-    /// to the edit's own interim states.
-    pub(crate) cse_member_guard_suspended: bool,
+    /// Suspended while `move_cell` relocates cells through the user entry
+    /// points during a structural edit; the member guard applies to user
+    /// writes, not to the edit's own interim states. The flag inside is
+    /// private to [`crate::model::cse_guard`]: only
+    /// [`Model::with_cse_guard_suspended`] can flip it.
+    pub(crate) cse_member_guard: cse_guard::CseMemberGuard,
     /// Set when an evaluation write changes an array footprint: a spill was
     /// written, a CSE range filled, or a dynamic anchor stored `#SPILL!`. The
     /// incremental pass that observes it falls back to Full, whose
@@ -1960,7 +1963,7 @@ impl<'a> Model<'a> {
             wrote_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
-            cse_member_guard_suspended: false,
+            cse_member_guard: cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
@@ -2572,7 +2575,8 @@ impl<'a> Model<'a> {
                 // anchor still owns and refills its rectangle; the position is
                 // still part of the array, and writing there would be silently
                 // undone by the next evaluation.
-                if !self.cse_member_guard_suspended && self.covered_by_cse_rect(sheet, row, column)
+                if !self.cse_member_guard.is_suspended()
+                    && self.covered_by_cse_rect(sheet, row, column)
                 {
                     return Err(
                         "Cannot write in a cell that is part of an array formula".to_string()

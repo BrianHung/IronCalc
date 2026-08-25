@@ -125,9 +125,13 @@ fn fn_items(src: &str) -> Vec<(String, String)> {
 /// anchor and then the placeholders of the rectangle the anchor has just
 /// re-declared, so it must suspend the guard — through the scoped
 /// `with_cse_guard_suspended`, which restores the flag on every exit path.
-/// Nothing in the type system forces a future `*_unchecked` rebuild path to
-/// use the scope, or stops one from flipping the flag by hand and leaking it
-/// on an early return: this gate does both.
+///
+/// That a rebuild path cannot suspend the guard any *other* way is no longer
+/// checked here: the flag is a private field of `model::cse_guard`, so a
+/// hand-rolled set-then-reset pair — the one that leaks the suspension on an
+/// early `?` between its halves — does not compile. What privacy cannot say
+/// is that a future `*_unchecked` rebuild path must reach for the scope at
+/// all. That positive obligation is what is left of this gate.
 #[test]
 fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
     let actions = include_str!("../actions.rs");
@@ -138,16 +142,6 @@ fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
     let items = fn_items(actions);
     let mut rebuild_writers = 0;
     for (name, body) in &items {
-        // Only the scoped helper may touch the flag: a raw set-then-reset
-        // pair leaks the suspension on an early `?` return between the two.
-        if name != "with_cse_guard_suspended" {
-            assert!(
-                !body.contains("cse_member_guard_suspended"),
-                "{name} in actions.rs manipulates cse_member_guard_suspended \
-                 directly; go through with_cse_guard_suspended so the flag is \
-                 restored on every exit path"
-            );
-        }
         let writes_cells = body.contains("set_user_input(")
             || body.contains("set_user_array_formula(")
             || (name != "rebuild_moved_cells" && body.contains("rebuild_moved_cells("))

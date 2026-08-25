@@ -708,7 +708,7 @@ impl<'a> Model<'a> {
             wrote_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
-            cse_member_guard_suspended: false,
+            cse_member_guard: crate::model::cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
             write_seeds: HashSet::new(),
