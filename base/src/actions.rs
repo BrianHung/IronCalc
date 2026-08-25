@@ -486,13 +486,20 @@ impl<'a> Model<'a> {
     }
 
     /// Writes the cells lifted out of a moved row or column back at their new
-    /// positions.
-    ///
-    /// Extracted so the caller can suspend the CSE member guard for the whole
-    /// rebuild, the way [`Model::move_cell`] does for a single cell: the
+    /// positions. Callers wrap it in [`Model::with_cse_guard_suspended`]: the
     /// rebuild writes the anchor of a CSE array and, right after it, the
-    /// placeholders of the rectangle the anchor has just re-declared. Those
-    /// are interim states of a structural edit, not user writes.
+    /// placeholders of the rectangle the anchor has just re-declared.
+    ///
+    /// Deliberately NOT unified with [`Model::move_cell_write`], which it
+    /// resembles. That path writes a plain formula graph-neutrally (through
+    /// `write_displaced_formula`) because it runs under a row or column
+    /// insert or delete, whose edge shift keeps the dependency graph usable
+    /// for an incremental next pass. This rebuild runs only under a row or
+    /// column *move*, which always forces a full graph rebuild
+    /// (`record_structural_edit` on `RowMove`/`ColumnMove`), so a formula
+    /// goes through the ordinary `set_user_input` path — and each lifted
+    /// cell's style is restored inline, which `move_cell` leaves to its
+    /// caller.
     fn rebuild_moved_cells(&mut self, sheet: u32, cells: Vec<MovedCell>) -> Result<(), String> {
         for (row, column, value, style_index, array) in cells {
             if let Some((width, height)) = array {
