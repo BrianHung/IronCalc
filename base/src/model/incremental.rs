@@ -747,20 +747,21 @@ impl Model<'_> {
     ///
     /// With no topological order the walk order is what decides which member of
     /// a cycle `evaluate_cell`'s recursion enters first, and so where `#CIRC!`
-    /// lands. That has to be Full's order, which is row-major over the whole
-    /// workbook, and a row-major walk of the cone reproduces it: a cell that
-    /// can recurse into a cycle member reads it, transitively, so it is a
-    /// reader of a never-served cell and therefore in the cone. Full reaches no
-    /// cycle member through a cell this walk does not also have, in the same
-    /// order.
+    /// lands. That has to be Full's order, and a walk of the cone reproduces
+    /// it: a cell that can recurse into a cycle member reads it, transitively,
+    /// so it is a reader of a never-served cell and therefore in the cone. Full
+    /// reaches no cycle member through a cell this walk does not also have.
     ///
-    /// Full runs one phase ahead of that walk -- `collect_spill_cells`, every
-    /// `Cell::ArrayFormula` first -- and this walk does not, because no array
-    /// formula that phase could reorder against the cycle can get here. Such an
-    /// anchor would read a cycle member, which makes it never-served, which
-    /// makes it a seed, and a seed that is an array anchor left through the
-    /// arrays→Full fallback above. Anchors that reach this walk are the ones
-    /// the cycle cannot see, where position in the walk decides nothing.
+    /// Full's order is two phases, not one: `evaluate_full` runs
+    /// `collect_spill_cells` (every `Cell::ArrayFormula`, row-major) and
+    /// evaluates those before walking the rest of the workbook row-major. The
+    /// cone is walked the same way: array formulas first, then the rest, each
+    /// row-major. Anything with a real spill footprint took the arrays→Full
+    /// fallback before reaching here, so the only anchors left are
+    /// scalar-result (1x1) ones; they write no members, which is why phase 1's
+    /// spill-order correction has nothing to do. What phase 1 still decides is
+    /// the entry point, for an anchor a cycle can reach that is not itself a
+    /// seed -- the pass a cycle first closes around one, say.
     fn recompute_all(
         &mut self,
         affected: &HashSet<Position>,
@@ -773,8 +774,12 @@ impl Model<'_> {
         for &position in &order {
             self.invalidate(position);
         }
+        let (mut walk, rest): (Vec<Position>, Vec<Position>) = order
+            .iter()
+            .partition(|&&position| self.is_array_formula(position));
+        walk.extend(rest);
         self.recompute_scope = Some(affected.clone());
-        for &(sheet, row, column) in &order {
+        for (sheet, row, column) in walk {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
         }
         self.recompute_scope = None;
@@ -800,6 +805,13 @@ impl Model<'_> {
                 ..
             })
         )
+    }
+
+    /// Whether `position` holds an array formula of either kind. This is
+    /// exactly `collect_spill_cells`'s phase-1 membership test, so that
+    /// `recompute_all` can reproduce the full pass's two-phase walk order.
+    fn is_array_formula(&self, position: Position) -> bool {
+        matches!(self.cell_at(position), Some(Cell::ArrayFormula { .. }))
     }
 
     /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full

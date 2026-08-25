@@ -469,3 +469,44 @@ fn cse_footprint_cycle_stored_value_diverges_from_a_live_reeval() {
         Op::Evaluate,
     ]);
 }
+
+/// Coverage-guided fuzz, run against the never-served rule and minimized. A
+/// second cycle at `G19`/`H19` keeps every pass's cone unorderable, so the
+/// pass that closes a *new* cycle -- `A1`'s self-range `SUBTOTAL` and the
+/// `SEQUENCE` anchor at `D4` that reads `A1` -- is walked by position rather
+/// than redone as full. Position order then has to be full's, and full's is
+/// two phases: `D4` is an anchor, so full enters the new cycle there and `A1`
+/// absorbs the `#CIRC!`; a one-phase row-major walk enters at `A1` and leaves
+/// `#CIRC!` on the anchor, which never spills again. `D4` is not a seed on
+/// that pass, so no anchor fallback stands in for the phase.
+#[test]
+fn new_cycle_around_an_anchor_places_circ_like_full_phase_one() {
+    assert_clean(&[
+        Op::Set {
+            sheet: 0,
+            row: 19,
+            col: 7,
+            value: "=H19+1".to_string(),
+        },
+        Op::Set {
+            sheet: 0,
+            row: 19,
+            col: 8,
+            value: "=G19+1".to_string(),
+        },
+        Op::Set {
+            sheet: 0,
+            row: 4,
+            col: 4,
+            value: "=SEQUENCE(MOD(A1,3)+1)".to_string(),
+        },
+        Op::Evaluate,
+        Op::Set {
+            sheet: 0,
+            row: 1,
+            col: 1,
+            value: "=SUBTOTAL(103,A1:D12)".to_string(),
+        },
+        Op::Evaluate,
+    ]);
+}
