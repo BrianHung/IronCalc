@@ -251,10 +251,6 @@ enum GraphState {
 struct Positions(HashSet<Position>);
 
 impl Positions {
-    fn contains(&self, cell: &Position) -> bool {
-        self.0.contains(cell)
-    }
-
     fn replace(&mut self, cells: HashSet<Position>) {
         self.0 = cells;
     }
@@ -264,32 +260,50 @@ impl Positions {
     }
 }
 
-/// Array/spill cells.
+/// Array/spill cells, each mapped to the anchor that produces it. The anchor
+/// maps to itself. Reading any of these positions is a read of that anchor,
+/// which is the only way the graph learns that a formula depends on an array's
+/// output: the anchor's writes into its footprint are evaluation writes, not
+/// edits, so nothing else records them.
 #[derive(Clone, Default)]
-pub(crate) struct ArrayCells(Positions);
+pub(crate) struct ArrayCells(HashMap<Position, Position>);
 
 impl ArrayCells {
     pub(crate) fn contains(&self, cell: &Position) -> bool {
-        self.0.contains(cell)
+        self.0.contains_key(cell)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The anchor whose footprint covers `cell`, if any.
+    pub(crate) fn anchor_of(&self, cell: Position) -> Option<Position> {
+        self.0.get(&cell).copied()
     }
 
     pub(crate) fn snapshot(&self) -> HashSet<Position> {
-        self.0 .0.clone()
+        self.0.keys().copied().collect()
     }
 
-    /// Adds one position. Journal draining indexes newly written array and
-    /// spill cells here; a stale extra entry only forces a conservative Full
-    /// fallback, and the next full pass rebuilds the set exactly.
-    pub(crate) fn insert(&mut self, cell: Position) {
-        self.0 .0.insert(cell);
+    /// Adds one position and the anchor that owns it. Journal draining indexes
+    /// newly written array and spill cells here; a stale extra entry only
+    /// forces a conservative Full fallback, and the next full pass rebuilds the
+    /// index exactly.
+    pub(crate) fn insert(&mut self, cell: Position, anchor: Position) {
+        self.0.insert(cell, anchor);
     }
 
-    fn replace(&mut self, cells: HashSet<Position>) {
-        self.0.replace(cells);
+    fn replace(&mut self, cells: HashMap<Position, Position>) {
+        self.0 = cells;
     }
 
     fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0.shift(shift_pos);
+        self.0 = self
+            .0
+            .drain()
+            .filter_map(|(cell, anchor)| Some((shift_pos(cell)?, shift_pos(anchor)?)))
+            .collect();
     }
 }
 
@@ -342,6 +356,25 @@ pub(crate) struct DependencyGraph {
     state: GraphState,
     pub(crate) arrays: ArrayCells,
     pub(crate) referenced: ReferencedRanges,
+    /// Cells whose last result was not a genuine function value, because they
+    /// sit on a dependency cycle, downstream of one, or reported `#CIRC!`. A
+    /// cycle has no fixed point, so what they hold is an artifact of where the
+    /// cycle was entered. Their stored value is never served: every pass seeds
+    /// them dirty, so they and their readers recompute, exactly as a full pass
+    /// re-derives them from scratch. Rebuilt after every pass by
+    /// `Model::refresh_unstable_cells`.
+    never_served: Positions,
+    /// Readers of a blocked spill anchor: the other cells whose last result was
+    /// not a function of the store. The anchor holds `#SPILL!` but hands a
+    /// same-pass reader the live array's top-left value instead, so a reader
+    /// recomputed against the stored error would not get what a full pass gets.
+    /// Their stored value is served (it is what full computed, and it moves
+    /// only when the anchor's cone moves), but recomputing one takes the full
+    /// pass, which is the only pass that evaluates the anchor live. Rebuilt by
+    /// `Model::refresh_blocked_array_readers` on every full pass; a blocked
+    /// anchor can only appear or clear on one, because an evaluation write to
+    /// an array footprint sends the pass to full.
+    blocked_array_readers: Positions,
     /// Insert/delete can move data cells the dirty cone does not name. Cleared
     /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
     structural_unknown: bool,
@@ -355,12 +388,15 @@ pub(crate) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    /// Drops all edges; a full pass rebuilds them.
+    /// Drops all edges; a full pass rebuilds them. The never-served and
+    /// blocked-reader sets are derived from those edges, so they go too.
     pub(crate) fn clear_edges(&mut self) {
         self.cell_dependents.clear();
         self.range_dependents.clear();
         self.input_dependents.clear();
         self.precedents.clear();
+        self.never_served.replace(HashSet::new());
+        self.blocked_array_readers.replace(HashSet::new());
     }
 
     /// Records that `dependent` reads `precedent`. Idempotent.
@@ -526,7 +562,7 @@ impl DependencyGraph {
         (seeds, affected)
     }
 
-    pub(crate) fn replace_arrays(&mut self, cells: HashSet<Position>) {
+    pub(crate) fn replace_arrays(&mut self, cells: HashMap<Position, Position>) {
         self.arrays.replace(cells);
     }
 
@@ -554,10 +590,50 @@ impl DependencyGraph {
         dependents
     }
 
+    /// The node set of the graph: every cell that has evaluated as a formula,
+    /// plus every array footprint position. Only a formula reads anything, but
+    /// a footprint cell relays its anchor's output to the formulas that read
+    /// it, so a cycle can run through one.
+    pub(crate) fn nodes(&self) -> HashSet<Position> {
+        let mut nodes: HashSet<Position> = self.precedents.keys().copied().collect();
+        nodes.extend(self.arrays.snapshot());
+        nodes
+    }
+
+    /// Replaces the set of cells whose stored value may not be served. See
+    /// [`Self::never_served`].
+    pub(crate) fn set_never_served(&mut self, cells: HashSet<Position>) {
+        self.never_served.replace(cells);
+    }
+
+    /// Cells whose last result was not a genuine function value. Seeded dirty
+    /// on every incremental pass, and never compared against a re-evaluation
+    /// that reads the store.
+    pub(crate) fn never_served(&self) -> &HashSet<Position> {
+        &self.never_served.0
+    }
+
+    /// Replaces the readers of blocked spill anchors. See
+    /// [`Self::blocked_array_readers`].
+    pub(crate) fn set_blocked_array_readers(&mut self, cells: HashSet<Position>) {
+        self.blocked_array_readers.replace(cells);
+    }
+
+    /// Cells that read a blocked spill anchor: recomputing one takes a full
+    /// pass, and no re-evaluation against the store reproduces it.
+    pub(crate) fn blocked_array_readers(&self) -> &HashSet<Position> {
+        &self.blocked_array_readers.0
+    }
+
     /// Orders `affected` so each cell follows the affected cells it reads.
-    /// Returns `None` when the affected set contains a dependency cycle, so the
-    /// caller can fall back to the recursive recompute that reports `#CIRC!`.
-    pub(crate) fn topo_order(&self, affected: &HashSet<Position>) -> Option<Vec<Position>> {
+    /// Returns `Err` with the cells no order can place -- those on a dependency
+    /// cycle plus everything downstream of one -- so the caller can fall back
+    /// to the recursive recompute that reports `#CIRC!`, and so the cycle set
+    /// can be rebuilt from the same walk.
+    pub(crate) fn topo_order(
+        &self,
+        affected: &HashSet<Position>,
+    ) -> Result<Vec<Position>, HashSet<Position>> {
         let successors = |cell: Position| -> Vec<Position> {
             let mut dependents: Vec<Position> = self
                 .dependents_of(cell)
@@ -593,7 +669,19 @@ impl DependencyGraph {
                 }
             }
         }
-        (order.len() == affected.len()).then_some(order)
+        if order.len() == affected.len() {
+            return Ok(order);
+        }
+        let ordered: HashSet<Position> = order.into_iter().collect();
+        Err(affected.difference(&ordered).copied().collect())
+    }
+
+    /// The subset of `cells` lying on a dependency cycle or downstream of one:
+    /// exactly what [`Self::topo_order`] cannot place. `cells` must be closed
+    /// under dependents, so that every member of a cycle it touches is present
+    /// and the answer is a whole cycle rather than a slice of one.
+    pub(crate) fn cycle_cone(&self, cells: &HashSet<Position>) -> HashSet<Position> {
+        self.topo_order(cells).err().unwrap_or_default()
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
@@ -732,6 +820,8 @@ impl DependencyGraph {
         }
         self.arrays.shift(shift_pos);
         self.referenced.shift(sheet, axis, boundary, delta);
+        self.never_served.shift(shift_pos);
+        self.blocked_array_readers.shift(shift_pos);
         let shift_input = |input: crate::recalc::Input| -> Option<crate::recalc::Input> {
             match input {
                 crate::recalc::Input::OwnCoord(p) => {
