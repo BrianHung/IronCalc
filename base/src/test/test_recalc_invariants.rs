@@ -38,6 +38,24 @@ fn graph_is_only_notified_by_the_journal() {
     );
 }
 
+/// A function implementation must read cell state through the tracing
+/// accessors, so the read is recorded as a dependency edge. The raw path is
+/// `self.workbook`, a `pub` field.
+///
+/// This one stays a grep-gate. `Model`'s own raw getters (`fetch_cell`,
+/// `get_cell_value`) are already out of reach: they are private to
+/// `crate::model`, and `functions/` is not a descendant of it, so calling one
+/// does not compile. What is left reachable is the `pub` `workbook` field and
+/// the `pub` untraced API on `Model` — and neither is expressible as a
+/// `disallowed-methods` entry at a sane cost: a field is not a method, and the
+/// getters underneath it have 35 to 687 call sites across the workspace
+/// (`Worksheet::cell` alone has 57), so every candidate ban would need dozens
+/// of allow sites and would stop meaning anything.
+///
+/// The structural fix is a receiver change, not a lint: give `functions/` a
+/// `TracedModel` newtype wrapping `&mut Model` that exposes the tracing
+/// accessors and no `workbook`, and move the function `impl`s onto it. Then
+/// this gate can be deleted outright.
 #[test]
 fn functions_do_not_touch_the_workbook_directly() {
     let functions = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/functions");
