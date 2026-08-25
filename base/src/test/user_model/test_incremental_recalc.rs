@@ -2236,6 +2236,47 @@ fn recompute_all_places_circ_through_a_scalar_anchor_like_full() {
     );
 }
 
+/// Phase 1 must walk its anchors in Full's own row-major order, not merely
+/// ahead of the rest of the cone. Two scalar anchors close the cycle between
+/// themselves, so which one `collect_spill_cells` enters first decides which
+/// side absorbs `#CIRC!`; a phase 1 that reordered its anchors (walking them
+/// in reverse, say) would settle the cycle on the wrong side and, like every
+/// placement divergence, never recover.
+#[test]
+fn phase_one_walks_two_anchors_in_row_major_order() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("D1", "1");
+        m._set("B1", "=SEQUENCE(1,1,IFERROR(C2,100)+1+D1*0,1)");
+        m._set("C2", "=SEQUENCE(1,1,IFERROR(B1,200)+1,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    // A plain value edit keeps the pass selective; the known cycle drops it
+    // into `recompute_all`, where both anchors are phase 1 and only the
+    // row-major walk picks the same entry point as Full.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    // B1 is walked first: the recursion enters there, so C2's read of B1 is
+    // the one that sees `#CIRC!` and C2 absorbs the fallback.
+    assert_eq!(full._get_text("B1"), "202");
+    assert_eq!(full._get_text("C2"), "201");
+    assert_same_workbook(&full, &inc, "the known-cycle pass through two anchors");
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "3");
+        m.evaluate();
+        m.evaluate();
+    }
+    assert_same_workbook(&full, &inc, "the following passes");
+}
+
 /// The CSE variant of the same shape. A CSE anchor is in `graph.arrays` whatever
 /// its size, so this one leaves through the arrays→Full fallback rather than
 /// through `recompute_all`'s ordering; either way the placement has to match.
