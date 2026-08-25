@@ -51,12 +51,13 @@ pub(crate) enum EvalPass {
     Full,
 }
 
-/// The positions `cell` contributes to the array index: every position of a
-/// CSE anchor's declared rectangle (a structural delete can drop a member cell
-/// while the anchor still owns and refills the rectangle), a spill cell plus
-/// its anchor, and a dynamic anchor unless its last result was a plain 1x1
-/// scalar. A scalar dynamic anchor (`=LET(..)`, a called LAMBDA, `=INDEX(..)`)
-/// stays out so it does not force a Full pass; a blocked anchor (stored
+/// The positions `cell` contributes to the array index, each with the anchor
+/// that produces it: every position of a CSE anchor's declared rectangle (a
+/// structural delete can drop a member cell while the anchor still owns and
+/// refills the rectangle), a spill cell plus its anchor, and a dynamic anchor
+/// unless its last result was a plain 1x1 scalar. A scalar dynamic anchor
+/// (`=LET(..)`, a called LAMBDA, `=INDEX(..)`) stays out so it does not force
+/// a Full pass; a blocked anchor (stored
 /// `#SPILL!`) stays in, because full-mode same-pass readers observe the live
 /// array's top-left value rather than the stored error, which incremental can
 /// only match through the full pass; an unevaluated anchor's extent is unknown,
@@ -67,8 +68,9 @@ pub(super) fn array_footprint(
     sheet: u32,
     row: i32,
     col: i32,
-    out: &mut dyn FnMut(Position),
+    out: &mut dyn FnMut(Position, Position),
 ) {
+    let anchor = (sheet, row, col);
     match cell {
         Cell::ArrayFormula {
             kind: ArrayKind::Cse,
@@ -77,7 +79,7 @@ pub(super) fn array_footprint(
         } => {
             for r in row..row + height {
                 for c in col..col + width {
-                    out((sheet, r, c));
+                    out((sheet, r, c), anchor);
                 }
             }
         }
@@ -94,12 +96,13 @@ pub(super) fn array_footprint(
                 _ => true,
             };
             if !scalar_result {
-                out((sheet, row, col));
+                out(anchor, anchor);
             }
         }
         Cell::SpillCell { a, .. } => {
-            out((sheet, row, col));
-            out((sheet, a.0, a.1));
+            let owner = (sheet, a.0, a.1);
+            out(anchor, owner);
+            out(owner, owner);
         }
         _ => {}
     }
@@ -114,7 +117,7 @@ impl Model<'_> {
     /// and evaluation writes that change a footprint set `wrote_array_cells`,
     /// which sends the pass to Full and back here.
     pub(crate) fn collect_array_cells(&mut self) {
-        let mut array_cells = HashSet::new();
+        let mut array_cells = HashMap::new();
         let mut formula_cell_count = 0;
         for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
             let sheet = sheet_index as u32;
@@ -129,8 +132,8 @@ impl Model<'_> {
                     if cell.get_formula().is_some() {
                         formula_cell_count += 1;
                     }
-                    array_footprint(cell, sheet, row, col, &mut |p| {
-                        array_cells.insert(p);
+                    array_footprint(cell, sheet, row, col, &mut |p, anchor| {
+                        array_cells.insert(p, anchor);
                     });
                 }
             }
@@ -291,7 +294,14 @@ impl Model<'_> {
     /// store (class C: `FormulaValue::Empty` vs a live blank).
     #[cfg(feature = "recalc_verify")]
     fn assert_stored_matches_live(&mut self) {
-        let skip = self.graph.always_dirty_cells();
+        // The cells that never serve a stored value are exactly the cells this
+        // check cannot make: a volatile re-rolls, and a cell whose last result
+        // was not a function value -- on a cycle, downstream of one, or reading
+        // a blocked anchor -- holds something a one-cell scratch frame reading
+        // the store does not reproduce.
+        let mut skip = self.graph.always_dirty_cells();
+        skip.extend(self.graph.never_served().iter().copied());
+        skip.extend(self.graph.blocked_array_readers().iter().copied());
         let cells = self.get_all_cells();
         let saved_cells = self.cells.clone();
         let saved_graph = self.graph.clone();
@@ -319,16 +329,6 @@ impl Model<'_> {
                     .and_then(|ws| ws.cell(c.row, c.column)),
                 Some(Cell::ArrayFormula { .. } | Cell::SpillCell { .. })
             ) {
-                continue;
-            }
-            // A cycle has no fixpoint: a cell on one stores a value computed
-            // from mid-cycle reads (COUNT swallows a mid-cycle #CIRC! into a
-            // number), so stored == live cannot hold there. Skipping when the
-            // cell's cone has no topological order over-skips cells that
-            // merely feed a downstream cycle, which is an acceptable loss of
-            // oracle coverage in exchange for no false alarms.
-            let cone = self.graph.reachable(vec![position]);
-            if self.graph.topo_order(&cone).is_none() {
                 continue;
             }
             let before = self.change_key(position);
@@ -453,6 +453,18 @@ impl Model<'_> {
         for &cell in &always_dirty {
             self.graph.mark_dirty(cell);
         }
+        // Cells whose last result was not a genuine function value never serve
+        // it back: a cycle has no fixed point, so what its members and their
+        // readers hold is an artifact of where the cycle was entered, and a
+        // blocked anchor's `#SPILL!` is not what its readers saw. A full pass
+        // re-derives all of that from scratch every time; seeding them dirty
+        // makes this pass do the same, and pulls their readers into the cone
+        // with them. They are not `always_report`: the delta still names only
+        // the cells whose value actually moved.
+        let never_served: Vec<Position> = self.graph.never_served().iter().copied().collect();
+        for &cell in &never_served {
+            self.graph.mark_dirty(cell);
+        }
         let (seeds, affected) = self.graph.take_seeds_and_affected();
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
@@ -474,6 +486,17 @@ impl Model<'_> {
         // and behaves as a scalar (`=LET(..)`, a called LAMBDA, `=INDEX(..)`);
         // it stays incremental. If its result grows during the pass, the
         // post-pass arrays comparison below falls back to Full.
+        // A reader of a blocked anchor is in the same position: its value came
+        // from the live array's top-left, not from the anchor's stored
+        // `#SPILL!`, so recomputing it here would read the error instead. Only
+        // the full pass evaluates the anchor live.
+        if affected
+            .iter()
+            .any(|cell| self.graph.blocked_array_readers().contains(cell))
+        {
+            self.evaluate_full_untracked();
+            return EvalPass::Full;
+        }
         if affected.iter().any(|cell| self.graph.arrays.contains(cell))
             || seeds.iter().any(|cell| self.is_dynamic_array_anchor(*cell))
         {
@@ -495,11 +518,11 @@ impl Model<'_> {
         // still reports `#CIRC!`.
         self.saw_circular_reference = false;
         let (changed, cycle_was_known) = match self.graph.topo_order(&affected) {
-            Some(order) => (
+            Ok(order) => (
                 self.recompute_frontier(&affected, &seeds, &always_report, &order, HashSet::new()),
                 false,
             ),
-            None => (self.recompute_all(&affected, &always_report), true),
+            Err(_) => (self.recompute_all(&affected, &always_report), true),
         };
         // A cycle the cone did not know about: the closing edge is only observed
         // while the pass runs, so the ordering above was computed on a graph that
@@ -520,6 +543,20 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
+        // Rebuild the set from the graph this pass recorded. The cone is
+        // closed under dependents, and every cell that could have gained or
+        // lost an edge re-evaluated inside it, so a cycle that formed or broke
+        // is visible here and cells outside the cone cannot have changed
+        // status. When the cone ordered cleanly and no `#CIRC!` was reported
+        // there is no cycle to find, and only the per-cell witnesses can add
+        // anything. A blocked anchor cannot appear here at all: it is in the
+        // array index, so a cone reaching one left through the Full fallback.
+        let cycle_cone = if cycle_was_known || self.saw_circular_reference {
+            self.graph.cycle_cone(&affected)
+        } else {
+            HashSet::new()
+        };
+        self.refresh_unstable_cells(cycle_cone, &affected);
         // Record only the changed cells for `take_changed_cells`, unless a full
         // pass has already marked everything changed since the last read, or an
         // insert/delete moved cells the dirty cone does not name.
@@ -533,6 +570,91 @@ impl Model<'_> {
         self.evaluate_conditional_formatting();
         self.record_cf_changes(cf_before);
         EvalPass::Incremental
+    }
+
+    /// Rebuilds the set of cells whose last result was not a genuine function
+    /// value: `cone`, the cells the graph could not order, plus every cell in
+    /// `scope` that reported `#CIRC!`.
+    ///
+    /// The witness is not redundant with the cone. The cone is what the
+    /// recorded edges say; a stored `#CIRC!` is the evaluator's own report that
+    /// a cell re-entered itself, and it stands even if the read that closed the
+    /// loop left no edge behind.
+    pub(crate) fn refresh_unstable_cells(
+        &mut self,
+        mut cone: HashSet<Position>,
+        scope: &HashSet<Position>,
+    ) {
+        cone.extend(
+            scope
+                .iter()
+                .copied()
+                .filter(|&position| self.stores_circular_error(position)),
+        );
+        self.graph.set_never_served(cone);
+    }
+
+    /// Whether the cell at `position` reported `#CIRC!`: the evaluator's own
+    /// record that it was re-entered while it was still evaluating.
+    fn stores_circular_error(&self, position: Position) -> bool {
+        use crate::expressions::token::Error::CIRC;
+        use crate::types::{FormulaValue, SpillValue};
+        match self.cell_at(position) {
+            Some(
+                Cell::CellFormula {
+                    v: FormulaValue::Error { ei, .. },
+                    ..
+                }
+                | Cell::ArrayFormula {
+                    v: FormulaValue::Error { ei, .. },
+                    ..
+                },
+            ) => *ei == CIRC,
+            Some(Cell::SpillCell {
+                v: SpillValue::Error(ei),
+                ..
+            }) => *ei == CIRC,
+            _ => false,
+        }
+    }
+
+    /// Rebuilds the readers of blocked spill anchors: the cells a full pass
+    /// hands the live array's top-left value while the anchor itself stores
+    /// `#SPILL!`. Run only from the full pass, which is the only pass that can
+    /// block or unblock an anchor -- an evaluation write to an array footprint
+    /// sends the pass to full -- and the only pass whose walk sees every
+    /// anchor. A stale entry costs one conservative full fallback.
+    pub(crate) fn refresh_blocked_array_readers(&mut self) {
+        use crate::expressions::token::Error::SPILL;
+        use crate::types::FormulaValue;
+        let blocked: Vec<Position> = self
+            .graph
+            .arrays
+            .snapshot()
+            .into_iter()
+            .filter(|&position| {
+                matches!(
+                    self.cell_at(position),
+                    Some(Cell::ArrayFormula {
+                        v: FormulaValue::Error { ei: SPILL, .. },
+                        ..
+                    })
+                )
+            })
+            .collect();
+        let readers = blocked
+            .into_iter()
+            .flat_map(|anchor| self.graph.dependents_of(anchor))
+            .collect();
+        self.graph.set_blocked_array_readers(readers);
+    }
+
+    /// The stored cell at `position`, if any.
+    fn cell_at(&self, (sheet, row, column): Position) -> Option<&Cell> {
+        self.workbook
+            .worksheet(sheet)
+            .ok()
+            .and_then(|ws| ws.cell(row, column))
     }
 
     /// A cell's observable signature: value, type (so an error and a same-text
@@ -625,14 +747,21 @@ impl Model<'_> {
     ///
     /// With no topological order the walk order is what decides which member of
     /// a cycle `evaluate_cell`'s recursion enters first, and so where `#CIRC!`
-    /// lands. That has to be Full's order, and Full's order is two phases, not
-    /// one: `evaluate_full` runs `collect_spill_cells` (every
-    /// `Cell::ArrayFormula`, row-major) and evaluates those before walking the
-    /// rest of the workbook row-major. The cone is walked the same way: array
-    /// formulas first, then the rest, each row-major. Anything with a real
-    /// spill footprint took the arrays→Full fallback before reaching here, so
-    /// the only anchors left are scalar-result (1x1) ones; they write no
-    /// members, which is why phase 1's spill-order correction has nothing to do.
+    /// lands. That has to be Full's order, and a walk of the cone reproduces
+    /// it: a cell that can recurse into a cycle member reads it, transitively,
+    /// so it is a reader of a never-served cell and therefore in the cone. Full
+    /// reaches no cycle member through a cell this walk does not also have.
+    ///
+    /// Full's order is two phases, not one: `evaluate_full` runs
+    /// `collect_spill_cells` (every `Cell::ArrayFormula`, row-major) and
+    /// evaluates those before walking the rest of the workbook row-major. The
+    /// cone is walked the same way: array formulas first, then the rest, each
+    /// row-major. Anything with a real spill footprint took the arrays→Full
+    /// fallback before reaching here, so the only anchors left are
+    /// scalar-result (1x1) ones; they write no members, which is why phase 1's
+    /// spill-order correction has nothing to do. What phase 1 still decides is
+    /// the entry point, for an anchor a cycle can reach that is not itself a
+    /// seed -- the pass a cycle first closes around one, say.
     fn recompute_all(
         &mut self,
         affected: &HashSet<Position>,
@@ -681,14 +810,8 @@ impl Model<'_> {
     /// Whether `position` holds an array formula of either kind. This is
     /// exactly `collect_spill_cells`'s phase-1 membership test, so that
     /// `recompute_all` can reproduce the full pass's two-phase walk order.
-    fn is_array_formula(&self, (sheet, row, column): Position) -> bool {
-        matches!(
-            self.workbook
-                .worksheet(sheet)
-                .ok()
-                .and_then(|ws| ws.cell(row, column)),
-            Some(Cell::ArrayFormula { .. })
-        )
+    fn is_array_formula(&self, position: Position) -> bool {
+        matches!(self.cell_at(position), Some(Cell::ArrayFormula { .. }))
     }
 
     /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full

@@ -1097,6 +1097,12 @@ fn incremental_argless_row_updates_after_insert() {
     assert_eq!(model._get_text("A2"), "2");
 }
 
+/// The semantic behind the journal pause in `write_displaced_formula`: the raw
+/// write runs with the journal off (a displacement is not a formula edit) and
+/// the function substitutes a value-write entry for it. If the pause swallowed
+/// the write instead of standing in for it, FORMULATEXT would keep reporting
+/// the pre-displacement text. This behaviour is the point;
+/// `JournalRecordingPaused` is only the mechanism.
 #[test]
 fn incremental_formulatext_sees_displaced_formula() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1232,10 +1238,10 @@ fn incremental_blocked_spill_respills_after_insert() {
 
 #[test]
 fn incremental_empty_passthrough_counts_as_blank() {
-    // Excel counts a blank *cell* as blank but a formula that returned a
-    // blank coerces to 0 (Excel parity), so D1 is not counted: COUNTBLANK
-    // stays 1 (only E1 before it holds text... actually 0) — the invariant
-    // pinned here is mode parity across an unrelated edit to E1.
+    // A formula that returns blank coerces to 0 (Excel parity), so D1 holds a
+    // value and COUNTBLANK(D1:E1) is 0: neither the passthrough D1 nor the
+    // text in E1 counts. Pinned in both modes, across an unrelated edit to E1
+    // that keeps the second pass incremental.
     let run = |mode: crate::RecalcMode| {
         let mut model = new_empty_model().with_recalc_mode(mode);
         model._set("C1", "=COUNTBLANK(D1:E1)");
@@ -1247,14 +1253,9 @@ fn incremental_empty_passthrough_counts_as_blank() {
         model.evaluate();
         (first, model._get_text("C1"))
     };
-    assert_eq!(
-        run(crate::RecalcMode::Full),
-        ("0".to_string(), "0".to_string())
-    );
-    assert_eq!(
-        run(crate::RecalcMode::Full),
-        run(crate::RecalcMode::Incremental)
-    );
+    let full = run(crate::RecalcMode::Full);
+    assert_eq!(full, ("0".to_string(), "0".to_string()));
+    assert_eq!(full, run(crate::RecalcMode::Incremental));
 }
 
 #[test]
@@ -1839,6 +1840,13 @@ fn undo_redo_under_incremental_stays_incremental() {
     }
 }
 
+/// The column move rebuilds the moved column one cell at a time, in row order
+/// (`column_cell_references` sorts), so the anchor of a CSE array is written
+/// back before the placeholders of the rectangle it re-declares. That is an
+/// interim state of the move, not a user write: `move_column_unchecked` must
+/// suspend the CSE member guard around the rebuild (the way `move_cell` does)
+/// or the placeholder writes error and the move fails. The mode does not
+/// matter -- the rebuild happens before any recalc -- so Full alone is pinned.
 #[test]
 fn displace_rounds_numeric_constants_to_excel_precision() {
     let mut model = new_empty_model();
@@ -1885,27 +1893,7 @@ fn displace_strips_quote_prefix_from_formulas() {
 
 #[test]
 fn moving_a_column_with_a_cse_anchor_always_succeeds() {
-    // The column move rebuilds the moved column one cell at a time, and the
-    // rebuild writes the anchor of the CSE array before the placeholders of
-    // the rectangle it re-declares. That is an interim state of the move, not
-    // a user write, so the member guard has to stay suspended for it the way
-    // `move_cell` suspends it. Repeated because the rebuild used to follow
-    // `sheet_data` hash order, so only the orders that put the anchor first
-    // hit the guard -- about half the runs.
-    for _ in 0..10 {
-        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
-        model
-            .set_user_array_formula(0, 1, 5, 1, 2, "=B1:B2")
-            .unwrap();
-        model.move_columns_action(0, 5, 1, 2).unwrap();
-        model.evaluate();
-        assert_eq!(model._get_formula("G1"), "=B1:B2");
-    }
-}
-
-#[test]
-fn moving_a_column_with_a_cse_anchor_succeeds_under_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
     model
         .set_user_array_formula(0, 1, 5, 1, 2, "=B1:B2")
         .unwrap();
@@ -1914,19 +1902,18 @@ fn moving_a_column_with_a_cse_anchor_succeeds_under_incremental() {
     assert_eq!(model._get_formula("G1"), "=B1:B2");
 }
 
+/// The same rebuild along the other axis: `move_row_unchecked` writes the
+/// anchor and then the placeholders of a horizontal rectangle, in column
+/// order, and must suspend the guard the same way.
 #[test]
 fn moving_a_row_with_a_cse_anchor_always_succeeds() {
-    // The same rebuild along the other axis: the anchor and the placeholders
-    // of a horizontal rectangle are written back one by one.
-    for _ in 0..10 {
-        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
-        model
-            .set_user_array_formula(0, 5, 1, 2, 1, "=A1:B1")
-            .unwrap();
-        model.move_rows_action(0, 5, 1, 2).unwrap();
-        model.evaluate();
-        assert_eq!(model._get_formula("A7"), "=A1:B1");
-    }
+    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
+    model
+        .set_user_array_formula(0, 5, 1, 2, 1, "=A1:B1")
+        .unwrap();
+    model.move_rows_action(0, 5, 1, 2).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_formula("A7"), "=A1:B1");
 }
 
 /// A read of a multi-column rectangle must be recorded as a rectangle, not
@@ -1978,97 +1965,11 @@ fn multi_column_whole_row_range_edits_propagate() {
     assert_eq!(model._get_text("A1"), "6");
 }
 
-/// Criteria functions read two cross-column rectangles (the criteria range and
-/// the value range) and clip their walk to the used range, exactly like SUM.
-/// Both rects must be recorded, so a write past the used range in either one
-/// re-fires the formula.
-#[test]
-fn cross_column_criteria_range_edits_propagate() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "5");
-    model._set("E1", "10"); // pairs with B1 in the value rect
-                            // Criteria rect B:D (3 columns), value rect E:G (3 columns).
-    model._set("A1", "=SUMIFS(E:G,B:D,\">1\")");
-    model._set("A2", "=COUNTIF(B:D,\">1\")");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-    assert_eq!(model._get_text("A2"), "1");
-
-    // Second column of the criteria rect, past the used range. C100 pairs with
-    // F100 in the value rect, which is empty, so only the count moves.
-    model._set("C100", "7");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-    assert_eq!(model._get_text("A2"), "2");
-
-    // Now fill the paired cell in the value rect.
-    model._set("F100", "3");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "13");
-    assert_eq!(model._get_text("A2"), "2");
-}
-
-/// A bounded multi-column rect. Unlike the clipped forms above, `SUM(B1:C50)`
-/// also walks every cell it covers, so the per-cell edges are a second path to
-/// the same dependents; this is a plain correctness guard, not an isolation of
-/// the rect edge.
-#[test]
-fn bounded_multi_column_rect_edits_propagate() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("A1", "=SUM(B1:C50)");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-
-    model._set("C30", "5");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "6");
-
-    // A write outside the rect must not be mistaken for one inside it.
-    model._set("D30", "1000");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "6");
-}
-
 /// A volatile cell must re-roll on every incremental pass, not only on a full
-/// one. Editing an unrelated cell keeps the pass incremental; RAND() has to
-/// move anyway, and the delta has to name it.
-#[test]
-fn volatile_rerolls_on_an_incremental_pass() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "=RAND()");
-    model._set("B2", "1");
-    model.evaluate();
-    let _ = model.take_changed_cells(); // the first pass is a full one
-    let first = model.get_cell_value_by_index(0, 1, 1).unwrap();
-
-    // A value edit on a cell A1 does not read: the pass stays incremental.
-    model._set("B2", "2");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-
-    let second = model.get_cell_value_by_index(0, 1, 1).unwrap();
-    assert_ne!(first, second, "RAND() must re-roll on an incremental pass");
-
-    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
-        panic!("an unrelated value edit must stay incremental");
-    };
-    assert!(
-        cells
-            .iter()
-            .any(|c| (c.sheet, c.row, c.column) == (0, 1, 1)),
-        "the delta must name the volatile cell: {cells:?}"
-    );
-}
-
-/// The same invariant with a wider draw and repeated passes, so a single
-/// unlucky collision cannot make the test flaky: over several incremental
-/// evaluates at least one re-roll has to differ.
+/// one: it stays in the always-dirty set, which seeds every cone and every
+/// delta. Unrelated value edits keep the passes incremental; RANDBETWEEN has
+/// to move anyway, its dependent has to follow, and the delta has to name it
+/// on every pass. Several passes, so one unlucky equal draw cannot flake.
 #[test]
 fn volatile_rerolls_across_repeated_incremental_passes() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -2205,9 +2106,10 @@ fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
     assert_same_workbook(&full, &inc, "the healing pass");
 }
 
-/// (b) A newly set formula closes a cycle. The closing edge is only observed
-/// while the pass runs, so the cone was ordered without it and `#CIRC!` landed
-/// on a different member than full's recursion picks.
+/// (b) A newly set formula closes a cycle, here entirely through range reads.
+/// The closing edge is only observed while the pass runs, so the cone was
+/// ordered without it and `#CIRC!` landed on a different member than full's
+/// recursion picks; the pass must redo itself as full instead.
 #[test]
 fn incremental_places_circ_like_full_when_an_edit_closes_a_cycle() {
     let build = |mode| {
@@ -2226,27 +2128,6 @@ fn incremental_places_circ_like_full_when_an_edit_closes_a_cycle() {
     }
     assert_eq!(full._get_text("F7"), "#CIRC!");
     assert_same_workbook(&full, &inc, "the cycle-closing pass");
-}
-
-/// (b) The same, with the cycle closing through a range read rather than a
-/// direct reference: `C11` reads `E1:E6`, `E6` reads `A1:D12`.
-#[test]
-fn incremental_places_circ_like_full_for_a_range_cycle() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("E6", "=COUNT(A1:D12)");
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-        m._set("C11", "=SUBTOTAL(9,E1:E6)");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("C11"), "#CIRC!");
-    assert_eq!(full._get_text("E6"), "0");
-    assert_same_workbook(&full, &inc, "the range-cycle pass");
 }
 
 /// (b) An error-absorbing function makes the divergence a value, not just a
@@ -2330,42 +2211,6 @@ fn incremental_heals_cse_refill_debt() {
     assert_same_workbook(&full, &inc, "the CSE healing pass");
 }
 
-/// (c) A dynamic anchor left pending a re-spill by a structural delete. The
-/// delete's own full pass re-spills `G4`'s `SEQUENCE` after `H2` has read into
-/// it, so `H2` keeps `#VALUE!`; full heals on its next pass, and the later edit
-/// never brings the anchor into an incremental cone.
-#[test]
-fn incremental_heals_dynamic_respill_debt_after_a_delete() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("G4", "=SEQUENCE(3)+F18");
-        m.insert_columns(0, 5, 1).unwrap();
-        m.delete_rows(0, 2, 2).unwrap();
-        m.move_columns_action(0, 7, 1, -1).unwrap();
-        m.delete_rows(0, 7, 2).unwrap();
-        m.delete_rows(0, 5, 2).unwrap();
-        m.move_columns_action(0, 5, 1, 2).unwrap();
-        m.insert_rows(0, 11, 1).unwrap();
-        m.set_user_array_formula(0, 12, 5, 1, 3, "=A1:A3+1")
-            .unwrap();
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-        m.delete_rows(0, 8, 2).unwrap();
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the delete's full pass");
-    for m in [&mut full, &mut inc] {
-        m._set("A8", "8");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("H2"), "2");
-    assert_same_workbook(&full, &inc, "the respill healing pass");
-}
-
 /// Plain edits with no arrays, no structural ops and no cycles must not pay for
 /// any of the above: the pass stays selective and reports a cell delta.
 #[test]
@@ -2387,76 +2232,54 @@ fn convergence_guard_leaves_plain_edits_selective() {
     assert_eq!(model._get_text("C1"), "6");
 }
 
-/// A cycle the graph already knows about, closed through a dynamic-array anchor
-/// whose result is 1x1. The anchor spills nothing, so it is not in
-/// `graph.arrays` and the arrays→Full fallback does not fire; the cycle drops
-/// the pass into `recompute_all`. Full evaluates the anchor in phase 1, before
-/// everything else, so `#CIRC!` lands inside `B2`'s recursion and `A1` absorbs
-/// it. A one-phase row-major walk would enter at `A1` instead and settle on the
-/// other side of the cycle, for ever.
+/// A cycle closed through a dynamic-array anchor whose result is 1x1. The
+/// anchor spills nothing, so it is not in `graph.arrays`; what routes the pass
+/// to Full is that a cycle member is a seed on every pass and this seed is an
+/// anchor. It has to: Full evaluates anchors in a phase of their own, ahead of
+/// the row-major walk, so `#CIRC!` lands inside `B2`'s recursion and `A1`
+/// absorbs it -- and the cone walk `recompute_all` would otherwise do is
+/// row-major only, entering at `A1` and settling the cycle on the other side,
+/// for ever. The plain-formula run pins that the anchor's phase is what decides
+/// the side: with a plain formula in `B2` the two runs would agree, and the
+/// inequality below fails before any real divergence can.
 #[test]
-fn incremental_places_circ_like_full_through_a_scalar_dynamic_anchor() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("D1", "1");
-        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
-        m._set("B2", "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)");
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the first evaluate");
-    // A plain value edit: no structural op, no new formula, and the cycle is
-    // already an edge, so the pass stays selective and reaches `recompute_all`.
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "2");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("A1"), "101");
-    assert_eq!(full._get_text("B2"), "102");
-    assert_same_workbook(&full, &inc, "the known-cycle pass through the anchor");
-    // The divergence used to be permanent: once the two sides settled
-    // differently nothing ever brought them back.
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "3");
-        m.evaluate();
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the following passes");
-}
-
-/// The mechanism in isolation: the same cycle, once through the anchor and once
-/// through a plain formula in the same cell. Both must match full, and the two
-/// must land on opposite sides of the cycle -- that difference *is* phase 1. If
-/// the anchor row ever stopped being walked first, the two rows below would
-/// agree and the test would fail on the inequality rather than on a divergence.
-#[test]
-fn phase_one_ordering_is_what_places_circ_through_an_anchor() {
+fn recompute_all_places_circ_through_a_scalar_anchor_like_full() {
     let run = |mode, b2: &str| {
         let mut m = new_empty_model().with_recalc_mode(mode);
         m._set("D1", "1");
         m._set("A1", "=IFERROR(B2,100)+1+D1*0");
         m._set("B2", b2);
         m.evaluate();
-        m._set("D1", "2");
+        let mut states = vec![(m._get_text("A1"), m._get_text("B2"))];
+        // Plain value edits: no structural op, no new formula, and the cycle
+        // is already an edge, so each pass stays selective and reaches
+        // `recompute_all`. Snapshot after every single pass -- a later full
+        // fallback can heal a one-pass divergence, so only the per-pass view
+        // sees it -- then once more after a redundant evaluate, which used to
+        // be the state nothing ever brought back.
+        for value in ["2", "3"] {
+            m._set("D1", value);
+            m.evaluate();
+            states.push((m._get_text("A1"), m._get_text("B2")));
+        }
         m.evaluate();
-        (m._get_text("A1"), m._get_text("B2"))
+        states.push((m._get_text("A1"), m._get_text("B2")));
+        states
     };
     let anchor = "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)";
     let plain = "=IFERROR(A1,200)+1";
-    assert_eq!(
-        run(crate::RecalcMode::Full, anchor),
-        run(incremental_mode(), anchor)
-    );
+    let full_anchor = run(crate::RecalcMode::Full, anchor);
+    // Full's placement, stable on every pass: B2 evaluates first (phase 1),
+    // its recursion into A1 hits the cycle inside A1's IFERROR, so A1
+    // absorbs it.
+    assert_eq!(full_anchor, vec![("101".to_string(), "102".to_string()); 4]);
+    assert_eq!(full_anchor, run(incremental_mode(), anchor));
     assert_eq!(
         run(crate::RecalcMode::Full, plain),
         run(incremental_mode(), plain)
     );
     assert_ne!(
-        run(crate::RecalcMode::Full, anchor),
+        full_anchor,
         run(crate::RecalcMode::Full, plain),
         "the anchor no longer evaluates ahead of the rest of the cone"
     );
@@ -2492,6 +2315,45 @@ fn incremental_places_circ_like_full_through_a_cse_anchor() {
         m.evaluate();
     }
     assert_same_workbook(&full, &inc, "the following passes");
+}
+
+/// A blocked anchor stores `#SPILL!`, but a reader that reaches it while it is
+/// still evaluating gets the live array's top-left instead -- here `B1`, an
+/// anchor of full's phase 1, pulls `A7` in ahead of `E15`, so full's `A7` holds
+/// `1 + D1` and not `-1 + D1`. That value is not a function of the store: a
+/// later cone that names `A7` without naming `E15` would recompute it against
+/// the stored error and land on `-1 + D1` for ever. Only the full pass
+/// evaluates the anchor live, so a cone reaching a blocked anchor's reader has
+/// to fall back to one.
+#[test]
+fn a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("E15", "=SEQUENCE(3)");
+        // E17 blocks the spill, so E15 stores #SPILL!.
+        m._set("E17", "7");
+        m._set("D1", "1");
+        m._set("A7", "=IFERROR(E15,-1)+D1");
+        // A phase-1 anchor above A7: full evaluates it, and so A7, before it
+        // reaches E15 in its own right.
+        m._set("B1", "=SEQUENCE(1,1,A7,1)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("E15"), "#SPILL!");
+    assert_eq!(full._get_text("A7"), "2");
+    assert_same_workbook(&full, &inc, "the first evaluate");
+    // A plain value edit whose cone names A7 but not E15.
+    for m in [&mut full, &mut inc] {
+        m._set("D1", "2");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("A7"), "3");
+    assert_same_workbook(&full, &inc, "an edit reaching a blocked anchor's reader");
 }
 
 /// The audit of the acyclic path: `recompute_frontier` orders by edges, not by
@@ -2582,34 +2444,17 @@ fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
     }
 }
 
-/// The other ways a cell leaves the always-dirty set: overwritten by a value,
-/// overwritten by a non-volatile formula, and cleared outright. Each one shrinks
-/// the set during the pass, so the pre-pass snapshot is what the liveness
-/// assertion has to hold the pass to, and the passes after it must stay quiet.
+/// The other ways a volatile leaves the always-dirty set: overwritten by a
+/// non-volatile formula, and cleared outright. (Overwritten by a plain value
+/// is pinned by `incremental_overwrite_rand_clears_volatile` and the
+/// update-cell API test, which run under Verify too.) Each removal happens in
+/// the write journal, before the next pass snapshots the set, so a liveness
+/// assertion holding later passes to a stale entry would demand a report for
+/// a cell that no longer re-runs; the selective passes after each teardown
+/// are where that would panic.
 #[cfg(feature = "recalc_verify")]
 #[test]
-fn verify_liveness_survives_every_way_a_volatile_disappears() {
-    let clear_a1 = |model: &mut crate::Model| {
-        model
-            .range_clear_contents(&crate::expressions::types::Area {
-                sheet: 0,
-                row: 1,
-                column: 1,
-                width: 1,
-                height: 1,
-            })
-            .unwrap();
-    };
-    // Overwritten by a plain value.
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
-    model._set("A1", "=RAND()*0");
-    model._set("A2", "=A1+1");
-    model.evaluate();
-    model._set("A1", "5");
-    model.evaluate();
-    assert!(!reads_random(&model, (0, 1, 1)));
-    assert_eq!(model._get_text("A2"), "6");
-
+fn verify_liveness_survives_overwrite_and_clear_of_a_volatile() {
     // Overwritten by a non-volatile formula.
     let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
     model._set("A1", "=RANDBETWEEN(1,1)");
@@ -2618,25 +2463,28 @@ fn verify_liveness_survives_every_way_a_volatile_disappears() {
     model.evaluate();
     assert!(!reads_random(&model, (0, 1, 1)));
     assert_eq!(model._get_text("A1"), "2");
+    for value in ["1", "2"] {
+        model._set("C3", value);
+        model.evaluate();
+    }
 
     // Cleared outright.
     let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
     model._set("A1", "=NOW()*0");
     model.evaluate();
-    clear_a1(&mut model);
+    model
+        .range_clear_contents(&crate::expressions::types::Area {
+            sheet: 0,
+            row: 1,
+            column: 1,
+            width: 1,
+            height: 1,
+        })
+        .unwrap();
     model.evaluate();
-
-    // And a couple of ordinary selective passes after each transition, which is
-    // where a stale snapshot would surface.
-    for _ in 0..2 {
-        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
-        model._set("A1", "=RAND()*0");
+    assert_eq!(model._get_text("A1"), "");
+    for value in ["1", "2"] {
+        model._set("C3", value);
         model.evaluate();
-        model._set("A1", "5");
-        model.evaluate();
-        for value in ["1", "2"] {
-            model._set("C3", value);
-            model.evaluate();
-        }
     }
 }

@@ -38,6 +38,7 @@ use crate::{
 
 use crate::{cf_types::CfCellResult, tz::Tz};
 
+pub(crate) mod cse_guard;
 mod incremental;
 
 #[cfg(any(test, feature = "mock_time"))]
@@ -279,10 +280,12 @@ pub struct Model<'a> {
     /// structural edit dropped the member cell itself. `None` means stale;
     /// structural edits, sheet changes, and CSE anchor writes reset it.
     pub(crate) cse_rects: Option<Vec<CseRect>>,
-    /// True while `move_cell` relocates cells through the user entry points
-    /// during a structural edit; the member guard applies to user writes, not
-    /// to the edit's own interim states.
-    pub(crate) cse_member_guard_suspended: bool,
+    /// Suspended while `move_cell` relocates cells through the user entry
+    /// points during a structural edit; the member guard applies to user
+    /// writes, not to the edit's own interim states. The flag inside is
+    /// private to [`crate::model::cse_guard`]: only
+    /// [`Model::with_cse_guard_suspended`] can flip it.
+    pub(crate) cse_member_guard: cse_guard::CseMemberGuard,
     /// Set when an evaluation write changes an array footprint: a spill was
     /// written, a CSE range filled, or a dynamic anchor stored `#SPILL!`. The
     /// incremental pass that observes it falls back to Full, whose
@@ -1609,6 +1612,26 @@ impl<'a> Model<'a> {
             cell_reference.row,
             cell_reference.column,
         );
+        // A cell inside an array's footprint holds a value its anchor wrote, so
+        // reading it is a read of the anchor. Nothing else records that: the
+        // anchor's writes into its footprint are evaluation writes, not edits.
+        // Taken from the array index rather than the cell, so a footprint
+        // position the anchor has not filled yet still names its anchor, and
+        // recorded before the scope gate below, which can serve the stored
+        // value without ever reaching the anchor. Without this edge a cycle
+        // closing through an array footprint is invisible to the graph.
+        if !self.graph.arrays.is_empty() && self.tracing() {
+            let position = (
+                cell_reference.sheet,
+                cell_reference.row,
+                cell_reference.column,
+            );
+            if let Some(anchor) = self.graph.arrays.anchor_of(position) {
+                if anchor != position {
+                    self.trace_cell(anchor.0, anchor.1, anchor.2);
+                }
+            }
+        }
         // Incremental pass: a cell outside the affected set did not change, so
         // return its stored value instead of recomputing it (and its precedents).
         if let Some(scope) = &self.recompute_scope {
@@ -1960,7 +1983,7 @@ impl<'a> Model<'a> {
             wrote_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
-            cse_member_guard_suspended: false,
+            cse_member_guard: cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
@@ -2512,16 +2535,12 @@ impl<'a> Model<'a> {
             .cell(row, column)
             .and_then(Cell::get_formula)
             .is_some();
-        let prev = self.workbook.worksheets[sheet as usize]
-            .write_log
-            .is_recording();
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(false);
-        let result = self.write_formula_bytes(sheet, row, column, formula);
-        self.workbook.worksheets[sheet as usize]
-            .write_log
-            .set_recording(prev);
+        let result = {
+            // The raw write would be journaled as a formula edit. Substitute
+            // our own entry below instead of suppressing it.
+            let mut paused = self.pause_journal_for_sheet(sheet);
+            paused.write_formula_bytes(sheet, row, column, formula)
+        };
         if result.is_ok() {
             self.workbook.worksheets[sheet as usize]
                 .write_log
@@ -2576,7 +2595,8 @@ impl<'a> Model<'a> {
                 // anchor still owns and refills its rectangle; the position is
                 // still part of the array, and writing there would be silently
                 // undone by the next evaluation.
-                if !self.cse_member_guard_suspended && self.covered_by_cse_rect(sheet, row, column)
+                if !self.cse_member_guard.is_suspended()
+                    && self.covered_by_cse_rect(sheet, row, column)
                 {
                     return Err(
                         "Cannot write in a cell that is part of an array formula".to_string()
@@ -2595,13 +2615,9 @@ impl<'a> Model<'a> {
             CellStructure::DynamicFormula { range } => {
                 // clear the spill of the dynamic formula
                 let (width, height) = range;
-                let ws = self.workbook.worksheet_mut(sheet)?;
-                for r in row..row + height {
-                    for c in column..column + width {
-                        // We ignore errors here
-                        let _ = ws.cell_clear_contents(r, c);
-                    }
-                }
+                self.workbook
+                    .worksheet_mut(sheet)?
+                    .clear_array_footprint(row, column, width, height, false);
             }
             CellStructure::SpillArray { .. } => {
                 return Err("Cannot write in a cell that is part of an array formula".to_string());
@@ -2632,15 +2648,7 @@ impl<'a> Model<'a> {
                     1,
                     1,
                 )?;
-                for r in anchor_row..anchor_row + height {
-                    for c in anchor_column..anchor_column + width {
-                        if r == anchor_row && c == anchor_column {
-                            continue;
-                        }
-                        // We ignore errors here
-                        let _ = ws.cell_clear_contents(r, c);
-                    }
-                }
+                ws.clear_array_footprint(anchor_row, anchor_column, width, height, true);
             }
         };
         Ok(())
@@ -3350,21 +3358,18 @@ impl<'a> Model<'a> {
     /// default).
     pub fn evaluate(&mut self) {
         self.drain_write_journal();
-        self.set_journal_recording(false);
-        match self.recalc_mode {
-            RecalcMode::Full => self.evaluate_full_untracked(),
+        let mode = self.recalc_mode;
+        // Storing a formula result is not a user edit, so the journal stays
+        // paused for the whole pass. The guard restores it however the pass
+        // ends, panic included.
+        let mut evaluating = self.pause_journal();
+        match mode {
+            RecalcMode::Full => evaluating.evaluate_full_untracked(),
             RecalcMode::Incremental => {
-                self.evaluate_selective();
+                evaluating.evaluate_selective();
             }
             #[cfg(feature = "recalc_verify")]
-            RecalcMode::Verify => self.verify_incremental_matches_full(),
-        }
-        self.set_journal_recording(true);
-    }
-
-    fn set_journal_recording(&mut self, on: bool) {
-        for ws in &mut self.workbook.worksheets {
-            ws.write_log.set_recording(on);
+            RecalcMode::Verify => evaluating.verify_incremental_matches_full(),
         }
     }
 
@@ -3451,7 +3456,9 @@ impl<'a> Model<'a> {
                 ) {
                     self.cse_rects = None;
                 }
-                incremental::array_footprint(cell, sheet, row, column, &mut |p| footprint.push(p));
+                incremental::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
+                    footprint.push((p, anchor))
+                });
             }
             match (was_formula, is_formula_now) {
                 (false, true) => self.formula_cell_count += 1,
@@ -3460,8 +3467,8 @@ impl<'a> Model<'a> {
                 }
                 _ => {}
             }
-            for p in footprint {
-                self.graph.arrays.insert(p);
+            for (p, anchor) in footprint {
+                self.graph.arrays.insert(p, anchor);
             }
         }
     }
@@ -3610,6 +3617,15 @@ impl<'a> Model<'a> {
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
             self.collect_array_cells();
+            // This pass rebuilt every edge, so the never-served set is rebuilt
+            // over the whole graph: a cycle anywhere in the workbook has to be
+            // known here, because later incremental passes only look at the
+            // cone their seeds reach, and a cycle they do not know about is one
+            // they never seed.
+            let nodes = self.graph.nodes();
+            let cone = self.graph.cycle_cone(&nodes);
+            self.refresh_unstable_cells(cone, &nodes);
+            self.refresh_blocked_array_readers();
             // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();
         } else {
@@ -3661,11 +3677,7 @@ impl<'a> Model<'a> {
                     CellStructure::DynamicFormula { range }
                     | CellStructure::ArrayFormula { range, .. } => {
                         let (width, height) = range;
-                        for r in row..row + height {
-                            for c in column..column + width {
-                                let _ = ws.cell_clear_contents(r, c);
-                            }
-                        }
+                        ws.clear_array_footprint(row, column, width, height, false);
                     }
                     _ => {
                         let _ = ws.cell_clear_contents(row, column);
@@ -3769,10 +3781,10 @@ impl<'a> Model<'a> {
         }
         // The spill of a dynamic array reached from the range goes away whole,
         // but only the part of it inside the range was selected for clearing.
-        // The cells outside keep their style, so the spill is torn down with
-        // `cell_clear_contents` (which materializes an `EmptyCell` holding the
-        // style) instead of a removal, which would drop it.
-        let mut spill_to_clear: Vec<(i32, i32)> = Vec::new();
+        // The cells outside keep their style, so the footprint is torn down
+        // with the style-preserving `Worksheet::clear_array_footprint` instead
+        // of a removal, which would drop it.
+        let mut spills: Vec<(i32, i32, i32, i32)> = Vec::new();
         {
             let worksheet = self.workbook.worksheet(area.sheet)?;
             for row in area.row..area.row + area.height {
@@ -3784,29 +3796,29 @@ impl<'a> Model<'a> {
                     }) = worksheet.cell(row, column)
                     {
                         let (width, height) = *r;
-                        for r in row..row + height {
-                            for c in column..column + width {
-                                spill_to_clear.push((r, c));
-                            }
-                        }
+                        spills.push((row, column, width, height));
                     }
                 }
             }
         }
-        spill_to_clear.sort_unstable();
-        spill_to_clear.dedup();
         let worksheet = self.workbook.worksheet_mut(area.sheet)?;
         // Cells in the range lose content and style alike. This runs before the
         // spill teardown so a spill cell inside the range is cleared of its own
         // style first and only inherits the row/column one.
         for row in area.row..area.row + area.height {
             for column in area.column..area.column + area.width {
+                // Sanctioned: the user selected these cells, so they lose content and
+                // style alike. The spill reaching outside the range is torn down below
+                // with the style-preserving `clear_array_footprint`.
+                #[allow(clippy::disallowed_methods)]
                 let _ = worksheet.remove_cell(row, column);
             }
         }
-        for (row, column) in spill_to_clear {
-            // Errors are ignored: the cell may already be gone with the range.
-            let _ = worksheet.cell_clear_contents(row, column);
+        for (row, column, width, height) in spills {
+            // The anchor is inside the range, so its removal above is undone
+            // by the teardown re-materializing an `EmptyCell` there, exactly
+            // as it is for the footprint's other in-range cells.
+            worksheet.clear_array_footprint(row, column, width, height, false);
         }
         // Deleting the cells also removes their links. Each removal is
         // journaled: a stranded link can sit at a position with no cell, so
@@ -3894,15 +3906,8 @@ impl<'a> Model<'a> {
                     v: FormulaValue::Unevaluated,
                 },
             );
-            // Delete all spill cells
-            for r in row..row + height {
-                for c in column..column + width {
-                    if r == row && c == column {
-                        continue;
-                    }
-                    let _ = ws.cell_clear_contents(r, c);
-                }
-            }
+            // Delete all spill cells, keeping the just-rewritten anchor.
+            ws.clear_array_footprint(row, column, width, height, true);
         }
         Ok(())
     }

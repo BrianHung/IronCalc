@@ -1,0 +1,12 @@
+# Workspace-wide Clippy configuration.
+#
+# Clippy looks for `clippy.toml` starting at each crate's `CARGO_MANIFEST_DIR`
+# and walks up, so this file applies to every workspace member (`base`, `xlsx`
+# and the three bindings). Paths here are def-paths: `Worksheet` is declared in
+# `ironcalc_base::types`, so its inherent methods are addressed through that
+# module and not through `ironcalc_base::worksheet`, where the `impl` block
+# lives.
+
+disallowed-methods = [
+    { path = "ironcalc_base::types::Worksheet::remove_cell", reason = "Use Worksheet::clear_array_footprint (spill footprints) or the range-clear primitives; calling remove_cell directly on a spill footprint loses the cell's style and strands its link." },
+]
