@@ -40,6 +40,7 @@ use crate::{cf_types::CfCellResult, tz::Tz};
 
 pub(crate) mod cse_guard;
 mod incremental;
+mod unstable_cells;
 #[cfg(feature = "recalc_verify")]
 mod verify;
 
