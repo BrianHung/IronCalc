@@ -9,9 +9,12 @@
 //!
 //! What counts as unchanged, and the delta the pass records, are
 //! [`super::changed_cells`]. The array index it consults is
-//! [`super::array_index`], the two sets of untrustworthy stored values are
-//! [`super::unstable_cells`], and the oracle that checks the whole thing is
-//! `super::verify`.
+//! [`super::array_index`]. Of the two sets of untrustworthy stored values,
+//! the readers of blocked spill anchors are rebuilt by
+//! [`super::unstable_cells`]; the cycle cone needs no cell state, so the graph
+//! derives it and this module installs it at the end of a selective pass (as
+//! `evaluate_full` does at the end of a full one). The oracle that checks the
+//! whole thing is `super::verify`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -183,6 +186,19 @@ impl Model<'_> {
         // pass as full rather than land one evaluate behind. An already-known
         // cycle went through `recompute_all`, which walks the cone in Full's own
         // row-major order and places `#CIRC!` the same way.
+        //
+        // Read `cycle_was_known` as "some cycle was already open", not "this
+        // cycle was": `never_served` seeds every known cycle dirty on every
+        // pass, so a known cycle is in every cone and `topo_order` fails on
+        // every cone. A cycle closing for the first time while another one is
+        // open therefore does not reach this redo at all -- it took the `Err`
+        // arm above. That is still correct, and it is why the arm can be
+        // trusted rather than tightened: `recompute_all` walks the cone in
+        // Full's own two phases (array formulas first, then the rest, each
+        // row-major), which is the order that decides where `#CIRC!` lands, so
+        // the new cycle gets Full's placement without a redo. The redo exists
+        // only for the case `recompute_all` never ran: a clean `topo_order`
+        // whose walk then hit a cycle anyway.
         if self.saw_circular_reference && !cycle_was_known {
             self.evaluate_full_untracked();
             return EvalPass::Full;

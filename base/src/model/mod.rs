@@ -264,9 +264,9 @@ pub struct Model<'a> {
     /// structural edit dropped the member cell itself. `None` means stale;
     /// structural edits, sheet changes, and CSE anchor writes reset it.
     pub(crate) cse_rects: Option<Vec<CseRect>>,
-    /// Suspended while `move_cell` relocates cells through the user entry
-    /// points during a structural edit; the member guard applies to user
-    /// writes, not to the edit's own interim states. The flag inside is
+    /// Suspended while a structural rebuild -- a cell, row or column move --
+    /// relocates cells through the user entry points; the member guard applies
+    /// to user writes, not to the edit's own interim states. The flag inside is
     /// private to [`crate::model::cse_guard`]: only
     /// [`Model::with_cse_guard_suspended`] can flip it.
     pub(crate) cse_member_guard: cse_guard::CseMemberGuard,

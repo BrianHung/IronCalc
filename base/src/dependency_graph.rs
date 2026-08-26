@@ -496,8 +496,12 @@ impl Shift for ArrayCells {
 /// next pass full, which is what keeps incremental from diverging from full.
 ///
 /// It stores no cell values. What it knows about stored state -- which cells
-/// may not serve theirs -- arrives through `set_never_served` and
-/// `set_blocked_array_readers`, rebuilt by `model::unstable_cells`.
+/// may not serve theirs -- arrives through two setters that differ in where
+/// the answer comes from. `set_never_served` takes a [`Self::cycle_cone`] the
+/// graph computed from its own edges; each scheduler installs it after its
+/// pass, because only the scheduler knows which cells that pass covered.
+/// `set_blocked_array_readers` takes a set only `model::unstable_cells` can
+/// build, because deciding an anchor is blocked means reading what it stores.
 #[derive(Clone, Default)]
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it. A set, so a formula reading

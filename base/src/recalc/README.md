@@ -26,7 +26,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 4. If the pass cannot be modeled (see fallbacks below), run a full pass instead.
 5. Evaluate the affected cells in topological order. While each formula runs, a tracer records what it reads; when it finishes, those reads replace its edges in the graph.
 6. If a recomputed cell's value, type, and link are unchanged, nothing downstream of it is recomputed.
-7. Cells outside the affected set are served their stored values. Stored values are lossless (`FormulaValue::Empty` preserves blank results), so evaluation order never changes results — for every cell whose stored value is a function value.
+7. Cells outside the affected set are served their stored values. A formula whose live result is an empty cell coerces to `Number(0.0)` at the result boundary, before the value is stored — `FormulaValue` has no blank variant. So the stored value is exactly what a live read of that cell returns. That coercion is what makes the full pass itself order-independent (a same-pass reader sees the stored `0` whether it ran before or after the cell it reads), and it is the same reason serving a stored value never changes a result here — for every cell whose stored value is a function value.
 8. Changes are accumulated for `Model::take_changed_cells`.
 
 ## Where things live
@@ -36,10 +36,10 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 | `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges, so `SUM(A:A)` stays one edge. |
 | `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. |
-| `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, and the frontier and whole-cone recomputes. This is the only module whose behavior depends on the mode. |
+| `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, and the frontier and whole-cone recomputes. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
 | `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
 | `model/array_index.rs` | `array_footprint` and the walks that maintain the array/spill index and the formula count between full passes. |
-| `model/unstable_cells.rs` | Rebuilds the two sets of cells whose stored value may not be served (below), from the state the last pass left. |
+| `model/unstable_cells.rs` | Rebuilds one of the two sets of cells whose stored value may not be served (below): the readers of blocked spill anchors, which is the set that needs stored cell state the graph cannot see. The other set, the cycle cone, is derived from edges alone, so the graph computes it itself (`cycle_cone`) and each scheduler installs it after its pass. |
 | `model/cse_guard.rs` | The CSE member guard flag and the only scope that may suspend it. |
 | `model/verify.rs` | The `RecalcMode::Verify` oracle. Compiled only under the `recalc_verify` feature. |
 | `worksheet.rs` | The only producer of journal entries. `sheet_data` is written through mutators that push a `Write`. |
@@ -75,6 +75,7 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - A dynamic array or spill anchor is among the affected cells. Spills need the full pass's two-phase ordering.
 - The edit reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one, and Verify disables it.
 - The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is walked by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, and the cone contains every cell full could reach a cycle member through, because such a cell reads one transitively and so is a reader of an always-dirty cell. Since a known cycle is in every cone, this is also the walk a cycle *closing* on this pass gets when another cycle is already open — which is why phase 1 stays: the pass an anchor first falls inside a cycle, the anchor is not yet a seed, and only phase 1 makes full enter the cycle where it does.
+- The pass itself wrote into an array footprint: a spill landed, a CSE range filled, or an anchor stored `#SPILL!`. This one is only visible after the fact — the pre-pass check above catches an anchor that is *already* in the array index, and this catches an affected cell that turns into one while the pass runs (a scalar-result anchor whose result grows, say). The pass is redone as full, so spill dependents are not missed and `collect_array_cells` rebuilds the index exactly rather than patching it.
 - The cone reaches a reader of a blocked spill anchor.
 - The previous pass left convergence debt (see below).
 
@@ -86,7 +87,7 @@ Incremental has to match that pass for pass. So a full pass run from the increme
 
 ## Design rules
 
-- Every write reaches the graph through the journal. Nothing else calls `mark_dirty`.
+- No *write* reaches the graph except through the journal. `model/mod.rs` dirties the graph only from `drain_write_journal`, and the mutation paths (`actions.rs`, `undo_redo.rs`, `clipboard.rs`, `common.rs`) never touch it at all — both halves are held by the `graph_is_only_notified_by_the_journal` gate. The scheduler's own `mark_dirty` calls are not writes: they seed the pass with the always-dirty cells, the never-served cells, and the array anchors a full pass first observed, none of which any edit reports.
 - Edges are the reads observed at evaluation time. There is no static analysis of formula text.
 - A cell's value is a function of its inputs only. Modes choose which cells to evaluate, never what they evaluate to.
 - Anything the model cannot represent falls back to full recalculation rather than approximating.
