@@ -1358,3 +1358,47 @@ fn scalar_result_dynamic_anchors_stay_incremental() {
         );
     }
 }
+
+/// I1.8 — a reference-returning function records its resolved target at the
+/// extent it resolved to, not the extent its reader's walk visited.
+///
+/// This is I1.3's clipping rule at a *computed* extent. `SUM` clips a
+/// whole-column reference to the used range, so the per-cell reads stop at the
+/// last populated row; a later write below that row is connected to the
+/// formula by the recorded rectangle and by nothing else. The two calls are
+/// separate sites, so there is one witness each.
+///
+/// Kills deleting `trace_rect` from `INDIRECT`'s range branch. Without it the
+/// formula's only edges are the clipped per-cell reads, and the write to A500
+/// never reaches it.
+#[test]
+fn indirect_records_its_resolved_extent_not_the_walk() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("B1", "=SUM(INDIRECT(\"A:A\"))");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+
+    // Below the used range the walk stopped at, so only the rect connects it.
+    model._set("A500", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "6");
+}
+
+/// I1.8, the `OFFSET` site. Kills deleting `trace_rect` from `fn_offset`.
+///
+/// The height is spelled out rather than written `A:A` because `OFFSET` over a
+/// whole-column argument resolves through a different path; this is the one
+/// that reaches `fn_offset`'s own rect.
+#[test]
+fn offset_records_its_resolved_extent_not_the_walk() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("B1", "=SUM(OFFSET($A$1,0,0,1048576,1))");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+
+    model._set("A500", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "6");
+}
