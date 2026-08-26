@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::incremental::ChangeKey;
+use super::changed_cells::ChangeKey;
 use super::{ChangedCells, Model};
 use crate::cf_types::CfCellResult;
 use crate::dependency_graph::Position;

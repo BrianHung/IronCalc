@@ -8,14 +8,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{ChangedCells, ChangedSinceRead};
-use crate::cell::CellValue;
+use super::changed_cells::{ChangeKey, ChangedCells};
 use crate::dependency_graph::Position;
 #[cfg(feature = "recalc_verify")]
 use crate::dependency_graph::RecalcMode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::model::{is_phase_one_cell, Model};
-use crate::types::CellType;
 
 /// Below this many formula cells, incremental never falls back on fanout: the
 /// bookkeeping is cheap in absolute terms and full has no edge to exploit.
@@ -26,20 +24,6 @@ const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
 /// incremental bookkeeping it would save.
 const INCREMENTAL_FANOUT_RATIO: usize = 2;
 
-/// A cell's observable signature for incremental change detection: value, type
-/// (so an error and a same-text literal differ), and dynamic link.
-pub(super) type ChangeKey = (CellType, ChangeValue, Option<crate::types::Link>);
-
-/// A cell value flattened for change detection. Numbers are kept as bits so a
-/// `+0.0`/`-0.0` flip is seen and a `NaN` does not report as changed forever.
-#[derive(PartialEq, Debug)]
-pub(super) enum ChangeValue {
-    None,
-    Boolean(bool),
-    Number(u64),
-    String(String),
-}
-
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -47,27 +31,6 @@ pub(crate) enum EvalPass {
 }
 
 impl Model<'_> {
-    /// Adds to the delta any cell whose conditional-format result moved between
-    /// `cf_before` and the rebuilt `cf_cache`. CF has no dependency edges, so a
-    /// value or CF-rule change can move a cell's format with no value change.
-    fn record_cf_changes(
-        &mut self,
-        cf_before: HashMap<Position, Vec<crate::cf_types::CfCellResult>>,
-    ) {
-        if let ChangedCells::Delta(delta) = &mut self.changed_cells {
-            for (position, results) in &self.cf_cache {
-                if cf_before.get(position) != Some(results) {
-                    delta.insert(*position);
-                }
-            }
-            for position in cf_before.keys() {
-                if !self.cf_cache.contains_key(position) {
-                    delta.insert(*position);
-                }
-            }
-        }
-    }
-
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         let write_seeds = std::mem::take(&mut self.write_seeds);
         // Any leftover flag belongs to a pass that ended in a full rebuild of
@@ -268,24 +231,6 @@ impl Model<'_> {
         EvalPass::Incremental
     }
 
-    /// A cell's observable signature: value, type (so an error and a same-text
-    /// literal differ), and dynamic link (a HYPERLINK target can move under a
-    /// fixed label).
-    pub(super) fn change_key(
-        &self,
-        position @ (sheet, row, column): Position,
-    ) -> Option<ChangeKey> {
-        let value = match self.get_cell_value_by_index(sheet, row, column).ok()? {
-            CellValue::None => ChangeValue::None,
-            CellValue::Boolean(b) => ChangeValue::Boolean(b),
-            // By bits, so a +0.0/-0.0 flip is seen and NaN does not report forever.
-            CellValue::Number(n) => ChangeValue::Number(n.to_bits()),
-            CellValue::String(s) => ChangeValue::String(s),
-        };
-        let cell_type = self.get_cell_type(sheet, row, column).ok()?;
-        Some((cell_type, value, self.links.get(&position).cloned()))
-    }
-
     /// Clears a cell's cached state so the next `evaluate_cell` recomputes it.
     /// Drops the dynamic link too, as a full pass would, so a cell that no longer
     /// resolves to a `HYPERLINK` does not keep a stale one.
@@ -471,28 +416,6 @@ impl Model<'_> {
         if debt {
             self.graph.note_convergence_debt();
         }
-    }
-
-    /// Returns the cells whose observable state moved on incremental evaluations
-    /// since the last call, sorted, and clears the record. `Everything` means a
-    /// full recompute has run, or an insert/delete moved cells the dirty cone
-    /// cannot name. An empty `Cells` delta is not `Everything`.
-    pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
-        self.drain_write_journal();
-        // Reading re-arms tracking: the record resets to an empty delta, so
-        // subsequent incremental passes accumulate afresh.
-        let taken = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
-        let ChangedCells::Delta(cells) = taken else {
-            return ChangedSinceRead::Everything;
-        };
-        let mut cells: Vec<Position> = cells.into_iter().collect();
-        cells.sort_unstable();
-        ChangedSinceRead::Cells(
-            cells
-                .into_iter()
-                .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })
-                .collect(),
-        )
     }
 
     /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on

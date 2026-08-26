@@ -39,11 +39,15 @@ use crate::{
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 mod array_index;
+mod changed_cells;
 pub(crate) mod cse_guard;
 mod incremental;
 mod unstable_cells;
 #[cfg(feature = "recalc_verify")]
 mod verify;
+
+pub(crate) use changed_cells::ChangedCells;
+pub use changed_cells::ChangedSinceRead;
 
 #[cfg(any(test, feature = "mock_time"))]
 pub use crate::mock_time::get_milliseconds_since_epoch;
@@ -111,31 +115,6 @@ pub(crate) enum CellState {
     Evaluated,
     /// The cell is being evaluated
     Evaluating,
-}
-
-/// What cells changed since the last [`Model::take_changed_cells`], backing the
-/// incremental delta API.
-pub(crate) enum ChangedCells {
-    /// A full recompute ran: the next `take_changed_cells` is `Everything`,
-    /// not an empty `Cells` list.
-    All,
-    /// Cells whose observable state moved on an incremental pass since the last
-    /// read (not every cell that ran).
-    Delta(HashSet<Position>),
-}
-
-/// Cells that changed since the last [`Model::take_changed_cells`].
-///
-/// `Everything` is a full pass (rescan the workbook). `Cells` is the incremental
-/// delta, possibly empty. These are not the same kind of answer, so this is not
-/// an `Option`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChangedSinceRead {
-    /// A full pass ran, or an insert/delete moved cells the dirty cone cannot
-    /// name. Rescan the workbook.
-    Everything,
-    /// The incremental delta since the last read, possibly empty.
-    Cells(Vec<CellReferenceIndex>),
 }
 
 /// A parsed formula for a defined name
