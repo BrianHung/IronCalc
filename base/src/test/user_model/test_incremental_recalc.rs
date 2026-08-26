@@ -20,7 +20,6 @@ fn flush_writes(model: &mut crate::Model) {
 }
 
 #[test]
-#[test]
 fn incremental_handles_row_delete() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
@@ -133,7 +132,6 @@ fn incremental_defined_name_retarget_forces_full() {
     assert_eq!(model._get_text("B1"), "777"); // not the stale 10
 }
 
-#[test]
 #[test]
 fn incremental_sum_over_offset_sees_updated_target() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -688,7 +686,6 @@ fn incremental_overwrite_spill_anchor_updates_dependents() {
     assert!(!model.graph.arrays.contains(&(0, 1, 1)));
 }
 
-#[test]
 #[test]
 fn incremental_spill_invalidates_composed_range_cache() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
