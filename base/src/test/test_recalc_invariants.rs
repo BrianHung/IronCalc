@@ -36,6 +36,21 @@ fn graph_is_only_notified_by_the_journal() {
         drain_marks, 4,
         "model/mod.rs should mark_dirty only from drain_write_journal (cell + link + hidden + FormulaText)"
     );
+    // The scheduler dirties the graph too, and legitimately: these are not
+    // writes, they are the seeds no edit reports — the always-dirty cells
+    // (RAND/NOW/TODAY), the never-served cells (a cycle cone, a blocked
+    // anchor's readers), and an array anchor a full pass has just observed for
+    // the first time. Counted rather than banned, so a fourth kind of seeding
+    // has to be justified here instead of appearing quietly.
+    let incremental = include_str!("../model/incremental.rs");
+    let seed_marks = incremental.matches("self.graph.mark_dirty(").count();
+    assert_eq!(
+        seed_marks, 3,
+        "model/incremental.rs should mark_dirty only to seed a pass \
+         (always-dirty + never-served + newly observed array anchors); a new \
+         call is either a write that belongs in the journal or a fourth seed \
+         that belongs in this comment"
+    );
 }
 
 /// A function implementation must read cell state through the tracing

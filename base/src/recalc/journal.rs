@@ -5,20 +5,40 @@ use crate::model::Model;
 
 /// A user-visible mutation of sheet state. Evaluation writes (storing a formula
 /// result) are not journaled; they are not edits.
+///
+/// Which coordinates a variant carries follows from who pushes it, and that is
+/// the whole convention:
+///
+/// - [`Write::Cell`] and [`Write::Hidden`] are pushed by [`Worksheet`]
+///   mutators, and a worksheet does not know its own index in the workbook. So
+///   they name a position *within their sheet* and nothing more;
+///   [`Model::drain_write_journal`] supplies the sheet from the enumeration it
+///   is already walking. Neither variant can carry a sheet that disagrees with
+///   the log it sits in, because neither can carry a sheet at all. (Both used
+///   to: `Cell` filled the slot with a `0` placeholder the drain then threw
+///   away, and `Hidden` carried a `sheet` that was always `0` and never read.)
+/// - [`Write::Link`] is pushed from `Model` and `actions.rs`, which hold the
+///   sheet index, so it carries a whole [`Position`] and the drain uses it as
+///   given.
+///
+/// [`Worksheet`]: crate::worksheet::Worksheet
+/// [`Model::drain_write_journal`]: crate::model::Model::drain_write_journal
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Write {
-    /// A cell's content changed. `was_formula` lets the consumer drop stale
-    /// outgoing edges.
+    /// A cell's content changed, at `(row, column)` of the sheet whose log
+    /// this is. `was_formula` lets the consumer drop stale outgoing edges.
     Cell {
-        at: Position,
+        row: i32,
+        column: i32,
         was_formula: bool,
         is_formula: bool,
     },
     /// A hyperlink was attached to or removed from a cell. The link is part of
     /// the cell's observable key, so its readers and any delta must see it.
     Link { at: Position },
+    /// A row or a column of the sheet whose log this is was hidden or shown.
+    /// Exactly one of the two is `Some`.
     Hidden {
-        sheet: u32,
         row: Option<i32>,
         column: Option<i32>,
     },

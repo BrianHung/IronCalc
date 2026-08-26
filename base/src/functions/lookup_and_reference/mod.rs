@@ -911,14 +911,13 @@ impl<'a> Model<'a> {
 
                 match parsed_reference {
                     ParsedReference::CellReference(reference) => {
+                        // No rect: a 1x1 rectangle is the same edge as the cell
+                        // read the reader records for it, and recording it as a
+                        // range instead only makes a delete of that row rebuild
+                        // the graph where a cell edge would have been dropped.
+                        // The range branch below does need its rect -- see
+                        // `indirect_records_its_resolved_extent_not_the_walk`.
                         self.trace_input(crate::recalc::Input::Computed);
-                        self.trace_rect(
-                            reference.sheet,
-                            reference.row,
-                            reference.column,
-                            reference.row,
-                            reference.column,
-                        );
                         CalcResult::Range {
                             left: reference,
                             right: reference,
