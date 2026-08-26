@@ -1406,10 +1406,11 @@ pub const NAME_TARGETS: &[&str] = &[
     "LAMBDA(x,SUM(Sheet1!$A$1:$A$4)+x)",
     "LAMBDA(x,x+NCELL)",
     "Sheet1!$A$1:$A$3*2",
-    "Sheet1!$A:$A",
-    "Sheet1!$A:$C",
+    // Whole-row only. A whole-*column* name target is read by "=MAX(NDATA)",
+    // and MAX does not clip a whole-column reference to the used range -- 244ms
+    // an evaluate for $A:$A, 698ms for $A:$C, against 2.6ms for the SUM,
+    // COUNTIF and INDEX readers of the same name.
     "Sheet1!$1:$3",
-    "{D}!$A:$B",
     "5",
 ];
 
