@@ -31,6 +31,19 @@ pub(crate) enum EvalPass {
 }
 
 impl Model<'_> {
+    /// Recomputes the workbook incrementally, or decides it cannot and runs a
+    /// full pass instead. Returns which of the two happened.
+    ///
+    /// The guarantee is that the workbook afterwards holds what a full pass
+    /// would have produced from the same state, pass for pass -- not merely
+    /// eventually. Every case the incremental path cannot model is answered by
+    /// falling back rather than approximating, so the fallbacks below are the
+    /// enumeration of what it cannot model.
+    ///
+    /// Requires that the write journal has already been drained into the graph,
+    /// which `Model::evaluate` does before calling. Leaves the graph ready and
+    /// its dirty set empty; the delta accumulates into `changed_cells` until a
+    /// consumer takes it.
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         let write_seeds = std::mem::take(&mut self.write_seeds);
         // Any leftover flag belongs to a pass that ended in a full rebuild of

@@ -76,7 +76,6 @@ pub use model::get_milliseconds_since_epoch;
 pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
-#[doc(hidden)]
 // Public only because `Worksheet::write_log` is a public field; the type is
 // an implementation detail of incremental recalculation, not API.
 #[doc(hidden)]

@@ -65,9 +65,11 @@ impl Worksheet {
         let was_formula = old.as_ref().and_then(Cell::get_formula).is_some();
         let old_formula = old.as_ref().and_then(Cell::get_formula);
         let new_formula = new_cell.get_formula();
-        // A new formula index is a user formula edit (force-full until Step 4).
-        // Same index with a different cell (spill geometry reset, style) is a
-        // value-like write: dirty the cell, do not rebuild the graph.
+        // True when the write installs a formula the cell did not already have,
+        // as opposed to the same formula written back with different spill
+        // geometry or style. The drain's only use for it is re-running
+        // FORMULATEXT and ISFORMULA readers, which observe formula-ness rather
+        // than the value; `was_formula` is what drops the outgoing edges.
         let is_formula = new_formula.is_some() && old_formula != new_formula;
         let changed = old.as_ref() != Some(&new_cell);
         // A style on a blank cell materializes EmptyCell; that is not a

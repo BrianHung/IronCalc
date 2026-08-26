@@ -64,6 +64,8 @@ pub(crate) enum Axis {
 }
 
 impl Axis {
+    /// The coordinate of `position` along this axis: the one an edit on this
+    /// axis moves, and the one to compare against a boundary.
     pub(crate) fn coord(self, (_, row, column): Position) -> i32 {
         match self {
             Axis::Row => row,
@@ -163,6 +165,12 @@ impl Displacement {
     }
 }
 
+/// The new location of `pos` after an insert (`delta > 0`) or delete
+/// (`delta < 0`) of `|delta|` lines at `boundary` on `sheet`, or `None` if the
+/// edit deleted it. Positions on other sheets are returned unchanged.
+///
+/// The same rule the graph shifts itself by; callers outside the graph use it
+/// to move positions they hold.
 pub(crate) fn shift_position(
     sheet: u32,
     axis: Axis,
@@ -431,10 +439,13 @@ impl Shift for Positions {
 pub(crate) struct ArrayCells(HashMap<Position, Position>);
 
 impl ArrayCells {
+    /// Whether `cell` lies in some anchor's footprint. An edit that reaches one
+    /// of these sends the pass to Full, which is the only pass that spills.
     pub(crate) fn contains(&self, cell: &Position) -> bool {
         self.0.contains_key(cell)
     }
 
+    /// Whether the workbook has no array or spill cells at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -444,6 +455,8 @@ impl ArrayCells {
         self.0.get(&cell).copied()
     }
 
+    /// Every indexed footprint position, anchors included, as an owned set:
+    /// for callers that need to walk the index while mutating the model.
     pub(crate) fn snapshot(&self) -> HashSet<Position> {
         self.0.keys().copied().collect()
     }
@@ -473,6 +486,17 @@ impl Shift for ArrayCells {
     }
 }
 
+/// The forward dependency graph and the pass state derived from it.
+///
+/// Edges are the reads observed while formulas evaluated, never a static
+/// analysis of formula text, so the graph describes the pass that just ran.
+/// Every index it holds is either rebuilt by a full pass or maintained across
+/// an incremental one; anything it cannot represent is answered by forcing the
+/// next pass full, which is what keeps incremental from diverging from full.
+///
+/// It stores no cell values. What it knows about stored state -- which cells
+/// may not serve theirs -- arrives through `set_never_served` and
+/// `set_blocked_array_readers`, rebuilt by `model::unstable_cells`.
 #[derive(Clone, Default)]
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it. A set, so a formula reading
@@ -491,6 +515,9 @@ pub(crate) struct DependencyGraph {
     /// maps, so a formula's edges can be dropped in O(degree) before re-record.
     precedents: HashMap<Position, crate::recalc::ReadSet>,
     state: GraphState,
+    /// The array/spill footprint index. Public to the crate because the
+    /// scheduler tests membership directly to decide the arrays->Full fallback;
+    /// `model::array_index` owns what goes into it.
     pub(crate) arrays: ArrayCells,
     /// Cells whose last result was not a genuine function value, because they
     /// sit on a dependency cycle, downstream of one, or reported `#CIRC!`. A
@@ -628,6 +655,9 @@ impl DependencyGraph {
         }
     }
 
+    /// Whether `cell`'s last evaluation recorded a non-cell input matching
+    /// `pred`. Test-only: it reads an edge the graph otherwise only walks
+    /// backwards.
     #[cfg(test)]
     pub(crate) fn cell_reads(
         &self,
@@ -698,6 +728,9 @@ impl DependencyGraph {
         (seeds, affected)
     }
 
+    /// Replaces the whole array index. Only a full pass may call this: it is
+    /// the only pass whose walk sees every anchor, so it is the only one that
+    /// can drop entries rather than just add them.
     pub(crate) fn replace_arrays(&mut self, cells: HashMap<Position, Position>) {
         self.arrays.replace(cells);
     }
