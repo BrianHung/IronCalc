@@ -111,3 +111,15 @@ mechanism is wrong. Before adding a test, check whether an existing one already 
 mutation; before deleting or merging tests, re-apply the relevant mutants (see the nightly-recalc-audit
 workflow) and confirm nothing that used to die now survives. Redundancy is measured by kill-power, not by
 reading similarity.
+
+Where a test goes follows from that. The default is the lib suite: it is what
+`IRONCALC_RECALC=incremental`/`verify` re-run under a different strategy and what the nightly
+`cargo mutants` job executes, so a test outside it is a test those two oracles never see. Each
+`base/tests/*.rs` file is also its own compile-and-link, so a new one costs build time on every
+`cargo test`. Only three things earn a place there:
+
+- `fuzz_differential.rs` and `common/`, the lockstep harness and generator.
+- `fuzz_covfuzz_regressions.rs`, minimized fuzz artifacts replayed through that harness — one shape
+  per kill class, each doc comment naming the mutant it dies to.
+- `recalc_cost.rs`, the one wall-clock invariant, kept out of the lib suite so the mutation job does
+  not pay for a 32k-cell workbook once per mutant.
