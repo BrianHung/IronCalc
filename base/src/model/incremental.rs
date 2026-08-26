@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::changed_cells::{ChangeKey, ChangedCells};
+use super::changed_cells::{record_snapshot_diff, ChangedCells};
 use crate::dependency_graph::Position;
 #[cfg(feature = "recalc_verify")]
 use crate::dependency_graph::RecalcMode;
@@ -80,38 +80,11 @@ impl Model<'_> {
             } else {
                 // A redundant full preserves the delta unless values actually
                 // moved (e.g. a spill that takes two passes). Diff cells and CF.
-                let before: HashMap<Position, Option<ChangeKey>> = self
-                    .get_all_cells()
-                    .into_iter()
-                    .map(|c| {
-                        let p = (c.index, c.row, c.column);
-                        (p, self.change_key(p))
-                    })
-                    .collect();
+                let before = self.workbook_change_keys();
                 let cf_before = self.cf_cache.clone();
                 self.evaluate_full_and_follow_up_new_arrays();
-                let after: Vec<(Position, Option<ChangeKey>)> = self
-                    .get_all_cells()
-                    .into_iter()
-                    .map(|c| {
-                        let p = (c.index, c.row, c.column);
-                        (p, self.change_key(p))
-                    })
-                    .collect();
-                if let ChangedCells::Delta(delta) = &mut self.changed_cells {
-                    let mut seen = HashSet::new();
-                    for (p, now) in after {
-                        seen.insert(p);
-                        if before.get(&p) != Some(&now) {
-                            delta.insert(p);
-                        }
-                    }
-                    for p in before.keys() {
-                        if !seen.contains(p) {
-                            delta.insert(*p);
-                        }
-                    }
-                }
+                let after = self.workbook_change_keys();
+                record_snapshot_diff(&mut self.changed_cells, &before, &after);
                 self.record_cf_changes(cf_before);
             }
             return EvalPass::Full;
@@ -269,8 +242,7 @@ impl Model<'_> {
         order: &[Position],
         extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
-        let before: HashMap<Position, Option<ChangeKey>> =
-            affected.iter().map(|&p| (p, self.change_key(p))).collect();
+        let before = self.change_keys(affected.iter().copied());
         let mut scope = affected.clone();
         scope.extend(extra_scope);
         self.recompute_scope = Some(scope);
@@ -291,7 +263,7 @@ impl Model<'_> {
             self.invalidate(position);
             let (sheet, row, column) = position;
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
-            if report.contains(&position) || self.change_key(position) != before[&position] {
+            if self.reports_change(position, &before, &report) {
                 changed.insert(position);
                 stale.extend(self.graph.dependents_of(position));
             }
@@ -307,7 +279,7 @@ impl Model<'_> {
         // OFFSET/INDIRECT can recompute a helper via evaluate_cell before this
         // loop reaches it; that cell never entered `stale`.
         for &position in affected {
-            if report.contains(&position) || self.change_key(position) != before[&position] {
+            if self.reports_change(position, &before, &report) {
                 changed.insert(position);
             }
         }
@@ -341,8 +313,7 @@ impl Model<'_> {
     ) -> Vec<Position> {
         let mut order: Vec<Position> = affected.iter().copied().collect();
         order.sort_unstable();
-        let before: HashMap<Position, Option<ChangeKey>> =
-            order.iter().map(|&p| (p, self.change_key(p))).collect();
+        let before = self.change_keys(order.iter().copied());
         for &position in &order {
             self.invalidate(position);
         }
@@ -355,7 +326,7 @@ impl Model<'_> {
         let report: HashSet<Position> = always_report.iter().copied().collect();
         order
             .into_iter()
-            .filter(|p| report.contains(p) || self.change_key(*p) != before[p])
+            .filter(|&position| self.reports_change(position, &before, &report))
             .collect()
     }
 
@@ -396,11 +367,12 @@ impl Model<'_> {
         // This is a snapshot taken across `evaluate_full`, not a lazy view: the
         // comparison below is against the values as they were before the pass,
         // so the iterator cannot be fused into it.
-        let footprint_before: Vec<(Position, Option<ChangeKey>)> = before
-            .iter()
-            .filter(|&&p| !self.is_unevaluated_array(p))
-            .map(|&p| (p, self.change_key(p)))
-            .collect();
+        let footprint_before = self.change_keys(
+            before
+                .iter()
+                .copied()
+                .filter(|&p| !self.is_unevaluated_array(p)),
+        );
         self.saw_circular_reference = false;
         self.evaluate_full();
         // A cycle that runs through the array (a member read while its anchor is

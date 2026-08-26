@@ -76,18 +76,41 @@ impl Model<'_> {
     /// `cf_before` and the rebuilt `cf_cache`. CF has no dependency edges, so a
     /// value or CF-rule change can move a cell's format with no value change.
     pub(super) fn record_cf_changes(&mut self, cf_before: HashMap<Position, Vec<CfCellResult>>) {
-        if let ChangedCells::Delta(delta) = &mut self.changed_cells {
-            for (position, results) in &self.cf_cache {
-                if cf_before.get(position) != Some(results) {
-                    delta.insert(*position);
-                }
-            }
-            for position in cf_before.keys() {
-                if !self.cf_cache.contains_key(position) {
-                    delta.insert(*position);
-                }
-            }
-        }
+        record_snapshot_diff(&mut self.changed_cells, &cf_before, &self.cf_cache);
+    }
+
+    /// The observable state of every stored cell, to diff a later snapshot
+    /// against. Used around a redundant full pass, which must keep the delta it
+    /// inherited unless values actually moved.
+    pub(super) fn workbook_change_keys(&self) -> HashMap<Position, Option<ChangeKey>> {
+        self.change_keys(self.cells_in_order().map(|(position, _)| position))
+    }
+
+    /// The observable state of `positions`, to diff a later snapshot against.
+    /// A position with no cell maps to `None`, which is a state like any other:
+    /// a cell that appears or vanishes is a change.
+    pub(super) fn change_keys(
+        &self,
+        positions: impl IntoIterator<Item = Position>,
+    ) -> HashMap<Position, Option<ChangeKey>> {
+        positions
+            .into_iter()
+            .map(|position| (position, self.change_key(position)))
+            .collect()
+    }
+
+    /// Whether `position` counts as changed, both for the delta and for
+    /// propagating past it: its observable state moved since `before`, or this
+    /// pass reports it regardless (a user edit, a volatile re-roll).
+    ///
+    /// `before` must contain `position`.
+    pub(super) fn reports_change(
+        &self,
+        position: Position,
+        before: &HashMap<Position, Option<ChangeKey>>,
+        always_report: &HashSet<Position>,
+    ) -> bool {
+        always_report.contains(&position) || self.change_key(position) != before[&position]
     }
 
     /// Returns the cells whose observable state moved on incremental evaluations
@@ -110,5 +133,32 @@ impl Model<'_> {
                 .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })
                 .collect(),
         )
+    }
+}
+
+/// Adds to `changed` every position whose entry differs between the two
+/// snapshots, in either direction: one that moved, one that appeared, one that
+/// vanished. A no-op once the record is `All`.
+///
+/// The value diff around a redundant full pass and the conditional-format diff
+/// after every pass are the same operation; they differ only in what they
+/// snapshot.
+pub(super) fn record_snapshot_diff<V: PartialEq>(
+    changed: &mut ChangedCells,
+    before: &HashMap<Position, V>,
+    after: &HashMap<Position, V>,
+) {
+    let ChangedCells::Delta(delta) = changed else {
+        return;
+    };
+    for (position, value) in after {
+        if before.get(position) != Some(value) {
+            delta.insert(*position);
+        }
+    }
+    for position in before.keys() {
+        if !after.contains_key(position) {
+            delta.insert(*position);
+        }
     }
 }
