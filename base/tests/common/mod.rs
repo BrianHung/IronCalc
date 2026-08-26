@@ -1216,6 +1216,40 @@ pub const ZOO: &[&str] = &[
     "={D}!{C}{R}",
     "=MAX({D}!A1:A12)+MIN(A1:A12)",
     "=SUM({D}!A:A)",
+    // Whole-column and whole-row reads on the *data* columns. Their text does
+    // not change under an insert or delete, so the displacement journal never
+    // rewrites them: the range half of `mark_structural_dependents` and the
+    // used-range clip (`Input::SheetStructure`) are all that connect them.
+    "=SUM(A:A)",
+    "=SUM(A:C)",
+    "=COUNTA(A:A)",
+    "=COUNTBLANK(A:B)",
+    "=COUNT(1:5)",
+    "=SUBTOTAL(103,A:A)",
+    "=COUNTIF(A:A,\">{N}\")",
+    "=SUMIF(A:A,\">{N}\",B:B)",
+    "=AVERAGE(A:B)",
+    // Counts over a bounded range: an insert *inside* one adds a blank, which
+    // moves the answer where SUM would not notice.
+    "=COUNTBLANK(A1:A{R})",
+    "=COUNTA(A1:B{R})",
+    "=ROWS(A1:A{R})",
+    // Computed targets whose formula text is displacement-stable (absolute
+    // anchor, literal offset), so only `Input::Computed` re-resolves them.
+    "=OFFSET($C$1,{S},0)",
+    "=OFFSET($A$1,{S},{N})",
+    "=SUM(OFFSET($A$1,{S},0,4,2))",
+    "=INDIRECT(\"C\"&{S})",
+    "=SUM(INDIRECT(\"A1:B\"&{S}))",
+    // A computed extent wide enough that the reader's per-cell walk is clipped
+    // to the used range: only the recorded rectangle connects a write below it.
+    "=SUM(INDIRECT(\"A:A\"))",
+    "=COUNTA(INDIRECT(\"{C}:{C}\"))",
+    "=OFFSET($A$1,ROW()-1,0)",
+    // Own-coordinate and formula-text reads with displacement-stable text.
+    "=ROW()*10+COLUMN()",
+    "=FORMULATEXT($E$1)",
+    "=ISFORMULA($E$2)",
     // defined names
     "=NCELL*2",
     "=SUM(NRANGE)",
@@ -1368,6 +1402,10 @@ pub const NAME_TARGETS: &[&str] = &[
     "LAMBDA(x,SUM(Sheet1!$A$1:$A$4)+x)",
     "LAMBDA(x,x+NCELL)",
     "Sheet1!$A$1:$A$3*2",
+    "Sheet1!$A:$A",
+    "Sheet1!$A:$C",
+    "Sheet1!$1:$3",
+    "{D}!$A:$B",
     "5",
 ];
 
