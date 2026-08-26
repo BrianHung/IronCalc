@@ -38,6 +38,7 @@ use crate::{
 
 use crate::{cf_types::CfCellResult, tz::Tz};
 
+mod array_index;
 pub(crate) mod cse_guard;
 mod incremental;
 mod unstable_cells;
@@ -3479,7 +3480,7 @@ impl<'a> Model<'a> {
                 ) {
                     self.cse_rects = None;
                 }
-                incremental::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
+                array_index::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
                     footprint.push((p, anchor))
                 });
             }
