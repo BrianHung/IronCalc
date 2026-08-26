@@ -364,9 +364,9 @@ impl Model<'_> {
         // not a fixed point: a formula outside phase 1 can read a spill member
         // before the anchor refills it (after a move, a delete, or a first
         // spill), and only Full's next unconditional pass heals that reader.
-        // This is a snapshot taken across `evaluate_full`, not a lazy view: the
+        // `change_keys` takes the snapshot eagerly, which is the point: the
         // comparison below is against the values as they were before the pass,
-        // so the iterator cannot be fused into it.
+        // so this must not become a lazy view of the post-pass state.
         let footprint_before = self.change_keys(
             before
                 .iter()
