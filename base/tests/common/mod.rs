@@ -202,12 +202,18 @@ impl Op {
     /// Cells this op writes as a plain value (incremental "seeds").
     pub fn value_seed(&self) -> Option<(u32, i32, i32)> {
         match self {
+            // A quote-prefixed write ('7) is a user edit like any other, and
+            // I6.1 reports a user edit even when its own value did not move.
+            // Excluding it here made a legitimate delta entry look unsound
+            // whenever the write changed state the observable does not carry.
+            // Excusing a true no-op is not a risk: the engine suppresses those
+            // itself (I2.1), so one never reaches the delta to be excused.
             Op::Set {
                 sheet,
                 row,
                 col,
                 value,
-            } if !value.is_empty() && !value.starts_with('\'') => Some((*sheet, *row, *col)),
+            } if !value.is_empty() => Some((*sheet, *row, *col)),
             Op::SetNumber {
                 sheet, row, col, ..
             }
