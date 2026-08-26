@@ -306,6 +306,22 @@ pub struct Model<'a> {
     pub(crate) write_seeds: HashSet<Position>,
 }
 
+/// Whether `cell` belongs to the full pass's phase 1.
+///
+/// Phase 1 is every [`Cell::ArrayFormula`], CSE anchors included: a freshly set
+/// anchor has placeholder members, and a reader of a member must not evaluate
+/// before the anchor fills its rectangle, or the first pass stores a stale read
+/// that only a second full pass would heal.
+///
+/// This is the single definition of phase-1 membership.
+/// [`Model::collect_spill_cells`] selects phase 1 out of the whole workbook
+/// with it; [`Model::in_full_pass_order`] reorders a cone with it. Those two
+/// walk different inputs and so cannot share a traversal, but the order they
+/// produce has to agree, and this is the half of it that can be shared.
+pub(crate) fn is_phase_one_cell(cell: &Cell) -> bool {
+    matches!(cell, Cell::ArrayFormula { .. })
+}
+
 // FIXME: Maybe this should be the same as CellReference
 /// A struct pointing to a cell
 pub struct CellIndex {
@@ -3240,56 +3256,49 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Returns a list of all cells
-    pub fn get_all_cells(&self) -> Vec<CellIndex> {
-        let mut cells = Vec::new();
-        for (index, sheet) in self.workbook.worksheets.iter().enumerate() {
-            let mut sorted_rows: Vec<_> = sheet.sheet_data.keys().collect();
-            sorted_rows.sort_unstable();
-            for row in sorted_rows {
-                let row_data = &sheet.sheet_data[row];
-                let mut sorted_columns: Vec<_> = row_data.keys().collect();
-                sorted_columns.sort_unstable();
-                for column in sorted_columns {
-                    cells.push(CellIndex {
-                        index: index as u32,
-                        row: *row,
-                        column: *column,
-                    });
-                }
-            }
-        }
-        cells
+    /// Every stored cell in the workbook, in `(sheet, row, column)` order.
+    ///
+    /// `sheet_data` is a hash map, so the sort is what makes the order exist at
+    /// all. This is the order the full pass evaluates in and the order every
+    /// index built from a whole-workbook walk is built in, so it has one
+    /// definition. A caller that needs `&mut self` afterwards collects first.
+    pub(crate) fn cells_in_order(&self) -> impl Iterator<Item = (Position, &Cell)> + '_ {
+        self.workbook
+            .worksheets
+            .iter()
+            .enumerate()
+            .flat_map(|(sheet_index, worksheet)| {
+                let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+                sorted_rows.sort_unstable();
+                sorted_rows.into_iter().flat_map(move |row| {
+                    let row_data = &worksheet.sheet_data[&row];
+                    let mut sorted_columns: Vec<i32> = row_data.keys().copied().collect();
+                    sorted_columns.sort_unstable();
+                    sorted_columns
+                        .into_iter()
+                        .map(move |column| ((sheet_index as u32, row, column), &row_data[&column]))
+                })
+            })
     }
 
-    /// Collects all dynamic-formula anchor cells in natural (sheet, row, column) order
-    /// and stores them in `self.spill_cells`.
+    /// Returns a list of all cells
+    pub fn get_all_cells(&self) -> Vec<CellIndex> {
+        self.cells_in_order()
+            .map(|((index, row, column), _)| CellIndex { index, row, column })
+            .collect()
+    }
+
+    /// Collects the cells the full pass evaluates in phase 1, in natural
+    /// (sheet, row, column) order, and stores them in `self.spill_cells`.
+    ///
+    /// This is one of the two selections on [`is_phase_one_cell`]; the other is
+    /// [`Model::in_full_pass_order`], which reproduces this order over a cone.
     fn collect_spill_cells(&mut self) {
-        let mut spill_cells = Vec::new();
-        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
-            let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
-            sorted_rows.sort_unstable();
-            for row in &sorted_rows {
-                let row_data = &worksheet.sheet_data[row];
-                let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
-                sorted_cols.sort_unstable();
-                for col in &sorted_cols {
-                    // CSE anchors are phase-1 too: a freshly set anchor has
-                    // placeholder members, and a reader of a member must not
-                    // evaluate before the anchor fills its rectangle, or the
-                    // first pass stores a stale read that only a second full
-                    // pass would heal.
-                    if matches!(&row_data[col], Cell::ArrayFormula { .. }) {
-                        spill_cells.push(CellReferenceIndex {
-                            sheet: sheet_index as u32,
-                            row: *row,
-                            column: *col,
-                        });
-                    }
-                }
-            }
-        }
-        self.spill_cells = spill_cells;
+        self.spill_cells = self
+            .cells_in_order()
+            .filter(|(_, cell)| is_phase_one_cell(cell))
+            .map(|((sheet, row, column), _)| CellReferenceIndex { sheet, row, column })
+            .collect();
     }
 
     /// Returns all cells in the current spill area of a dynamic-formula anchor,

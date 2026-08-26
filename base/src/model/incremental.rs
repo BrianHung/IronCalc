@@ -14,7 +14,7 @@ use crate::dependency_graph::Position;
 #[cfg(feature = "recalc_verify")]
 use crate::dependency_graph::RecalcMode;
 use crate::expressions::types::CellReferenceIndex;
-use crate::model::Model;
+use crate::model::{is_phase_one_cell, Model};
 use crate::types::{ArrayKind, Cell, CellType};
 
 /// Below this many formula cells, incremental never falls back on fanout: the
@@ -119,24 +119,13 @@ impl Model<'_> {
     pub(crate) fn collect_array_cells(&mut self) {
         let mut array_cells = HashMap::new();
         let mut formula_cell_count = 0;
-        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
-            let sheet = sheet_index as u32;
-            let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
-            sorted_rows.sort_unstable();
-            for row in sorted_rows {
-                let row_data = &worksheet.sheet_data[&row];
-                let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
-                sorted_cols.sort_unstable();
-                for col in sorted_cols {
-                    let cell = &row_data[&col];
-                    if cell.get_formula().is_some() {
-                        formula_cell_count += 1;
-                    }
-                    array_footprint(cell, sheet, row, col, &mut |p, anchor| {
-                        array_cells.insert(p, anchor);
-                    });
-                }
+        for ((sheet, row, col), cell) in self.cells_in_order() {
+            if cell.get_formula().is_some() {
+                formula_cell_count += 1;
             }
+            array_footprint(cell, sheet, row, col, &mut |p, anchor| {
+                array_cells.insert(p, anchor);
+            });
         }
         self.formula_cell_count = formula_cell_count;
         self.formula_count_stale = false;
@@ -146,18 +135,20 @@ impl Model<'_> {
     /// Recounts formula cells without touching the array index. Used after a
     /// structural edit, which can add or remove whole rows of formula cells
     /// without a cell write for the journal to account against.
+    ///
+    /// Deliberately not [`Model::cells_in_order`]: a count is order-free, and
+    /// this runs on the incremental path, where sorting the whole workbook to
+    /// reach an order nothing reads would be the expense the fanout check
+    /// exists to avoid.
     pub(crate) fn recount_formula_cells(&mut self) {
-        let mut formula_cell_count = 0;
-        for worksheet in &self.workbook.worksheets {
-            for row_data in worksheet.sheet_data.values() {
-                for cell in row_data.values() {
-                    if cell.get_formula().is_some() {
-                        formula_cell_count += 1;
-                    }
-                }
-            }
-        }
-        self.formula_cell_count = formula_cell_count;
+        self.formula_cell_count = self
+            .workbook
+            .worksheets
+            .iter()
+            .flat_map(|worksheet| worksheet.sheet_data.values())
+            .flat_map(|row_data| row_data.values())
+            .filter(|cell| cell.get_formula().is_some())
+            .count();
         self.formula_count_stale = false;
     }
 
@@ -774,10 +765,7 @@ impl Model<'_> {
         for &position in &order {
             self.invalidate(position);
         }
-        let (mut walk, rest): (Vec<Position>, Vec<Position>) = order
-            .iter()
-            .partition(|&&position| self.is_array_formula(position));
-        walk.extend(rest);
+        let walk = self.in_full_pass_order(&order);
         self.recompute_scope = Some(affected.clone());
         for (sheet, row, column) in walk {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
@@ -807,11 +795,21 @@ impl Model<'_> {
         )
     }
 
-    /// Whether `position` holds an array formula of either kind. This is
-    /// exactly `collect_spill_cells`'s phase-1 membership test, so that
-    /// `recompute_all` can reproduce the full pass's two-phase walk order.
-    fn is_array_formula(&self, position: Position) -> bool {
-        matches!(self.cell_at(position), Some(Cell::ArrayFormula { .. }))
+    /// `positions`, which must already be in `(sheet, row, column)` order,
+    /// rearranged the way [`Model::evaluate_full`] walks the workbook: the
+    /// phase-1 cells first, then the rest, each still in that order.
+    ///
+    /// The full pass gets that order from `collect_spill_cells` followed by
+    /// `get_all_cells`, which walks the whole workbook; this walks one cone.
+    /// The inputs differ, so the traversals stay separate, but both select
+    /// phase 1 with [`is_phase_one_cell`], which is where the agreement lives.
+    fn in_full_pass_order(&self, positions: &[Position]) -> Vec<Position> {
+        let (mut phase_one, rest): (Vec<Position>, Vec<Position>) = positions
+            .iter()
+            .copied()
+            .partition(|&position| self.cell_at(position).is_some_and(is_phase_one_cell));
+        phase_one.extend(rest);
+        phase_one
     }
 
     /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
