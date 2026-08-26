@@ -396,13 +396,7 @@ impl Model<'_> {
                 .copied()
                 .filter(|&p| !self.is_unevaluated_array(p)),
         );
-        self.saw_circular_reference = false;
         self.evaluate_full();
-        // A cycle that runs through the array (a member read while its anchor is
-        // still evaluating) resolves against the member's pre-pass value, so a
-        // footprint that then moves leaves the reader holding the old one even
-        // when no edge records the read.
-        let circular = self.saw_circular_reference;
         let new: Vec<Position> = self
             .graph
             .arrays
@@ -418,8 +412,17 @@ impl Model<'_> {
         // edges the pass just recorded, so a dependent means a reader exists.
         // Conservative by one pass at worst: if the reader in fact read after
         // the write, the forced full pass moves nothing and clears the debt.
+        //
+        // A cycle running through the array used to be a second arm here, on
+        // the grounds that a member read while its anchor was still evaluating
+        // leaves no edge. It never decided anything, and could not: a cycle
+        // through a footprint puts the anchor on the cycle (reading a member is
+        // an edge on its anchor, I1.9), so the anchor lands in `never_served`,
+        // which every later pass seeds dirty -- and a cone holding an array
+        // position takes the arrays->Full fallback. The next pass was already
+        // full, which is all the debt flag could have forced.
         let debt = footprint_before.iter().any(|(p, was)| {
-            self.change_key(*p) != *was && (circular || !self.graph.dependents_of(*p).is_empty())
+            self.change_key(*p) != *was && !self.graph.dependents_of(*p).is_empty()
         });
         if debt {
             self.graph.note_convergence_debt();
