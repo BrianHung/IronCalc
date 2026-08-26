@@ -102,3 +102,12 @@ cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
 ```
 
 `RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts that the change report lists every change and nothing else, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the check cannot repair the state it is checking.
+
+## Test discipline
+
+Every test in this engine's suite must pin one named invariant: the name says what breaks, a doc comment
+says why it matters when that is not obvious, and the shape is the minimal one that fails when the
+mechanism is wrong. Before adding a test, check whether an existing one already dies for the same
+mutation; before deleting or merging tests, re-apply the relevant mutants (see the nightly-recalc-audit
+workflow) and confirm nothing that used to die now survives. Redundancy is measured by kill-power, not by
+reading similarity.
