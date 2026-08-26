@@ -1,21 +1,26 @@
-//! Incremental recalculation: observed-read graph, selective evaluation, and
-//! the changed-cell delta it exposes.
+//! The incremental scheduler: which cells a pass recomputes, in what order,
+//! and when it gives up and runs a full pass instead.
 //!
-//! Edges are the reads recorded while a formula evaluates. The incremental
-//! pass recomputes only the cells reachable from those that changed (plus
-//! formulas that read RAND/NOW/TODAY) and records which ones moved, so
-//! [`Model::take_changed_cells`] can report a precise delta.
+//! Edges are the reads recorded while a formula evaluates. A pass recomputes
+//! only the cells reachable from those that changed (plus the formulas that
+//! read RAND/NOW/TODAY), stopping wherever a recomputed value turns out
+//! unchanged. Everything it cannot model is answered by falling back to full,
+//! so the fallbacks here are the list of what incremental does not handle.
+//!
+//! What counts as unchanged, and the delta the pass records, are
+//! [`super::changed_cells`]. The array index it consults is
+//! [`super::array_index`], the two sets of untrustworthy stored values are
+//! [`super::unstable_cells`], and the oracle that checks the whole thing is
+//! `super::verify`.
 
 use std::collections::{HashMap, HashSet};
 
-use super::{ChangedCells, ChangedSinceRead};
-use crate::cell::CellValue;
+use super::changed_cells::{record_snapshot_diff, ChangedCells};
 use crate::dependency_graph::Position;
 #[cfg(feature = "recalc_verify")]
 use crate::dependency_graph::RecalcMode;
 use crate::expressions::types::CellReferenceIndex;
-use crate::model::Model;
-use crate::types::{ArrayKind, Cell, CellType};
+use crate::model::{is_phase_one_cell, Model};
 
 /// Below this many formula cells, incremental never falls back on fanout: the
 /// bookkeeping is cheap in absolute terms and full has no edge to exploit.
@@ -26,355 +31,26 @@ const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
 /// incremental bookkeeping it would save.
 const INCREMENTAL_FANOUT_RATIO: usize = 2;
 
-/// A cell's observable signature for incremental change detection: value, type
-/// (so an error and a same-text literal differ), and dynamic link.
-type ChangeKey = (CellType, ChangeValue, Option<crate::types::Link>);
-
-/// Every cell's full observable state (`ChangeKey` plus conditional format),
-/// used by the `Verify` check to compare incremental against full.
-#[cfg(feature = "recalc_verify")]
-type RenderSnapshot = HashMap<Position, (Option<ChangeKey>, Vec<crate::cf_types::CfCellResult>)>;
-
-/// A cell value flattened for change detection. Numbers are kept as bits so a
-/// `+0.0`/`-0.0` flip is seen and a `NaN` does not report as changed forever.
-#[derive(PartialEq, Debug)]
-enum ChangeValue {
-    None,
-    Boolean(bool),
-    Number(u64),
-    String(String),
-}
-
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
     Full,
 }
 
-/// The positions `cell` contributes to the array index, each with the anchor
-/// that produces it: a CSE anchor, a spill cell plus its anchor, and a dynamic
-/// anchor unless its last result was a plain 1x1 scalar. A scalar dynamic
-/// anchor (`=LET(..)`, a called LAMBDA, `=INDEX(..)`) stays out so it does not
-/// force a Full pass; a blocked anchor (stored
-/// `#SPILL!`) stays in, because full-mode same-pass readers observe the live
-/// array's top-left value rather than the stored error, which incremental can
-/// only match through the full pass; an unevaluated anchor's extent is unknown,
-/// so it stays in too. Shared by the full-pass rebuild and the journal drain so
-/// both index by the same rules.
-///
-/// A member is indexed as the spill cell it is, not from its anchor's declared
-/// rectangle. The two only differ for a *ghost* member -- a declared position
-/// holding no spill cell -- and a ghost exists only between the write that
-/// created it (`set_user_array_formula`, or a structural edit that drops a
-/// member and resets the anchor to `Unevaluated`) and the anchor's next
-/// evaluation. That write dirties the anchor, the anchor is in this index, and
-/// a cone holding it goes to Full, which is the pass that refills the
-/// rectangle. So no gate ever reads a ghost's membership: indexing the
-/// rectangle only restated what the anchor's own entry already said.
-pub(super) fn array_footprint(
-    cell: &Cell,
-    sheet: u32,
-    row: i32,
-    col: i32,
-    out: &mut dyn FnMut(Position, Position),
-) {
-    let anchor = (sheet, row, col);
-    match cell {
-        Cell::ArrayFormula {
-            kind: ArrayKind::Cse,
-            ..
-        } => {
-            out(anchor, anchor);
-        }
-        Cell::ArrayFormula {
-            kind: ArrayKind::Dynamic,
-            v,
-            ..
-        } => {
-            let scalar_result = match v {
-                crate::types::FormulaValue::Error { ei, .. } => {
-                    *ei != crate::expressions::token::Error::SPILL
-                }
-                crate::types::FormulaValue::Unevaluated => false,
-                _ => true,
-            };
-            if !scalar_result {
-                out(anchor, anchor);
-            }
-        }
-        Cell::SpillCell { a, .. } => {
-            let owner = (sheet, a.0, a.1);
-            out(anchor, owner);
-            out(owner, owner);
-        }
-        _ => {}
-    }
-}
-
 impl Model<'_> {
-    /// Records the positions of array and spill cells after a full pass, so the
-    /// incremental path can fall back to full for any edit that reaches one. Must
-    /// run after spilling, when the spill output cells exist. Between full
-    /// passes the index is maintained without this walk: the journal drain adds
-    /// the footprint of user-written cells, structural edits shift positions,
-    /// and evaluation writes that change a footprint set `wrote_array_cells`,
-    /// which sends the pass to Full and back here.
-    pub(crate) fn collect_array_cells(&mut self) {
-        let mut array_cells = HashMap::new();
-        let mut formula_cell_count = 0;
-        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
-            let sheet = sheet_index as u32;
-            let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
-            sorted_rows.sort_unstable();
-            for row in sorted_rows {
-                let row_data = &worksheet.sheet_data[&row];
-                let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
-                sorted_cols.sort_unstable();
-                for col in sorted_cols {
-                    let cell = &row_data[&col];
-                    if cell.get_formula().is_some() {
-                        formula_cell_count += 1;
-                    }
-                    array_footprint(cell, sheet, row, col, &mut |p, anchor| {
-                        array_cells.insert(p, anchor);
-                    });
-                }
-            }
-        }
-        self.formula_cell_count = formula_cell_count;
-        self.formula_count_stale = false;
-        self.graph.replace_arrays(array_cells);
-    }
-
-    /// Recounts formula cells without touching the array index. Used after a
-    /// structural edit, which can add or remove whole rows of formula cells
-    /// without a cell write for the journal to account against.
-    pub(crate) fn recount_formula_cells(&mut self) {
-        let mut formula_cell_count = 0;
-        for worksheet in &self.workbook.worksheets {
-            for row_data in worksheet.sheet_data.values() {
-                for cell in row_data.values() {
-                    if cell.get_formula().is_some() {
-                        formula_cell_count += 1;
-                    }
-                }
-            }
-        }
-        self.formula_cell_count = formula_cell_count;
-        self.formula_count_stale = false;
-    }
-
-    /// When the pass stayed Incremental, runs a full pass and asserts they agree,
-    /// and that the recorded delta names every cell whose observable state moved.
-    /// A Full fallback has nothing to compare. Backs
-    /// [`RecalcMode::Verify`](crate::dependency_graph::RecalcMode::Verify).
-    #[cfg(feature = "recalc_verify")]
-    pub(crate) fn verify_incremental_matches_full(&mut self) {
-        let before = self.render_snapshot();
-        // Completeness must run even if no consumer called take_changed_cells;
-        // a fresh delta so a miss on this pass cannot hide behind an earlier one.
-        let consumer =
-            std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
-        // Capture before evaluate: after_pass clears dirty.
-        let seeds = self.graph.always_report_seeds();
-        // The pre-pass always-dirty set, which is the set `evaluate_selective`
-        // reads at pass start to seed `always_report`. Liveness is asserted
-        // against this one, not against the post-pass set: see below.
-        let always_dirty_before = self.graph.always_dirty_cells();
-        let pass = self.evaluate_selective();
-        let this_pass =
-            std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
-        if matches!(pass, EvalPass::Incremental) {
-            let incremental = self.render_snapshot();
-            // RAND/NOW/TODAY re-roll. OFFSET stays in the compare when Incremental.
-            // A top-level INDIRECT is a 1×1 dynamic array (Full, skipped).
-            // SUM/PRODUCT(INDIRECT) stay Incremental and are compared.
-            let tainted = self
-                .graph
-                .reachable(self.graph.always_dirty_cells().into_iter().collect());
-            if let ChangedCells::Delta(delta) = &this_pass {
-                for position in before.keys().chain(incremental.keys()) {
-                    let changed = before.get(position) != incremental.get(position);
-                    assert!(
-                        tainted.contains(position) || !changed || delta.contains(position),
-                        "cell {position:?} changed but is missing from the delta"
-                    );
-                }
-                // Soundness: delta ⊆ (moved ∪ user/RAND seeds ∪ RAND cone).
-                // `_set` writes the new value before evaluate, so a seed's
-                // snapshot may not move even though the API reports it.
-                // OFFSET is not a seed; it must not appear unless it moved.
-                for position in delta {
-                    let changed = before.get(position) != incremental.get(position);
-                    assert!(
-                        tainted.contains(position) || changed || seeds.contains(position),
-                        "cell {position:?} is in the delta but did not change"
-                    );
-                }
-                // Liveness. Both checks above consult the always-dirty set to
-                // excuse a cell, and the value comparison below strips its
-                // whole cone, so a pass that silently stopped re-running the
-                // volatiles would read as clean everywhere else. Being
-                // reported on every pass is what is left to assert.
-                //
-                // Against the PRE-pass set, because that is the set the pass
-                // seeded `always_report` from. A cell whose branch flips INTO
-                // `RAND()` on this pass records the input only as it evaluates:
-                // it joins the always-dirty set mid-pass, was never a seed, and
-                // if its value did not move the delta rightly leaves it out.
-                // It is asserted from the next pass on. The reverse transition
-                // is still asserted here -- a cell leaving volatility was in
-                // the pre-pass set, so it seeded `always_report` and must be
-                // reported on the pass that drops it -- and so is the steady
-                // state, where the two sets are the same.
-                for position in &always_dirty_before {
-                    assert!(
-                        delta.contains(position),
-                        "always-dirty cell {position:?} was not reported"
-                    );
-                }
-            }
-            self.changed_cells = merge_changed_cells(consumer, this_pass);
-            // Shadow Full: run it on this model, then restore Incremental
-            // state so the full pass cannot heal the graph we just used.
-            let saved_workbook = self.workbook.clone();
-            let saved_graph = self.graph.clone();
-            let saved_cells = self.cells.clone();
-            let saved_links = self.links.clone();
-            let saved_cf = self.cf_cache.clone();
-            let saved_support = self.support.clone();
-            self.evaluate_full();
-            let full = self.render_snapshot();
-            let strip = |mut snapshot: RenderSnapshot| {
-                snapshot.retain(|position, _| !tainted.contains(position));
-                snapshot
-            };
-            assert_eq!(
-                strip(incremental),
-                strip(full),
-                "incremental recalc diverged from full recompute"
-            );
-            self.workbook = saved_workbook;
-            self.graph = saved_graph;
-            self.cells = saved_cells;
-            self.links = saved_links;
-            self.cf_cache = saved_cf;
-            self.support = saved_support;
-            self.assert_stored_matches_live();
-        } else {
-            // A full fallback has nothing to compare; a second full re-rolls RAND/NOW.
-            // Still restore the consumer delta so a redundant evaluate is not a miss.
-            self.changed_cells = merge_changed_cells(consumer, this_pass);
-        }
-    }
-
-    /// Every cell's full observable state (value/type/link + conditional format),
-    /// for the delta-completeness check: a cell whose state moves must be in the
-    /// delta.
-    #[cfg(feature = "recalc_verify")]
-    fn render_snapshot(&self) -> RenderSnapshot {
-        let mut positions: HashSet<Position> = self.cf_cache.keys().copied().collect();
-        for c in self.get_all_cells() {
-            positions.insert((c.index, c.row, c.column));
-        }
-        positions.extend(self.links.keys().copied());
-        positions
-            .into_iter()
-            .map(|p| {
-                (
-                    p,
-                    (
-                        self.change_key(p),
-                        self.cf_cache.get(&p).cloned().unwrap_or_default(),
-                    ),
-                )
-            })
-            .collect()
-    }
-
-    /// Out-of-scope incremental reads return the stored value. Re-evaluating a
-    /// non-volatile formula in a one-cell scratch frame must agree with that
-    /// store (class C: `FormulaValue::Empty` vs a live blank).
-    #[cfg(feature = "recalc_verify")]
-    fn assert_stored_matches_live(&mut self) {
-        // The cells that never serve a stored value are exactly the cells this
-        // check cannot make: a volatile re-rolls, and a cell whose last result
-        // was not a function value -- on a cycle, downstream of one, or reading
-        // a blocked anchor -- holds something a one-cell scratch frame reading
-        // the store does not reproduce.
-        let mut skip = self.graph.always_dirty_cells();
-        skip.extend(self.graph.never_served().iter().copied());
-        skip.extend(self.graph.blocked_array_readers().iter().copied());
-        let cells = self.get_all_cells();
-        let saved_cells = self.cells.clone();
-        let saved_graph = self.graph.clone();
-        let saved_workbook = self.workbook.clone();
-        let saved_scope = self.recompute_scope.clone();
-        for c in cells {
-            let position = (c.index, c.row, c.column);
-            if skip.contains(&position) {
-                continue;
-            }
-            if self
-                .get_cell_formula(c.index, c.row, c.column)
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                continue;
-            }
-            // Spills rewrite a rectangle; a one-cell scratch frame is not a
-            // faithful re-eval of an array formula.
-            if matches!(
-                self.workbook
-                    .worksheet(c.index)
-                    .ok()
-                    .and_then(|ws| ws.cell(c.row, c.column)),
-                Some(Cell::ArrayFormula { .. } | Cell::SpillCell { .. })
-            ) {
-                continue;
-            }
-            let before = self.change_key(position);
-            self.recompute_scope = Some(HashSet::from([position]));
-            self.cells.remove(&position);
-            let _ = self.evaluate_cell(CellReferenceIndex {
-                sheet: c.index,
-                row: c.row,
-                column: c.column,
-            });
-            let after = self.change_key(position);
-            assert_eq!(
-                before, after,
-                "stored value diverged from a live re-eval at {position:?}"
-            );
-        }
-        self.cells = saved_cells;
-        self.graph = saved_graph;
-        self.workbook = saved_workbook;
-        self.recompute_scope = saved_scope;
-    }
-
-    /// Adds to the delta any cell whose conditional-format result moved between
-    /// `cf_before` and the rebuilt `cf_cache`. CF has no dependency edges, so a
-    /// value or CF-rule change can move a cell's format with no value change.
-    fn record_cf_changes(
-        &mut self,
-        cf_before: HashMap<Position, Vec<crate::cf_types::CfCellResult>>,
-    ) {
-        if let ChangedCells::Delta(delta) = &mut self.changed_cells {
-            for (position, results) in &self.cf_cache {
-                if cf_before.get(position) != Some(results) {
-                    delta.insert(*position);
-                }
-            }
-            for position in cf_before.keys() {
-                if !self.cf_cache.contains_key(position) {
-                    delta.insert(*position);
-                }
-            }
-        }
-    }
-
+    /// Recomputes the workbook incrementally, or decides it cannot and runs a
+    /// full pass instead. Returns which of the two happened.
+    ///
+    /// The guarantee is that the workbook afterwards holds what a full pass
+    /// would have produced from the same state, pass for pass -- not merely
+    /// eventually. Every case the incremental path cannot model is answered by
+    /// falling back rather than approximating, so the fallbacks below are the
+    /// enumeration of what it cannot model.
+    ///
+    /// Requires that the write journal has already been drained into the graph,
+    /// which `Model::evaluate` does before calling. Leaves the graph ready and
+    /// its dirty set empty; the delta accumulates into `changed_cells` until a
+    /// consumer takes it.
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
         let write_seeds = std::mem::take(&mut self.write_seeds);
         // Any leftover flag belongs to a pass that ended in a full rebuild of
@@ -411,38 +87,11 @@ impl Model<'_> {
             } else {
                 // A redundant full preserves the delta unless values actually
                 // moved (e.g. a spill that takes two passes). Diff cells and CF.
-                let before: HashMap<Position, Option<ChangeKey>> = self
-                    .get_all_cells()
-                    .into_iter()
-                    .map(|c| {
-                        let p = (c.index, c.row, c.column);
-                        (p, self.change_key(p))
-                    })
-                    .collect();
+                let before = self.workbook_change_keys();
                 let cf_before = self.cf_cache.clone();
                 self.evaluate_full_and_follow_up_new_arrays();
-                let after: Vec<(Position, Option<ChangeKey>)> = self
-                    .get_all_cells()
-                    .into_iter()
-                    .map(|c| {
-                        let p = (c.index, c.row, c.column);
-                        (p, self.change_key(p))
-                    })
-                    .collect();
-                if let ChangedCells::Delta(delta) = &mut self.changed_cells {
-                    let mut seen = HashSet::new();
-                    for (p, now) in after {
-                        seen.insert(p);
-                        if before.get(&p) != Some(&now) {
-                            delta.insert(p);
-                        }
-                    }
-                    for p in before.keys() {
-                        if !seen.contains(p) {
-                            delta.insert(*p);
-                        }
-                    }
-                }
+                let after = self.workbook_change_keys();
+                record_snapshot_diff(&mut self.changed_cells, &before, &after);
                 self.record_cf_changes(cf_before);
             }
             return EvalPass::Full;
@@ -575,60 +224,6 @@ impl Model<'_> {
         EvalPass::Incremental
     }
 
-    /// Rebuilds the readers of blocked spill anchors: the cells a full pass
-    /// hands the live array's top-left value while the anchor itself stores
-    /// `#SPILL!`. Run only from the full pass, which is the only pass that can
-    /// block or unblock an anchor -- an evaluation write to an array footprint
-    /// sends the pass to full -- and the only pass whose walk sees every
-    /// anchor. A stale entry costs one conservative full fallback.
-    pub(crate) fn refresh_blocked_array_readers(&mut self) {
-        use crate::expressions::token::Error::SPILL;
-        use crate::types::FormulaValue;
-        let blocked: Vec<Position> = self
-            .graph
-            .arrays
-            .snapshot()
-            .into_iter()
-            .filter(|&position| {
-                matches!(
-                    self.cell_at(position),
-                    Some(Cell::ArrayFormula {
-                        v: FormulaValue::Error { ei: SPILL, .. },
-                        ..
-                    })
-                )
-            })
-            .collect();
-        let readers = blocked
-            .into_iter()
-            .flat_map(|anchor| self.graph.dependents_of(anchor))
-            .collect();
-        self.graph.set_blocked_array_readers(readers);
-    }
-
-    /// The stored cell at `position`, if any.
-    fn cell_at(&self, (sheet, row, column): Position) -> Option<&Cell> {
-        self.workbook
-            .worksheet(sheet)
-            .ok()
-            .and_then(|ws| ws.cell(row, column))
-    }
-
-    /// A cell's observable signature: value, type (so an error and a same-text
-    /// literal differ), and dynamic link (a HYPERLINK target can move under a
-    /// fixed label).
-    fn change_key(&self, position @ (sheet, row, column): Position) -> Option<ChangeKey> {
-        let value = match self.get_cell_value_by_index(sheet, row, column).ok()? {
-            CellValue::None => ChangeValue::None,
-            CellValue::Boolean(b) => ChangeValue::Boolean(b),
-            // By bits, so a +0.0/-0.0 flip is seen and NaN does not report forever.
-            CellValue::Number(n) => ChangeValue::Number(n.to_bits()),
-            CellValue::String(s) => ChangeValue::String(s),
-        };
-        let cell_type = self.get_cell_type(sheet, row, column).ok()?;
-        Some((cell_type, value, self.links.get(&position).cloned()))
-    }
-
     /// Clears a cell's cached state so the next `evaluate_cell` recomputes it.
     /// Drops the dynamic link too, as a full pass would, so a cell that no longer
     /// resolves to a `HYPERLINK` does not keep a stale one.
@@ -654,8 +249,7 @@ impl Model<'_> {
         order: &[Position],
         extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
-        let before: HashMap<Position, Option<ChangeKey>> =
-            affected.iter().map(|&p| (p, self.change_key(p))).collect();
+        let before = self.change_keys(affected.iter().copied());
         let mut scope = affected.clone();
         scope.extend(extra_scope);
         self.recompute_scope = Some(scope);
@@ -676,7 +270,7 @@ impl Model<'_> {
             self.invalidate(position);
             let (sheet, row, column) = position;
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
-            if report.contains(&position) || self.change_key(position) != before[&position] {
+            if self.reports_change(position, &before, &report) {
                 changed.insert(position);
                 stale.extend(self.graph.dependents_of(position));
             }
@@ -692,7 +286,7 @@ impl Model<'_> {
         // OFFSET/INDIRECT can recompute a helper via evaluate_cell before this
         // loop reaches it; that cell never entered `stale`.
         for &position in affected {
-            if report.contains(&position) || self.change_key(position) != before[&position] {
+            if self.reports_change(position, &before, &report) {
                 changed.insert(position);
             }
         }
@@ -726,15 +320,11 @@ impl Model<'_> {
     ) -> Vec<Position> {
         let mut order: Vec<Position> = affected.iter().copied().collect();
         order.sort_unstable();
-        let before: HashMap<Position, Option<ChangeKey>> =
-            order.iter().map(|&p| (p, self.change_key(p))).collect();
+        let before = self.change_keys(order.iter().copied());
         for &position in &order {
             self.invalidate(position);
         }
-        let (mut walk, rest): (Vec<Position>, Vec<Position>) = order
-            .iter()
-            .partition(|&&position| self.is_array_formula(position));
-        walk.extend(rest);
+        let walk = self.in_full_pass_order(&order);
         self.recompute_scope = Some(affected.clone());
         for (sheet, row, column) in walk {
             self.evaluate_cell(CellReferenceIndex { sheet, row, column });
@@ -743,47 +333,25 @@ impl Model<'_> {
         let report: HashSet<Position> = always_report.iter().copied().collect();
         order
             .into_iter()
-            .filter(|p| report.contains(p) || self.change_key(*p) != before[p])
+            .filter(|&position| self.reports_change(position, &before, &report))
             .collect()
     }
 
-    /// Whether `position` holds an array formula that has never been evaluated.
-    /// It is in the array index precisely because its extent is unknown, and it
-    /// has no pre-pass value to compare against: every first evaluation would
-    /// look like a mid-pass move.
-    fn is_unevaluated_array(&self, (sheet, row, column): Position) -> bool {
-        matches!(
-            self.workbook
-                .worksheet(sheet)
-                .ok()
-                .and_then(|ws| ws.cell(row, column)),
-            Some(Cell::ArrayFormula {
-                v: crate::types::FormulaValue::Unevaluated,
-                ..
-            })
-        )
-    }
-
-    /// Whether `position` holds an array formula of either kind. This is
-    /// exactly `collect_spill_cells`'s phase-1 membership test, so that
-    /// `recompute_all` can reproduce the full pass's two-phase walk order.
-    fn is_array_formula(&self, position: Position) -> bool {
-        matches!(self.cell_at(position), Some(Cell::ArrayFormula { .. }))
-    }
-
-    /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
-    /// two-phase spill order even before they appear in `graph.arrays`.
-    fn is_dynamic_array_anchor(&self, (sheet, row, column): Position) -> bool {
-        matches!(
-            self.workbook
-                .worksheet(sheet)
-                .ok()
-                .and_then(|ws| ws.cell(row, column)),
-            Some(Cell::ArrayFormula {
-                kind: ArrayKind::Dynamic,
-                ..
-            })
-        )
+    /// `positions`, which must already be in `(sheet, row, column)` order,
+    /// rearranged the way [`Model::evaluate_full`] walks the workbook: the
+    /// phase-1 cells first, then the rest, each still in that order.
+    ///
+    /// The full pass gets that order from `collect_spill_cells` followed by
+    /// `get_all_cells`, which walks the whole workbook; this walks one cone.
+    /// The inputs differ, so the traversals stay separate, but both select
+    /// phase 1 with [`is_phase_one_cell`], which is where the agreement lives.
+    fn in_full_pass_order(&self, positions: &[Position]) -> Vec<Position> {
+        let (mut phase_one, rest): (Vec<Position>, Vec<Position>) = positions
+            .iter()
+            .copied()
+            .partition(|&position| self.cell_at(position).is_some_and(is_phase_one_cell));
+        phase_one.extend(rest);
+        phase_one
     }
 
     /// Full recompute whose result is not expressible as a delta: it may have
@@ -803,14 +371,15 @@ impl Model<'_> {
         // not a fixed point: a formula outside phase 1 can read a spill member
         // before the anchor refills it (after a move, a delete, or a first
         // spill), and only Full's next unconditional pass heals that reader.
-        // This is a snapshot taken across `evaluate_full`, not a lazy view: the
+        // `change_keys` takes the snapshot eagerly, which is the point: the
         // comparison below is against the values as they were before the pass,
-        // so the iterator cannot be fused into it.
-        let footprint_before: Vec<(Position, Option<ChangeKey>)> = before
-            .iter()
-            .filter(|&&p| !self.is_unevaluated_array(p))
-            .map(|&p| (p, self.change_key(p)))
-            .collect();
+        // so this must not become a lazy view of the post-pass state.
+        let footprint_before = self.change_keys(
+            before
+                .iter()
+                .copied()
+                .filter(|&p| !self.is_unevaluated_array(p)),
+        );
         self.saw_circular_reference = false;
         self.evaluate_full();
         // A cycle that runs through the array (a member read while its anchor is
@@ -841,28 +410,6 @@ impl Model<'_> {
         }
     }
 
-    /// Returns the cells whose observable state moved on incremental evaluations
-    /// since the last call, sorted, and clears the record. `Everything` means a
-    /// full recompute has run, or an insert/delete moved cells the dirty cone
-    /// cannot name. An empty `Cells` delta is not `Everything`.
-    pub fn take_changed_cells(&mut self) -> ChangedSinceRead {
-        self.drain_write_journal();
-        // Reading re-arms tracking: the record resets to an empty delta, so
-        // subsequent incremental passes accumulate afresh.
-        let taken = std::mem::replace(&mut self.changed_cells, ChangedCells::Delta(HashSet::new()));
-        let ChangedCells::Delta(cells) = taken else {
-            return ChangedSinceRead::Everything;
-        };
-        let mut cells: Vec<Position> = cells.into_iter().collect();
-        cells.sort_unstable();
-        ChangedSinceRead::Cells(
-            cells
-                .into_iter()
-                .map(|(sheet, row, column)| CellReferenceIndex { sheet, row, column })
-                .collect(),
-        )
-    }
-
     /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
     /// the incremental path so the oracle still compares the two.
     fn should_fallback_fanout(&self, fanout: usize) -> bool {
@@ -872,17 +419,5 @@ impl Model<'_> {
         }
         self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
             && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
-    }
-}
-
-/// Unions two change records. `All` wins; otherwise the cells are merged.
-#[cfg(feature = "recalc_verify")]
-fn merge_changed_cells(consumer: ChangedCells, this_pass: ChangedCells) -> ChangedCells {
-    match (consumer, this_pass) {
-        (ChangedCells::All, _) | (_, ChangedCells::All) => ChangedCells::All,
-        (ChangedCells::Delta(mut a), ChangedCells::Delta(b)) => {
-            a.extend(b);
-            ChangedCells::Delta(a)
-        }
     }
 }

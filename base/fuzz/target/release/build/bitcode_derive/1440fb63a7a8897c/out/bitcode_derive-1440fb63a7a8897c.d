@@ -1,0 +1,10 @@
+/private/tmp/fix90/base/fuzz/target/release/build/bitcode_derive/1440fb63a7a8897c/out/bitcode_derive-1440fb63a7a8897c.d: /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs
+
+/private/tmp/fix90/base/fuzz/target/release/build/bitcode_derive/1440fb63a7a8897c/out/libbitcode_derive-1440fb63a7a8897c.dylib: /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs
+
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs:

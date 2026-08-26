@@ -581,6 +581,53 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
+    /// Replaces every link sitting on the moved line with the ones lifted off
+    /// the source line, discarding whatever the cell rebuild auto-created.
+    ///
+    /// `moved_links` is keyed by the coordinate that is *not* the line: the
+    /// column for a row move, the row for a column move.
+    ///
+    /// Both the discarded positions and the re-attached ones are journaled. A
+    /// link is part of a cell's observable state, so readers of either end must
+    /// re-run -- and that is exactly the rule two near-identical copies of this
+    /// block made easy to apply to one axis and forget on the other.
+    fn reattach_moved_links(
+        &mut self,
+        sheet: u32,
+        axis: Axis,
+        target_line: i32,
+        moved_links: Vec<(i32, Link)>,
+    ) -> Result<(), String> {
+        let on_target = |&(row, column): &(i32, i32)| match axis {
+            Axis::Row => row == target_line,
+            Axis::Column => column == target_line,
+        };
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        let discarded: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .filter(|key| on_target(key))
+            .copied()
+            .collect();
+        for (row, column) in discarded {
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, row, column),
+            });
+        }
+        worksheet.links.retain(|key, _| !on_target(key));
+        for (other, link) in moved_links {
+            let (row, column) = match axis {
+                Axis::Row => (target_line, other),
+                Axis::Column => (other, target_line),
+            };
+            worksheet.links.insert((row, column), link);
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, row, column),
+            });
+        }
+        Ok(())
+    }
+
     /// Keeps the dependency graph in step with a structural edit. A row or column
     /// insert or delete shifts stored positions and formula `HYPERLINK` results.
     /// A move or cell displacement, which the shift does not model, forces a full
@@ -1274,30 +1321,7 @@ impl<'a> Model<'a> {
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, hidden, style)?;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created.
-        // Both the discarded positions and the re-attached ones are journaled:
-        // readers of either cell must re-run.
-        let discarded: Vec<(i32, i32)> = self
-            .workbook
-            .worksheet(sheet)?
-            .links
-            .keys()
-            .filter(|(_, c)| *c == target_column)
-            .copied()
-            .collect();
-        let worksheet = self.workbook.worksheet_mut(sheet)?;
-        for (r, c) in &discarded {
-            worksheet.write_log.push(crate::recalc::Write::Link {
-                at: (sheet, *r, *c),
-            });
-        }
-        worksheet.links.retain(|&(_, c), _| c != target_column);
-        for (r, link) in moved_links {
-            worksheet.links.insert((r, target_column), link);
-            worksheet.write_log.push(crate::recalc::Write::Link {
-                at: (sheet, r, target_column),
-            });
-        }
+        self.reattach_moved_links(sheet, Axis::Column, target_column, moved_links)?;
 
         let disp = DisplaceData::ColumnMove {
             sheet,
@@ -1437,28 +1461,7 @@ impl<'a> Model<'a> {
         }
         worksheet.rows = new_rows;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created.
-        // Both the discarded positions and the re-attached ones are journaled:
-        // readers of either cell must re-run.
-        let discarded: Vec<(i32, i32)> = worksheet
-            .links
-            .keys()
-            .filter(|(r, _)| *r == target_row)
-            .copied()
-            .collect();
-        let worksheet = self.workbook.worksheet_mut(sheet)?;
-        for (r, c) in &discarded {
-            worksheet.write_log.push(crate::recalc::Write::Link {
-                at: (sheet, *r, *c),
-            });
-        }
-        worksheet.links.retain(|&(r, _), _| r != target_row);
-        for (c, link) in moved_links {
-            worksheet.links.insert((target_row, c), link);
-            worksheet.write_log.push(crate::recalc::Write::Link {
-                at: (sheet, target_row, c),
-            });
-        }
+        self.reattach_moved_links(sheet, Axis::Row, target_row, moved_links)?;
 
         let disp = DisplaceData::RowMove { sheet, row, delta };
         self.displace_cells(&disp)?;

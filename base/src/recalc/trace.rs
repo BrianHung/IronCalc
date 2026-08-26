@@ -31,12 +31,17 @@ pub(crate) enum Input {
 /// one range vertex, not a million cell edges).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReadSet {
+    /// Single cells read, none of them covered by a rect in `rects`.
     pub cells: Vec<Position>,
+    /// Rectangles read whole. Deduplicated, and never expanded to cells.
     pub rects: Vec<Area>,
+    /// Non-cell inputs read. Deduplicated.
     pub inputs: Vec<Input>,
 }
 
 impl ReadSet {
+    /// Records a read of one cell, unless a rect already recorded covers it.
+    /// Idempotent.
     pub(crate) fn record_cell(&mut self, cell: Position) {
         if self.rects.iter().any(|area| area_contains(*area, cell)) {
             return;
@@ -46,6 +51,8 @@ impl ReadSet {
         }
     }
 
+    /// Records a read of a whole rectangle, dropping the per-cell edges it
+    /// now covers so the same read is one range vertex, not many. Idempotent.
     pub(crate) fn record_rect(&mut self, area: Area) {
         if !self.rects.contains(&area) {
             self.rects.push(area);
@@ -53,6 +60,7 @@ impl ReadSet {
         }
     }
 
+    /// Records a read of a non-cell input. Idempotent.
     pub(crate) fn record_input(&mut self, input: Input) {
         if !self.inputs.contains(&input) {
             self.inputs.push(input);

@@ -42,12 +42,18 @@ impl Default for WriteLog {
 }
 
 impl WriteLog {
+    /// Records one edit, unless recording is paused. Callers push
+    /// unconditionally; whether the write is an edit at all is decided by
+    /// whoever holds the pause guard.
     pub(crate) fn push(&mut self, write: Write) {
         if self.recording {
             self.entries.push(write);
         }
     }
 
+    /// Takes every entry recorded since the last drain, leaving the log empty.
+    /// In push order, which the consumer relies on to read a batch's pre-batch
+    /// formula-ness off its first entry.
     pub(crate) fn drain(&mut self) -> Vec<Write> {
         std::mem::take(&mut self.entries)
     }
