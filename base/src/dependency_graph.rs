@@ -496,8 +496,12 @@ impl Shift for ArrayCells {
 /// next pass full, which is what keeps incremental from diverging from full.
 ///
 /// It stores no cell values. What it knows about stored state -- which cells
-/// may not serve theirs -- arrives through `set_never_served` and
-/// `set_blocked_array_readers`, rebuilt by `model::unstable_cells`.
+/// may not serve theirs -- arrives through two setters that differ in where
+/// the answer comes from. `set_never_served` takes a [`Self::cycle_cone`] the
+/// graph computed from its own edges; each scheduler installs it after its
+/// pass, because only the scheduler knows which cells that pass covered.
+/// `set_blocked_array_readers` takes a set only `model::unstable_cells` can
+/// build, because deciding an anchor is blocked means reading what it stores.
 #[derive(Clone, Default)]
 pub(crate) struct DependencyGraph {
     /// Precedent cell to the cells that reference it. A set, so a formula reading
@@ -1013,6 +1017,109 @@ mod tests {
         assert!(graph.should_recompute_full());
         graph.mark_dirty((0, 2, 1)); // ignored: not Ready
         assert!(graph.should_recompute_full());
+    }
+
+    /// I5.5 — the remapping rule is exact at the edit boundary.
+    ///
+    /// `shift_coord` is the single definition every stored coordinate is
+    /// rewritten through, so its two comparisons are the whole rule and both
+    /// are one-sided. Kills widening either of them: `x < boundary` to `<=`
+    /// (the line *at* an insert boundary must move, or an index keeps a
+    /// pre-edit coordinate the next full pass is not there to repair), and
+    /// `x < boundary - delta` to `<=` (the first line *below* a deleted band
+    /// survives; dropping it silently deletes a live edge).
+    #[test]
+    fn displacement_remaps_at_the_edit_boundary() {
+        let at = |axis, boundary, delta, pos| {
+            Displacement {
+                sheet: 0,
+                axis,
+                boundary,
+                delta,
+            }
+            .position(pos)
+        };
+
+        // Insert of two rows at row 5. Row 5 itself is inside the shift.
+        assert_eq!(at(Axis::Row, 5, 2, (0, 4, 1)), Some((0, 4, 1)));
+        assert_eq!(at(Axis::Row, 5, 2, (0, 5, 1)), Some((0, 7, 1)));
+        assert_eq!(at(Axis::Row, 5, 2, (0, 6, 1)), Some((0, 8, 1)));
+
+        // Delete of two rows at row 5: rows 5 and 6 go, row 7 becomes row 5.
+        assert_eq!(at(Axis::Row, 5, -2, (0, 4, 1)), Some((0, 4, 1)));
+        assert_eq!(at(Axis::Row, 5, -2, (0, 5, 1)), None);
+        assert_eq!(at(Axis::Row, 5, -2, (0, 6, 1)), None);
+        assert_eq!(at(Axis::Row, 5, -2, (0, 7, 1)), Some((0, 5, 1)));
+
+        // The same rule on the other axis, and never on another sheet.
+        assert_eq!(at(Axis::Column, 3, 1, (0, 9, 3)), Some((0, 9, 4)));
+        assert_eq!(at(Axis::Column, 3, -1, (0, 9, 3)), None);
+        assert_eq!(
+            Displacement {
+                sheet: 1,
+                axis: Axis::Row,
+                boundary: 5,
+                delta: 2,
+            }
+            .position((0, 5, 1)),
+            Some((0, 5, 1))
+        );
+
+        // An area is dropped when either edge was deleted, and only then.
+        let area = |boundary, delta, a| {
+            Displacement {
+                sheet: 0,
+                axis: Axis::Row,
+                boundary,
+                delta,
+            }
+            .area(a)
+        };
+        assert_eq!(area(5, 2, (0, 5, 1, 6, 1)), Some((0, 7, 1, 8, 1)));
+        assert_eq!(area(5, -2, (0, 7, 1, 9, 1)), Some((0, 5, 1, 7, 1)));
+        // A corner inside the deleted band drops the entry.
+        assert_eq!(area(5, -2, (0, 6, 1, 9, 1)), None);
+        // A range that merely *straddles* the band keeps both corners and so
+        // silently shrinks. That is why `range_overlaps_band` has to reject the
+        // edit before `shift` ever runs: this arithmetic cannot represent it.
+        assert_eq!(area(5, -2, (0, 4, 1, 7, 1)), Some((0, 4, 1, 5, 1)));
+    }
+
+    /// I5.3 — shrink detection is exact at both edges of the deleted band.
+    ///
+    /// A delete that only *shrinks* a tracked range cannot be modeled by
+    /// shifting its two corners, so the graph rebuilds instead. The test is an
+    /// interval overlap and both of its ends are one-sided. Kills widening
+    /// `area_min <= band_end` (which would rebuild for a range starting just
+    /// below the band — a pass wasted on every delete above a range) via
+    /// `band_end = boundary - delta - 1` losing its `- 1`, and kills narrowing
+    /// `area_max >= boundary` to `>` or `area_min <= band_end` to `<`, either
+    /// of which shifts a range whose own edge was deleted: `Displacement::area`
+    /// then returns `None` and the range edge disappears without a rebuild.
+    #[test]
+    fn shrink_detection_is_exact_at_the_band_edges() {
+        let mut graph = DependencyGraph::default();
+        let dependent: Position = (0, 100, 100);
+        graph.add_range_edge((0, 2, 1, 4, 1), dependent); // A2:A4
+
+        // Deleting the range's last row shrinks it: rebuild.
+        assert!(graph.range_overlaps_band(0, Axis::Row, 4, -1));
+        // Deleting the range's first row shrinks it too.
+        assert!(graph.range_overlaps_band(0, Axis::Row, 2, -1));
+        // Wholly below the range: the range does not move at all.
+        assert!(!graph.range_overlaps_band(0, Axis::Row, 5, -2));
+        // Wholly above it: the range shifts up intact, corners and all.
+        assert!(!graph.range_overlaps_band(0, Axis::Row, 1, -1));
+        // Rows 1 and 2 with the range at A3:A5: the band stops one row short
+        // of the range, so this is still a whole-range shift.
+        let mut graph = DependencyGraph::default();
+        graph.add_range_edge((0, 3, 1, 5, 1), dependent);
+        assert!(!graph.range_overlaps_band(0, Axis::Row, 1, -2));
+        // One more deleted row and it does reach the range.
+        assert!(graph.range_overlaps_band(0, Axis::Row, 1, -3));
+        // The axis and the sheet both have to match.
+        assert!(!graph.range_overlaps_band(0, Axis::Column, 3, -1));
+        assert!(!graph.range_overlaps_band(1, Axis::Row, 3, -1));
     }
 
     #[test]

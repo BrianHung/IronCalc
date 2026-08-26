@@ -202,12 +202,18 @@ impl Op {
     /// Cells this op writes as a plain value (incremental "seeds").
     pub fn value_seed(&self) -> Option<(u32, i32, i32)> {
         match self {
+            // A quote-prefixed write ('7) is a user edit like any other, and
+            // I6.1 reports a user edit even when its own value did not move.
+            // Excluding it here made a legitimate delta entry look unsound
+            // whenever the write changed state the observable does not carry.
+            // Excusing a true no-op is not a risk: the engine suppresses those
+            // itself (I2.1), so one never reaches the delta to be excused.
             Op::Set {
                 sheet,
                 row,
                 col,
                 value,
-            } if !value.is_empty() && !value.starts_with('\'') => Some((*sheet, *row, *col)),
+            } if !value.is_empty() => Some((*sheet, *row, *col)),
             Op::SetNumber {
                 sheet, row, col, ..
             }
@@ -1216,6 +1222,38 @@ pub const ZOO: &[&str] = &[
     "={D}!{C}{R}",
     "=MAX({D}!A1:A12)+MIN(A1:A12)",
     "=SUM({D}!A:A)",
+    // Whole-column and whole-row reads on the *data* columns. Their text does
+    // not change under an insert or delete, so the displacement journal never
+    // rewrites them: the range half of `mark_structural_dependents` and the
+    // used-range clip (`Input::SheetStructure`) are all that connect them.
+    // Only the forms that clip to the used range are planted. COUNTA,
+    // COUNTBLANK, SUBTOTAL and AVERAGE walk all 1,048,576 rows of a
+    // whole-column reference instead of clipping the way SUM, COUNTIF and
+    // SUMIF do, which costs the fuzzer about 250ms per evaluate.
+    "=SUM(A:A)",
+    "=SUM(A:C)",
+    "=COUNTIF(A:A,\">{N}\")",
+    "=SUMIF(A:A,\">{N}\",B:B)",
+    // Counts over a bounded range: an insert *inside* one adds a blank, which
+    // moves the answer where SUM would not notice.
+    "=COUNTBLANK(A1:A{R})",
+    "=COUNTA(A1:B{R})",
+    "=ROWS(A1:A{R})",
+    // Computed targets whose formula text is displacement-stable (absolute
+    // anchor, literal offset), so only `Input::Computed` re-resolves them.
+    "=OFFSET($C$1,{S},0)",
+    "=OFFSET($A$1,{S},{N})",
+    "=SUM(OFFSET($A$1,{S},0,4,2))",
+    "=INDIRECT(\"C\"&{S})",
+    "=SUM(INDIRECT(\"A1:B\"&{S}))",
+    // A computed extent wide enough that the reader's per-cell walk is clipped
+    // to the used range: only the recorded rectangle connects a write below it.
+    "=SUM(INDIRECT(\"A:A\"))",
+    "=OFFSET($A$1,ROW()-1,0)",
+    // Own-coordinate and formula-text reads with displacement-stable text.
+    "=ROW()*10+COLUMN()",
+    "=FORMULATEXT($E$1)",
+    "=ISFORMULA($E$2)",
     // defined names
     "=NCELL*2",
     "=SUM(NRANGE)",
@@ -1368,6 +1406,11 @@ pub const NAME_TARGETS: &[&str] = &[
     "LAMBDA(x,SUM(Sheet1!$A$1:$A$4)+x)",
     "LAMBDA(x,x+NCELL)",
     "Sheet1!$A$1:$A$3*2",
+    // Whole-row only. A whole-*column* name target is read by "=MAX(NDATA)",
+    // and MAX does not clip a whole-column reference to the used range -- 244ms
+    // an evaluate for $A:$A, 698ms for $A:$C, against 2.6ms for the SUM,
+    // COUNTIF and INDEX readers of the same name.
+    "Sheet1!$1:$3",
     "5",
 ];
 

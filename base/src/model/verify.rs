@@ -151,7 +151,9 @@ impl Model<'_> {
 
     /// Out-of-scope incremental reads return the stored value. Re-evaluating a
     /// non-volatile formula in a one-cell scratch frame must agree with that
-    /// store (class C: `FormulaValue::Empty` vs a live blank).
+    /// store. The divergence this catches is a stored value a live
+    /// re-evaluation does not reproduce: incremental would hand that value to
+    /// every out-of-scope reader, and full would never produce it.
     fn assert_stored_matches_live(&mut self) {
         // The cells that never serve a stored value are exactly the cells this
         // check cannot make: a volatile re-rolls, and a cell whose last result

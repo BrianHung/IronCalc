@@ -1,24 +1,28 @@
-//! The two sets of cells whose stored value the incremental pass may not
-//! simply serve back, and the walks that rebuild them from what the last pass
-//! left behind.
+//! The one walk that rebuilds a never-served set from stored cell state.
 //!
 //! Serving a stored value is only sound when that value is a function of the
-//! cell's inputs. Two kinds of cell fail that test:
+//! cell's inputs. Two kinds of cell fail that test, and only one of them is
+//! rebuilt here:
 //!
 //! - Cells on a dependency cycle, or downstream of one. A cycle has no fixed
 //!   point, so what they hold is an artifact of where the walk entered. A full
 //!   pass re-derives all of it every time, so incremental seeds them dirty on
-//!   every pass. The cone is derived from recorded edges alone: every read
+//!   every pass. This set is derived from recorded edges alone -- every read
 //!   that can close a cycle leaves an edge, so a stored-`#CIRC!` witness added
-//!   nothing (and kept self-cycles permanently dirty); it was removed.
+//!   nothing (and kept self-cycles permanently dirty); it was removed. Needing
+//!   no cell state, it needs nothing from this module: the graph computes it
+//!   itself in `DependencyGraph::cycle_cone`, and each scheduler installs the
+//!   result after its own pass -- over the whole graph after a full one, over
+//!   the cone after a selective one.
 //! - Readers of a blocked spill anchor. The anchor stores `#SPILL!` but hands a
 //!   same-pass reader the live array's top-left value, so only the full pass
-//!   reproduces what such a reader holds.
+//!   reproduces what such a reader holds. Finding them means asking what an
+//!   anchor *stores*, which is exactly the cell state the graph cannot see.
+//!   That is this module.
 //!
 //! Both sets live on [`DependencyGraph`](crate::dependency_graph::DependencyGraph),
-//! which owns them and consumes them; this module is only the rebuild, which
-//! needs stored cell state the graph cannot see. They are also exactly the
-//! cells `RecalcMode::Verify`'s stored-vs-live check has to skip.
+//! which owns them and consumes them. They are also exactly the cells
+//! `RecalcMode::Verify`'s stored-vs-live check has to skip.
 
 use crate::dependency_graph::Position;
 use crate::model::Model;

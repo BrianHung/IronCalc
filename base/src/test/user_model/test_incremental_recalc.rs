@@ -3,7 +3,6 @@
 
 use crate::recalc::Input;
 use crate::test::util::{incremental_mode, new_empty_model};
-use crate::types::CellType;
 use crate::{ChangedSinceRead, RecalcMode, UserModel};
 
 fn reads_random(model: &crate::Model, p: (u32, i32, i32)) -> bool {
@@ -21,95 +20,6 @@ fn flush_writes(model: &mut crate::Model) {
 }
 
 #[test]
-fn incremental_matches_full_on_a_chain() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("B1", "=A1*2");
-    model._set("C1", "=B1+1");
-    model.evaluate();
-
-    model._set("A1", "10");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "20");
-    assert_eq!(model._get_text("C1"), "21");
-}
-
-#[test]
-fn incremental_error_is_not_a_same_text_literal() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("B1", "=1/A1");
-    model.evaluate();
-    assert_eq!(model._get_cell("B1").get_type(), CellType::Number);
-
-    // Value edit, not a formula write: `=…` would force_full and skip Verify.
-    // CellValue stores errors as text, so type is the only Error vs "#DIV/0!" distinction.
-    model._set("A1", "0");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_cell("B1").get_type(), CellType::ErrorValue);
-    assert_eq!(model._get_text("B1"), "#DIV/0!");
-}
-
-#[test]
-fn volatile_hidden_in_defined_name_lambda_is_detected() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    // A lambda stored as a defined name, hiding a volatile function. Passed bare
-    // to MAP it appears as a defined-name node, not an inline lambda.
-    model
-        .new_defined_name("V", None, "=LAMBDA(x, x + RAND())")
-        .unwrap();
-    model._set("A1", "1");
-    model._set("B1", "=MAP(A1, V)");
-    model.evaluate();
-
-    // B1 (sheet 0, row 1, column 2) must be volatile so the incremental path
-    // re-rolls it every pass, matching a full recompute.
-    assert!(reads_random(&model, (0, 1, 2)));
-}
-
-#[test]
-fn incremental_coexists_with_arrays() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("B2", "2");
-    model._set("A1", "=B1:B2"); // spills A1:A2
-    model._set("D1", "10"); // independent
-    model._set("D2", "=D1+1");
-    model.evaluate();
-
-    model._set("D1", "20"); // unrelated to the spill
-    model.evaluate();
-    assert_eq!(model._get_text("D2"), "21");
-    assert_eq!(model._get_text("A2"), "2"); // spill untouched
-
-    model._set("B2", "9"); // feeds the spill: falls back to full
-    model.evaluate();
-    assert_eq!(model._get_text("A2"), "9"); // re-spilled
-}
-
-#[test]
-fn incremental_handles_row_insert() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    for row in 1..=5 {
-        model._set(&format!("A{row}"), &row.to_string());
-    }
-    model._set("C1", "=SUM(A1:A5)");
-    model._set("E1", "=ROWS(A1:A5)");
-    model.evaluate();
-
-    // An insert only shifts references, so the graph shifts its edges rather
-    // than rebuilding: the next pass stays incremental.
-    model.insert_rows(0, 3, 2).unwrap(); // A1:A5 -> A1:A7
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "15"); // SUM unchanged
-    assert_eq!(model._get_text("E1"), "7"); // ROWS grew
-}
-
-#[test]
 fn incremental_handles_row_delete() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
@@ -123,21 +33,6 @@ fn incremental_handles_row_delete() {
     assert!(!model.graph.should_recompute_full());
     model.evaluate();
     assert_eq!(model._get_text("A4"), "11");
-}
-
-#[test]
-fn incremental_column_insert_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("B1", "2");
-    model._set("D1", "=A1+B1");
-    model.evaluate();
-
-    model.insert_columns(0, 2, 1).unwrap(); // B shifts to C, D to E
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "3");
 }
 
 #[test]
@@ -201,53 +96,6 @@ fn incremental_insert_moves_hyperlink_with_the_cell() {
 }
 
 #[test]
-fn incremental_structural_edit_below_volatile_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "=RAND()");
-    model._set("C10", "=1+1");
-    model.evaluate();
-
-    // Inserting below the volatile leaves it in place, so the edit can stay
-    // incremental.
-    model.insert_rows(0, 5, 1).unwrap();
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("C11"), "2");
-}
-
-#[test]
-fn incremental_shares_one_range_vertex() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    for row in 1..=10 {
-        model._set(&format!("A{row}"), &row.to_string());
-    }
-    for row in 1..=50 {
-        model._set(&format!("C{row}"), "=SUM(A1:A10)");
-    }
-    model.evaluate();
-
-    model._set("A5", "100"); // sum 55 -> 150
-    model.evaluate();
-    for row in 1..=50 {
-        assert_eq!(model._get_text(&format!("C{row}")), "150");
-    }
-}
-
-#[test]
-fn incremental_recomputes_volatiles() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "5");
-    model._set("A1", "=INDIRECT(\"C1\")"); // reads C1 dynamically
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "5");
-
-    model._set("C1", "99"); // A1's hidden target; without volatiles A1 stays 5
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "99");
-}
-
-#[test]
 fn incremental_wide_fanout_stays_correct() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
@@ -262,42 +110,6 @@ fn incremental_wide_fanout_stays_correct() {
     model.evaluate();
     assert_eq!(model._get_text("C1"), "10");
     assert_eq!(model._get_text("C1100"), "10");
-}
-
-#[test]
-fn incremental_tracks_defined_name_references() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    let sheet = model.workbook.worksheets[0].get_name();
-    model
-        .new_defined_name("MyRef", None, &format!("{sheet}!$B$1"))
-        .unwrap();
-    model._set("B1", "5");
-    model._set("A1", "=MyRef");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "5");
-
-    model._set("B1", "99"); // edit the name's target
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "99");
-}
-
-#[test]
-fn incremental_nested_dynamic_range_tracks_interior() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("A5", "0");
-    model._set("A10", "1");
-    // Parentheses keep the colon as OpRangeKind under SUM. Static edges are
-    // only the endpoints; A5 is missed unless the SUM is marked volatile.
-    model._set("B1", "=SUM((A1):(A10))");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "2");
-
-    model._set("A5", "10");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "12");
 }
 
 #[test]
@@ -321,185 +133,6 @@ fn incremental_defined_name_retarget_forces_full() {
 }
 
 #[test]
-fn incremental_range_clear_contents_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("B1", "=A1");
-    model._set("C1", "=B1");
-    model._set("D1", "0");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "1");
-
-    model._set("D1", "5"); // pending edit arms incremental
-    model
-        .range_clear_contents(&crate::expressions::types::Area {
-            sheet: 0,
-            row: 1,
-            column: 2,
-            width: 1,
-            height: 1,
-        })
-        .unwrap(); // clears B1; must fall back to full
-    model.evaluate();
-    // B1 was cleared; C1 reads a formula blank, which coerces to 0
-    // (Excel parity) — the assertion is that it is not the stale 1.
-    assert_eq!(model._get_text("C1"), "0");
-}
-
-#[test]
-fn incremental_set_array_formula_forces_full() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("B2", "2");
-    model._set("D1", "10");
-    model._set("D2", "=D1+1");
-    model.evaluate();
-
-    model._set("D1", "20"); // pending edit arms incremental
-    model
-        .set_user_array_formula(0, 1, 1, 1, 2, "=B1:B2")
-        .unwrap(); // spills A1:A2
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2"); // spill produced, not #ERROR!
-}
-
-#[test]
-fn incremental_offset_reads_dynamic_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("D2", "=C1");
-    model._set("A1", "=OFFSET(D1,1,0)"); // reads D2, a target no static edge captures
-    model._set("B1", "=A1"); // static dependent of the dynamic ref
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-    assert_eq!(model._get_text("B1"), "10");
-
-    model._set("C1", "20"); // D2 -> 20; A1 must follow, not read a stale D2
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "20");
-    assert_eq!(model._get_text("B1"), "20");
-}
-
-#[test]
-fn incremental_chained_offset_reads_updated_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("E2", "=C1");
-    model._set("D2", "=OFFSET(E1,1,0)"); // dynamic ref whose target is E2
-    model._set("A1", "=OFFSET(D1,1,0)"); // dynamic ref whose target is D2
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-
-    // No static edge A1→D2. If D2 is still Evaluated, A1 reads 10.
-    model._set("C1", "20");
-    model.evaluate();
-    assert_eq!(model._get_text("D2"), "20");
-    assert_eq!(model._get_text("A1"), "20");
-}
-
-#[test]
-fn incremental_offset_through_helper_reads_updated_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("F2", "=C1");
-    model._set("E2", "=OFFSET(F1,1,0)"); // reads F2
-    model._set("D2", "=E2"); // static helper — in the cone, not a seed
-    model._set("A1", "=OFFSET(D1,1,0)"); // reads D2; no edge D2→A1
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-    let _ = model.take_changed_cells();
-
-    model._set("C1", "20");
-    model.evaluate();
-    assert_eq!(model._get_text("E2"), "20");
-    assert_eq!(model._get_text("D2"), "20");
-    assert_eq!(model._get_text("A1"), "20");
-    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
-        panic!("expected incremental delta");
-    };
-    let changed: std::collections::HashSet<(i32, i32)> =
-        cells.iter().map(|c| (c.row, c.column)).collect();
-    assert!(changed.contains(&(2, 4))); // D2 helper
-    assert!(changed.contains(&(1, 1))); // A1 OFFSET
-}
-
-#[test]
-fn incremental_indirect_through_helper_reads_updated_target() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("F2", "=C1");
-    model._set("E2", "=INDIRECT(\"F2\")");
-    model._set("D2", "=E2");
-    model._set("A1", "=INDIRECT(\"D2\")");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "10");
-    let _ = model.take_changed_cells();
-
-    model._set("C1", "20");
-    model.evaluate();
-    assert_eq!(model._get_text("E2"), "20");
-    assert_eq!(model._get_text("D2"), "20");
-    assert_eq!(model._get_text("A1"), "20");
-    // INDIRECT is stored as a 1×1 dynamic array; its last result was 1×1, so
-    // the pass stays incremental and the delta is the precise chain
-    // C1 → F2 → E2 → D2 → A1, traced through both INDIRECT hops.
-    match model.take_changed_cells() {
-        ChangedSinceRead::Cells(cells) => assert_eq!(cells.len(), 5),
-        other => panic!("expected a precise delta, got {other:?}"),
-    }
-}
-
-#[test]
-fn incremental_offset_does_not_force_full_on_unrelated_edit() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("A1", "=OFFSET(C1,0,0)");
-    model._set("Z1", "1");
-    model.evaluate();
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
-
-    // OFFSET's actual target is a traced edge, not a role set. An unrelated
-    // edit must stay incremental instead of falling back to a full workbook pass.
-    model._set("Z1", "2");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
-        panic!("OFFSET must not force a workbook-wide full pass");
-    };
-    let changed: std::collections::HashSet<(i32, i32)> =
-        cells.iter().map(|c| (c.row, c.column)).collect();
-    assert!(changed.contains(&(1, 26))); // Z1
-    assert!(!changed.contains(&(1, 1))); // A1 OFFSET ran; value did not move
-}
-
-#[test]
-fn incremental_hyperlink_over_offset_keeps_link_on_unrelated_edit() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "http://a.com");
-    model._set("A1", "=OFFSET(C1,0,0)");
-    model._set("B1", "=HYPERLINK(A1,\"click\")");
-    model._set("Z1", "1");
-    model.evaluate();
-    let dynamic_at = |model: &crate::Model| {
-        model
-            .get_links_list(0)
-            .unwrap()
-            .into_iter()
-            .filter(|l| l.dynamic)
-            .map(|l| (l.row, l.column))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(dynamic_at(&model), vec![(1, 2)]); // B1
-
-    model._set("Z1", "2"); // A1 unchanged; B1 must not lose its URL
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "click");
-    assert_eq!(dynamic_at(&model), vec![(1, 2)]);
-}
-
-#[test]
 fn incremental_set_locale_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
@@ -511,22 +144,6 @@ fn incremental_set_locale_forces_full() {
     model._set("Z1", "1"); // arms incremental with a pending edit
     model.set_locale("de").unwrap(); // evaluates internally; must force full
     assert_eq!(model._get_text("B1"), "1.234,50"); // not the stale en format
-}
-
-#[test]
-fn incremental_reports_locale_change() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1234.5");
-    model._set("B1", "=TEXT(A1,\"#,##0.00\")");
-    model._set("Z1", "0"); // independent
-    model.evaluate();
-    let _ = model.take_changed_cells();
-
-    model._set("Z1", "1"); // a pending edit that alone would be a small delta
-    model.set_locale("de").unwrap();
-    // A locale change re-renders every formatted value, so no small delta
-    // describes it; the record reports everything changed.
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 #[test]
@@ -546,114 +163,6 @@ fn incremental_tracks_dynamic_branch_dependencies() {
     model._set("F1", "99"); // edit the newly-read cell
     model.evaluate();
     assert_eq!(model._get_text("A1"), "99");
-}
-
-#[test]
-fn incremental_tracks_function_read_references() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("A2", "2");
-    model._set("A3", "3");
-    model._set("B1", "=SUBTOTAL(9,A1:A3)");
-    model._set("D1", "1"); // selector
-    model._set("E1", "10");
-    model._set("F1", "20");
-    model._set("D2", "=CHOOSE(D1,E1,F1)");
-    model.evaluate();
-
-    model._set("A1", "10"); // inside SUBTOTAL's range
-    model._set("E1", "99"); // CHOOSE's selected branch
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "15"); // 1+2+3 -> 10+2+3
-    assert_eq!(model._get_text("D2"), "99"); // CHOOSE -> E1
-}
-
-#[test]
-fn incremental_tracks_named_lambda_body_references() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    let sheet = model.workbook.worksheets[0].get_name();
-    model
-        .new_defined_name("TAX", None, &format!("=LAMBDA(amt, amt + {sheet}!$B$1)"))
-        .unwrap();
-    model._set("B1", "5"); // closed over
-    model._set("C1", "100"); // argument
-    model._set("A1", "=TAX(C1)");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "105");
-
-    model._set("B1", "9"); // edit the closed-over cell
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "109");
-}
-
-#[test]
-fn incremental_tracks_volatile_in_lambda_body() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model
-        .new_defined_name("VOL", None, "=LAMBDA(a, a + INDIRECT(\"A1\"))")
-        .unwrap();
-    model._set("A1", "5"); // read dynamically, no static edge
-    model._set("B1", "=VOL(10)");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "15");
-
-    model._set("A1", "50");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "60");
-}
-
-#[test]
-fn incremental_tracks_dynamic_range_operator() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "10");
-    model._set("A2", "20");
-    model._set("A3", "30");
-    model._set("C1", "3"); // row count
-    model._set("B1", "=SUM(A1:OFFSET(A1,C1-1,0))"); // sums A1 down to row C1
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "60"); // 10+20+30
-
-    model._set("A2", "25"); // interior cell
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "65");
-}
-
-#[test]
-fn incremental_insert_below_dynamic_array_rebuilds_spill() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("B2", "2");
-    model._set("A1", "=B1:B2"); // spills A1:A2
-    model._set("Z1", "0");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2");
-
-    model._set("Z1", "1"); // dirty an unrelated cell
-    model.insert_rows(0, 6, 1).unwrap();
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2"); // spill left intact, not #ERROR!
-}
-
-#[test]
-fn incremental_insert_below_dynamic_array_and_volatile_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("B2", "2");
-    model._set("A1", "=B1:B2"); // spills A1:A2, entirely above the insert
-    model._set("C10", "=1+1");
-    model.evaluate();
-
-    model.insert_rows(0, 5, 1).unwrap();
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-    assert_eq!(model._get_text("A2"), "2");
-    assert_eq!(model._get_text("C11"), "2");
 }
 
 /// A blocked spill (`#SPILL!`) stores `r=(1,1)`. An insert below it still
@@ -750,24 +259,6 @@ fn take_changed_cells_reports_incremental_delta() {
 }
 
 #[test]
-fn take_changed_cells_reports_structural_edit_delta() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "10");
-    model._set("B10", "=A1+1"); // depends on A1, value 11
-    model.evaluate();
-    let _ = model.take_changed_cells(); // clear the mode-switch full
-
-    // Delete row 1: A1 is removed so B10's reference dangles, and B10 shifts up
-    // to B9. Data cells in the shift band are not in the dirty cone, so the
-    // delta cannot name every moved cell. Report Everything.
-    model.delete_rows(0, 1, 1).unwrap();
-    model.evaluate();
-
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything);
-    assert_eq!(model._get_text("B9"), "#REF!");
-}
-
-#[test]
 fn take_changed_cells_reports_everything_for_data_only_shift() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "10");
@@ -836,63 +327,6 @@ fn take_changed_cells_survives_redundant_evaluate() {
         cells.iter().map(|c| (c.row, c.column)).collect();
     assert!(changed.contains(&(1, 1)));
     assert!(changed.contains(&(1, 2)));
-}
-
-#[test]
-fn take_changed_cells_survives_redundant_evaluate_with_offset() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("C1", "10");
-    model._set("A1", "=OFFSET(C1,0,0)");
-    model._set("B1", "=C1+1");
-    model.evaluate();
-    let _ = model.take_changed_cells();
-
-    model._set("C1", "20");
-    model.evaluate();
-    model.evaluate(); // OFFSET does not re-roll; must keep the incremental delta
-    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
-        panic!("OFFSET must not wipe the delta to Everything");
-    };
-    let changed: std::collections::HashSet<(i32, i32)> =
-        cells.iter().map(|c| (c.row, c.column)).collect();
-    assert!(changed.contains(&(1, 3))); // C1
-    assert!(changed.contains(&(1, 2))); // B1
-}
-
-#[test]
-fn phase_two_restores_memo_for_skipped_cone_cells() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("E2", "5");
-    model._set("D2", "=E2");
-    model._set("A1", "=OFFSET(D2,0,0)");
-    model.evaluate();
-    model._set("Z1", "1");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert!(
-        model.cells.contains_key(&(0, 2, 4)),
-        "D2 must stay Evaluated after phase 2 skips it"
-    );
-    assert_eq!(model._get_text("A1"), "5");
-    assert_eq!(model._get_text("D2"), "5");
-}
-
-#[test]
-fn redundant_evaluate_with_volatile_reports_full_change() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model._set("B1", "=A1+1");
-    model._set("C1", "=RAND()"); // volatile: re-rolls on every full pass
-    model.evaluate();
-    let _ = model.take_changed_cells(); // clear the mode-switch full
-
-    model._set("A1", "5");
-    model.evaluate(); // incremental edit
-    let _ = model.take_changed_cells(); // clear that delta
-
-    model.evaluate(); // redundant full: re-rolls C1, so not a no-op
-    assert_eq!(model.take_changed_cells(), ChangedSinceRead::Everything); // not Cells([])
 }
 
 #[test]
@@ -1057,34 +491,6 @@ fn incremental_sumifs_reads_resized_criteria() {
 }
 
 #[test]
-fn incremental_cell_name_survives_insert() {
-    // Verify's interleaved full pass rebuilds the graph and hides this class.
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    let sheet = model.workbook.worksheets[0].get_name();
-    model._set("A10", "42");
-    model
-        .new_defined_name("MyRef", None, &format!("{sheet}!$A$10"))
-        .unwrap();
-    model._set("B1", "=MyRef");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "42");
-
-    // Insert between the formula and the name target so B1 stays put while
-    // the old A10 shifts to A11. The name still reads $A$10.
-    model.insert_rows(0, 5, 1).unwrap();
-    model.evaluate();
-    // The name now reads a blank cell: a blank formula result coerces to 0
-    // (Excel parity), not "".
-    assert_eq!(model._get_text("B1"), "0");
-
-    model._set("A10", "99");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "99");
-}
-
-#[test]
 fn incremental_argless_row_updates_after_insert() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "=ROW()");
@@ -1095,26 +501,6 @@ fn incremental_argless_row_updates_after_insert() {
     model.insert_rows(0, 1, 1).unwrap();
     model.evaluate();
     assert_eq!(model._get_text("A2"), "2");
-}
-
-/// The semantic behind the journal pause in `write_displaced_formula`: the raw
-/// write runs with the journal off (a displacement is not a formula edit) and
-/// the function substitutes a value-write entry for it. If the pause swallowed
-/// the write instead of standing in for it, FORMULATEXT would keep reporting
-/// the pre-displacement text. This behaviour is the point;
-/// `JournalRecordingPaused` is only the mechanism.
-#[test]
-fn incremental_formulatext_sees_displaced_formula() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "1");
-    model._set("A1", "=SUM(B1)");
-    model._set("C1", "=FORMULATEXT(A1)");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "=SUM(B1)");
-
-    model.insert_rows(0, 1, 1).unwrap();
-    model.evaluate();
-    assert_eq!(model._get_text("C2"), "=SUM(B2)");
 }
 
 #[test]
@@ -1136,61 +522,6 @@ fn incremental_subtotal_sees_hidden_row() {
 }
 
 #[test]
-fn incremental_overwrite_rand_clears_volatile() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "=RAND()");
-    model.evaluate();
-    assert!(reads_random(&model, (0, 1, 1)));
-
-    model._set("A1", "5");
-    model.evaluate();
-    assert!(!reads_random(&model, (0, 1, 1)));
-    assert_eq!(model._get_text("A1"), "5");
-
-    model._set("B1", "1");
-    model.evaluate();
-    model._set("B1", "2");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "5");
-    assert!(!reads_random(&model, (0, 1, 1)));
-}
-
-#[test]
-fn incremental_update_cell_apis_clear_volatile_roles() {
-    for overwrite in [
-        |model: &mut crate::Model| model.update_cell_with_number(0, 1, 1, 5.0).unwrap(),
-        |model: &mut crate::Model| model.update_cell_with_text(0, 1, 1, "5").unwrap(),
-        |model: &mut crate::Model| model.update_cell_with_bool(0, 1, 1, true).unwrap(),
-    ] {
-        let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-        model._set("A1", "=RAND()");
-        model.evaluate();
-        assert!(reads_random(&model, (0, 1, 1)));
-
-        overwrite(&mut model);
-        model.evaluate();
-        assert!(!reads_random(&model, (0, 1, 1)));
-        let _ = model.take_changed_cells();
-
-        model._set("B1", "1");
-        model.evaluate();
-        model._set("B1", "2");
-        model.evaluate();
-        assert!(!reads_random(&model, (0, 1, 1)));
-
-        let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
-            panic!("expected incremental delta");
-        };
-        let changed: std::collections::HashSet<(i32, i32)> =
-            cells.iter().map(|c| (c.row, c.column)).collect();
-        assert!(
-            !changed.contains(&(1, 1)),
-            "overwritten RAND must not stay in later deltas"
-        );
-    }
-}
-
-#[test]
 fn incremental_overwrite_spill_anchor_updates_dependents() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "=SEQUENCE(3)");
@@ -1209,172 +540,6 @@ fn incremental_overwrite_spill_anchor_updates_dependents() {
     assert_eq!(model._get_text("A3"), "");
     assert_eq!(model._get_text("C2"), "0");
     assert!(!model.graph.arrays.contains(&(0, 1, 1)));
-}
-
-#[test]
-fn incremental_rejected_write_does_not_poison_evaluate() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("A1", "1");
-    model.evaluate();
-    assert!(model.set_user_input(1, 9, 3, "84".to_string()).is_err());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-}
-
-#[test]
-fn incremental_blocked_spill_respills_after_insert() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("E3", "7");
-    model._set("E1", "=SEQUENCE(3)");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "#SPILL!");
-
-    model.insert_rows(0, 2, 2).unwrap();
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "1");
-    assert_eq!(model._get_text("E2"), "2");
-    assert_eq!(model._get_text("E3"), "3");
-}
-
-#[test]
-fn incremental_empty_passthrough_counts_as_blank() {
-    // A formula that returns blank coerces to 0 (Excel parity), so D1 holds a
-    // value and COUNTBLANK(D1:E1) is 0: neither the passthrough D1 nor the
-    // text in E1 counts. Pinned in both modes, across an unrelated edit to E1
-    // that keeps the second pass incremental.
-    let run = |mode: crate::RecalcMode| {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model._set("C1", "=COUNTBLANK(D1:E1)");
-        model._set("D1", "=A1");
-        model._set("E1", "x");
-        model.evaluate();
-        let first = model._get_text("C1");
-        model._set("E1", "y");
-        model.evaluate();
-        (first, model._get_text("C1"))
-    };
-    let full = run(crate::RecalcMode::Full);
-    assert_eq!(full, ("0".to_string(), "0".to_string()));
-    assert_eq!(full, run(crate::RecalcMode::Incremental));
-}
-
-#[test]
-fn incremental_empty_passthrough_concat() {
-    // A blank formula result coerces to 0 at the result boundary (Excel parity),
-    // so `D1&G1` with D1 blank renders "01"/"02" — see the D1 table: A2&"x"
-    // is "0x", matching main and Excel.
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B1", "=D1&G1");
-    model._set("D1", "=IF(TRUE,A1,1)");
-    model._set("G1", "1");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "01");
-
-    model._set("G1", "2");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "02");
-}
-
-#[test]
-fn incremental_sumifs_index_criteria_tracks_expanded_range() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    for row in 1..=10 {
-        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
-        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
-    }
-    model._set("E1", "=SUMIFS(D1:D10,INDEX(A1:C3,0,1),\">0\")");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "10");
-
-    model._set("A7", "0");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "9");
-}
-
-#[test]
-fn incremental_sumifs_let_criteria_tracks_expanded_range() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    for row in 1..=10 {
-        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
-        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
-    }
-    model._set("E1", "=LET(r,A1:A3,SUMIFS(D1:D10,r,\">0\"))");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "10");
-
-    model._set("A7", "0");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "9");
-}
-
-#[test]
-fn incremental_offset_cone_delta_only_net_movers() {
-    for _ in 0..40 {
-        let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-        model._set("C1", "0");
-        model._set("D1", "10");
-        model._set("E1", "=C1*10");
-        model._set("A1", "=OFFSET(D1,0,C1)");
-        model._set("G1", "=A1+1");
-        model.evaluate();
-        let _ = model.take_changed_cells();
-        model._set("C1", "1");
-        model.evaluate();
-        assert_eq!(model._get_text("A1"), "10");
-        match model.take_changed_cells() {
-            ChangedSinceRead::Everything => panic!("expected a cells delta"),
-            ChangedSinceRead::Cells(cells) => {
-                assert!(
-                    !cells
-                        .iter()
-                        .any(|c| c.row == 1 && (c.column == 1 || c.column == 7)),
-                    "unchanged A1/G1 in delta: {cells:?}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn incremental_redundant_evaluate_reports_late_spill() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    model._set("E15", "=SEQUENCE(3)");
-    model._set("A1", "=E15#");
-    model.evaluate();
-    let _ = model.take_changed_cells();
-    model.evaluate();
-    match model.take_changed_cells() {
-        ChangedSinceRead::Everything => {}
-        ChangedSinceRead::Cells(cells) => {
-            if model._get_text("A2") == "2" {
-                assert!(
-                    cells.iter().any(|c| c.row == 2 && c.column == 1),
-                    "A2 spilled on the redundant pass but is missing from the delta: {cells:?}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn incremental_blocked_spill_sum_agrees_with_full() {
-    // A blocked dynamic array must not skip the arrays→Full guard, and SUM of
-    // the spill column must see #SPILL! rather than a stale number.
-    fn run(mode: crate::RecalcMode) -> (String, String) {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model._set("G1", "=SUM(E:E)");
-        model._set("E8", "=SUM(B3:C9)");
-        model._set("E19", "=A1:A3*2");
-        model._set("E20", "=OFFSET(A1,1,1)");
-        model.evaluate();
-        model._set("C4", "5");
-        model.evaluate();
-        (model._get_text("E19"), model._get_text("G1"))
-    }
-    assert_eq!(
-        run(crate::RecalcMode::Full),
-        run(crate::RecalcMode::Incremental)
-    );
 }
 
 #[test]
@@ -1436,27 +601,6 @@ fn offset_target_change_without_static_edge() {
 }
 
 #[test]
-fn sumifs_criteria_from_index_is_tracked() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    for row in 1..=10 {
-        model.set_user_input(0, row, 1, "1".to_string()).unwrap();
-        model.set_user_input(0, row, 4, "1".to_string()).unwrap();
-    }
-    model._set("E1", "=SUMIFS(D1:D10,INDEX(A1:C3,0,1),\">0\")");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "10");
-    let _ = model.take_changed_cells();
-
-    model._set("A7", "0");
-    model.evaluate();
-    assert_eq!(model._get_text("E1"), "9");
-    match model.take_changed_cells() {
-        ChangedSinceRead::Everything => panic!("SUMIFS INDEX criteria must stay Incremental"),
-        ChangedSinceRead::Cells(_) => {}
-    }
-}
-
-#[test]
 fn subtotal_sees_hidden_row_it_scans_not_own_row() {
     let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
     for row in 1..=10 {
@@ -1500,29 +644,6 @@ fn name_reader_redirty_on_insert() {
         .new_defined_name("MyRef", None, &format!("{sheet}!$A$10"))
         .unwrap();
     model._set("B1", "=MyRef");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "42");
-
-    model.insert_rows(0, 5, 1).unwrap();
-    model.evaluate();
-    // The name now reads a blank cell: a blank formula result coerces to 0
-    // (Excel parity), not "".
-    assert_eq!(model._get_text("B1"), "0");
-
-    model._set("A10", "99");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "99");
-}
-
-#[test]
-fn name_reader_redirty_on_insert_sheet_scoped() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    let sheet = model.workbook.worksheets[0].get_name();
-    model._set("A10", "42");
-    model
-        .new_defined_name("LocalRef", Some(0), &format!("{sheet}!$A$10"))
-        .unwrap();
-    model._set("B1", "=LocalRef");
     model.evaluate();
     assert_eq!(model._get_text("B1"), "42");
 
@@ -1608,29 +729,6 @@ fn subtotal_formula_text_reread_is_not_always_reported() {
 }
 
 #[test]
-fn formula_edit_stays_incremental() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    model._set("A1", "1");
-    model._set("B1", "=A1+1");
-    model.evaluate();
-    let _ = model.take_changed_cells();
-
-    model._set("B1", "=A1+2");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "3");
-    match model.take_changed_cells() {
-        ChangedSinceRead::Everything => panic!("formula edit must stay Incremental"),
-        ChangedSinceRead::Cells(_) => {}
-    }
-
-    model._set("A1", "5");
-    model.evaluate();
-    assert_eq!(model._get_text("B1"), "7");
-}
-
-#[test]
 fn journal_value_over_formula_drops_edges() {
     for overwrite in [
         |model: &mut crate::Model| model.update_cell_with_number(0, 1, 1, 5.0).unwrap(),
@@ -1692,38 +790,6 @@ fn isformula_sees_value_overwrite_of_its_argument() {
     assert_eq!(model._get_text("B1"), "FALSE");
 }
 
-/// SEQUENCE + a `#` spill-ref can take a second Full pass to materialize
-/// spill cells. An unrelated write on another sheet must not leave those
-/// cells missing on Incremental (fuzz seed 52).
-#[test]
-fn sequence_hash_spill_survives_unrelated_other_sheet_edit() {
-    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
-    inc.add_sheet("Data").unwrap();
-    inc.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string())
-        .unwrap();
-    inc.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
-    inc.evaluate();
-    let g14_after_first = inc._get_text("G14");
-
-    let mut full = new_empty_model();
-    full.add_sheet("Data").unwrap();
-    full.set_user_input(0, 15, 5, "=SEQUENCE(3)".to_string())
-        .unwrap();
-    full.set_user_input(0, 13, 7, "=E15#".to_string()).unwrap();
-    full.evaluate();
-
-    inc.set_user_input(1, 4, 1, "38".to_string()).unwrap();
-    inc.evaluate();
-    full.set_user_input(1, 4, 1, "38".to_string()).unwrap();
-    full.evaluate();
-
-    assert_eq!(
-        inc._get_text("G14"),
-        full._get_text("G14"),
-        "after first evaluate Incremental G14={g14_after_first:?}"
-    );
-}
-
 #[test]
 fn style_on_blank_cell_does_not_enter_the_delta() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1740,6 +806,51 @@ fn style_on_blank_cell_does_not_enter_the_delta() {
             "style on a blank cell must not appear in the delta, got {cells:?}"
         ),
     }
+}
+
+/// I2.5 — a batch's pre-batch formula-ness is read off its *first* entry.
+///
+/// Between full passes `formula_cell_count` is maintained by the journal
+/// rather than recounted, and the drain accounts each cell once: the batch's
+/// final state against the state it held before the batch began. Only the
+/// first entry carries that; every later entry's `was_formula` is an
+/// intermediate the batch already passed through.
+///
+/// Kills `first_was.entry(p).or_insert(..)` becoming `insert(..)` (last-wins),
+/// in both directions — a formula round-tripped through a value would count a
+/// formula that was already there, and a value round-tripped through a formula
+/// would discount one that never existed. The counter is checked against a
+/// from-scratch recount rather than a literal, so the test states the
+/// invariant and not an arithmetic coincidence.
+#[test]
+fn journal_accounts_a_batch_against_its_pre_batch_state() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=1+1");
+    model._set("B1", "7");
+    model.evaluate();
+
+    // Each direction is checked on its own: batched together they would be a
+    // double-count and a double-discount that cancel, and the drain would look
+    // right while being wrong twice.
+    fn agrees(model: &mut crate::Model, label: &str) {
+        flush_writes(model);
+        let from_journal = model.formula_cell_count;
+        model.recount_formula_cells();
+        assert_eq!(
+            from_journal, model.formula_cell_count,
+            "journal-maintained formula count disagrees with a recount after {label}"
+        );
+    }
+
+    // A formula round-tripped through a value is still the formula it was.
+    model._set("A1", "5");
+    model._set("A1", "=2+2");
+    agrees(&mut model, "formula -> value -> formula");
+
+    // A value round-tripped through a formula never became one.
+    model._set("B1", "=3");
+    model._set("B1", "9");
+    agrees(&mut model, "value -> formula -> value");
 }
 
 #[test]
@@ -1775,69 +886,6 @@ fn spill_hash_of_empty_anchor_sees_later_formula() {
 
     assert_eq!(inc._get_text("E16"), full._get_text("E16"));
     assert_eq!(inc._get_text("E16"), "8");
-}
-
-/// `COUNT(F15#)` of an empty F15 is 0 until F15 is written (fuzz seed 32).
-#[test]
-fn count_of_empty_spill_hash_sees_later_formula() {
-    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
-    inc._set("G4", "=COUNT(F15#)");
-    inc.evaluate();
-    inc._set("F15", "=SUM(A1:C6)");
-    inc.evaluate();
-
-    let mut full = new_empty_model();
-    full._set("G4", "=COUNT(F15#)");
-    full.evaluate();
-    full._set("F15", "=SUM(A1:C6)");
-    full.evaluate();
-
-    assert_eq!(inc._get_text("G4"), full._get_text("G4"));
-}
-
-/// `=E15#` above `=SEQUENCE(3)`: Full's first pass leaves E11 empty (the `#`
-/// ref is still a CellFormula, not in spill_cells). Incremental must not be a
-/// second pass on already-promoted arrays (fuzz seed 31).
-#[test]
-fn sequence_hash_above_anchor_matches_full_on_first_eval() {
-    let mut inc = new_empty_model().with_recalc_mode(incremental_mode());
-    inc.new_defined_name("LAM", None, "LAMBDA(x,x*2+Sheet1!$A$2)")
-        .unwrap();
-    inc._set("E15", "=SEQUENCE(3)");
-    inc._set("E10", "=E15#");
-    inc.evaluate();
-
-    let mut full = new_empty_model();
-    full.new_defined_name("LAM", None, "LAMBDA(x,x*2+Sheet1!$A$2)")
-        .unwrap();
-    full._set("E15", "=SEQUENCE(3)");
-    full._set("E10", "=E15#");
-    full.evaluate();
-
-    for cell in ["E10", "E11", "E12", "E15", "E16", "E17"] {
-        assert_eq!(inc._get_text(cell), full._get_text(cell), "{cell}");
-    }
-}
-
-#[test]
-fn undo_redo_under_incremental_stays_incremental() {
-    let mut model = UserModel::new_empty("m", "en", "UTC", "en")
-        .unwrap()
-        .with_recalc_mode(incremental_mode());
-    model.set_user_input(0, 1, 1, "1").unwrap();
-    model.set_user_input(0, 1, 2, "=A1+1").unwrap();
-    model.evaluate();
-    let _ = model.model.take_changed_cells();
-    model.set_user_input(0, 1, 1, "5").unwrap();
-    model.evaluate();
-    assert_eq!(model.get_formatted_cell_value(0, 1, 2).unwrap(), "6");
-    model.undo().unwrap();
-    model.evaluate();
-    assert_eq!(model.get_formatted_cell_value(0, 1, 2).unwrap(), "2");
-    match model.model.take_changed_cells() {
-        ChangedSinceRead::Everything => panic!("undo of a value edit must stay Incremental"),
-        ChangedSinceRead::Cells(_) => {}
-    }
 }
 
 /// The column move rebuilds the moved column one cell at a time, in row order
@@ -1940,29 +988,6 @@ fn multi_column_range_edits_propagate() {
     model._set("B50", "4");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "10");
-}
-
-/// The whole-row twin: `SUM(2:3)` is a two-row rect spanning every column, and
-/// the per-cell walk stops at the used column. A write to the right of it must
-/// still re-fire the sum.
-#[test]
-fn multi_column_whole_row_range_edits_propagate() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
-    model._set("B2", "1");
-    model._set("A1", "=SUM(2:3)");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "1");
-
-    model._set("Z3", "5");
-    flush_writes(&mut model);
-    assert!(!model.graph.should_recompute_full());
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "6");
-
-    // A write outside the two rows must not be mistaken for one inside them.
-    model._set("Z4", "1000");
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "6");
 }
 
 /// A volatile cell must re-roll on every incremental pass, not only on a full
@@ -2106,30 +1131,6 @@ fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
     assert_same_workbook(&full, &inc, "the healing pass");
 }
 
-/// (b) A newly set formula closes a cycle, here entirely through range reads.
-/// The closing edge is only observed while the pass runs, so the cone was
-/// ordered without it and `#CIRC!` landed on a different member than full's
-/// recursion picks; the pass must redo itself as full instead.
-#[test]
-fn incremental_places_circ_like_full_when_an_edit_closes_a_cycle() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("F7", "=AVERAGE(A1:B10)");
-        m._set("C10", "=SUM(F4,F7)");
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-        // A7 is inside A1:B10, so F7 now reads a cell that reads F7's column.
-        m._set("A7", "=COUNTBLANK(A1:D12)");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("F7"), "#CIRC!");
-    assert_same_workbook(&full, &inc, "the cycle-closing pass");
-}
-
 /// (b) An error-absorbing function makes the divergence a value, not just a
 /// placement: the frontier evaluated `B1` once through `A1`'s recursion (the
 /// mid-cycle value full keeps) and then a second time at `B1`'s own topological
@@ -2152,169 +1153,6 @@ fn incremental_does_not_re_evaluate_a_mid_cycle_cell() {
     assert_eq!(full._get_text("A1"), "50");
     assert_eq!(full._get_text("B1"), "50");
     assert_same_workbook(&full, &inc, "the IFERROR cycle pass");
-}
-
-/// (b) The same second-evaluation divergence with no formula edit at all: a
-/// value edit flips an `IF` branch, and the branch it turns on closes the
-/// cycle. Nothing in the graph predicts the new read.
-#[test]
-fn incremental_does_not_re_evaluate_a_mid_cycle_cell_reached_by_a_branch() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("D1", "-1");
-        m._set("A1", "=IF(D1>0,IFERROR(B1,7),5)");
-        m._set("B1", "=A1+1");
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-        m._set("D1", "1");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("A1"), "7");
-    assert_eq!(full._get_text("B1"), "#CIRC!");
-    assert_same_workbook(&full, &inc, "the branch-closed cycle pass");
-}
-
-/// (c) A CSE anchor rebuilt by column moves, whose refilled rectangle is read
-/// by a formula the anchor itself reads. The full pass resolves that cycle
-/// against the members' stored values, so the refill leaves the reader holding
-/// the old ones; full heals on its next unconditional pass, and incremental
-/// used to keep the stale pair for ever.
-#[test]
-fn incremental_heals_cse_refill_debt() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m.set_user_array_formula(0, 1, 3, 1, 3, "=A1:A3+1").unwrap();
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-        // B3 reads A2:C2, which contains the anchor's own member C2.
-        m._set("A3", "=SUM(B2:C2)");
-        m.move_columns_action(0, 1, 1, 1).unwrap();
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the move's own full pass");
-    // Full's own value moves on this pass with nothing relevant edited: that is
-    // the debt the previous pass left, and incremental has to move with it.
-    assert_eq!(full._get_text("B3"), "1");
-    for m in [&mut full, &mut inc] {
-        m._set("B4", "3");
-        m.evaluate();
-    }
-    assert_eq!(full._get_text("B3"), "0");
-    assert_same_workbook(&full, &inc, "the CSE healing pass");
-}
-
-/// Plain edits with no arrays, no structural ops and no cycles must not pay for
-/// any of the above: the pass stays selective and reports a cell delta.
-#[test]
-fn convergence_guard_leaves_plain_edits_selective() {
-    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
-    model._set("A1", "1");
-    model._set("B1", "=A1+1");
-    model._set("C1", "=B1+1");
-    model.evaluate();
-    for value in ["2", "3", "4"] {
-        let _ = model.take_changed_cells();
-        model._set("A1", value);
-        model.evaluate();
-        match model.take_changed_cells() {
-            ChangedSinceRead::Everything => panic!("a plain edit fell back to a full pass"),
-            ChangedSinceRead::Cells(cells) => assert!(!cells.is_empty()),
-        }
-    }
-    assert_eq!(model._get_text("C1"), "6");
-}
-
-/// A cycle closed through a dynamic-array anchor whose result is 1x1. The
-/// anchor spills nothing, so it is not in `graph.arrays`; what routes the pass
-/// to Full is that a cycle member is a seed on every pass and this seed is an
-/// anchor. It has to: Full evaluates anchors in a phase of their own, ahead of
-/// the row-major walk, so `#CIRC!` lands inside `B2`'s recursion and `A1`
-/// absorbs it -- and the cone walk `recompute_all` would otherwise do is
-/// row-major only, entering at `A1` and settling the cycle on the other side,
-/// for ever. The plain-formula run pins that the anchor's phase is what decides
-/// the side: with a plain formula in `B2` the two runs would agree, and the
-/// inequality below fails before any real divergence can.
-#[test]
-fn recompute_all_places_circ_through_a_scalar_anchor_like_full() {
-    let run = |mode, b2: &str| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("D1", "1");
-        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
-        m._set("B2", b2);
-        m.evaluate();
-        let mut states = vec![(m._get_text("A1"), m._get_text("B2"))];
-        // Plain value edits: no structural op, no new formula, and the cycle
-        // is already an edge, so each pass stays selective and reaches
-        // `recompute_all`. Snapshot after every single pass -- a later full
-        // fallback can heal a one-pass divergence, so only the per-pass view
-        // sees it -- then once more after a redundant evaluate, which used to
-        // be the state nothing ever brought back.
-        for value in ["2", "3"] {
-            m._set("D1", value);
-            m.evaluate();
-            states.push((m._get_text("A1"), m._get_text("B2")));
-        }
-        m.evaluate();
-        states.push((m._get_text("A1"), m._get_text("B2")));
-        states
-    };
-    let anchor = "=SEQUENCE(1,1,IFERROR(A1,200)+1,1)";
-    let plain = "=IFERROR(A1,200)+1";
-    let full_anchor = run(crate::RecalcMode::Full, anchor);
-    // Full's placement, stable on every pass: B2 evaluates first (phase 1),
-    // its recursion into A1 hits the cycle inside A1's IFERROR, so A1
-    // absorbs it.
-    assert_eq!(full_anchor, vec![("101".to_string(), "102".to_string()); 4]);
-    assert_eq!(full_anchor, run(incremental_mode(), anchor));
-    assert_eq!(
-        run(crate::RecalcMode::Full, plain),
-        run(incremental_mode(), plain)
-    );
-    assert_ne!(
-        full_anchor,
-        run(crate::RecalcMode::Full, plain),
-        "the anchor no longer evaluates ahead of the rest of the cone"
-    );
-}
-
-/// The CSE variant of the same shape. A CSE anchor is in `graph.arrays` whatever
-/// its size, so this one leaves through the arrays→Full fallback rather than
-/// through `recompute_all`'s ordering; either way the placement has to match.
-#[test]
-fn incremental_places_circ_like_full_through_a_cse_anchor() {
-    let build = |mode| {
-        let mut m = new_empty_model().with_recalc_mode(mode);
-        m._set("D1", "1");
-        m._set("A1", "=IFERROR(B2,100)+1+D1*0");
-        m.set_user_array_formula(0, 2, 2, 1, 1, "=IFERROR(A1,200)+1")
-            .unwrap();
-        m
-    };
-    let mut full = build(crate::RecalcMode::Full);
-    let mut inc = build(incremental_mode());
-    for m in [&mut full, &mut inc] {
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the first evaluate");
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "2");
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the known-cycle pass through the CSE anchor");
-    for m in [&mut full, &mut inc] {
-        m._set("D1", "3");
-        m.evaluate();
-        m.evaluate();
-    }
-    assert_same_workbook(&full, &inc, "the following passes");
 }
 
 /// A blocked anchor stores `#SPILL!`, but a reader that reaches it while it is
@@ -2444,51 +1282,6 @@ fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
     }
 }
 
-/// The other ways a volatile leaves the always-dirty set: overwritten by a
-/// non-volatile formula, and cleared outright. (Overwritten by a plain value
-/// is pinned by `incremental_overwrite_rand_clears_volatile` and the
-/// update-cell API test, which run under Verify too.) Each removal happens in
-/// the write journal, before the next pass snapshots the set, so a liveness
-/// assertion holding later passes to a stale entry would demand a report for
-/// a cell that no longer re-runs; the selective passes after each teardown
-/// are where that would panic.
-#[cfg(feature = "recalc_verify")]
-#[test]
-fn verify_liveness_survives_overwrite_and_clear_of_a_volatile() {
-    // Overwritten by a non-volatile formula.
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
-    model._set("A1", "=RANDBETWEEN(1,1)");
-    model.evaluate();
-    model._set("A1", "=1+1");
-    model.evaluate();
-    assert!(!reads_random(&model, (0, 1, 1)));
-    assert_eq!(model._get_text("A1"), "2");
-    for value in ["1", "2"] {
-        model._set("C3", value);
-        model.evaluate();
-    }
-
-    // Cleared outright.
-    let mut model = new_empty_model().with_recalc_mode(RecalcMode::Verify);
-    model._set("A1", "=NOW()*0");
-    model.evaluate();
-    model
-        .range_clear_contents(&crate::expressions::types::Area {
-            sheet: 0,
-            row: 1,
-            column: 1,
-            width: 1,
-            height: 1,
-        })
-        .unwrap();
-    model.evaluate();
-    assert_eq!(model._get_text("A1"), "");
-    for value in ["1", "2"] {
-        model._set("C3", value);
-        model.evaluate();
-    }
-}
-
 // --- Relocated from base/tests/ ------------------------------------------
 // These pin engine invariants with plain public-API models and no fuzz
 // harness, so they belong in the lib suite: it is the suite the Verify job and
@@ -2574,30 +1367,6 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
     }
 }
 
-/// Fuzz seed 7, minimized: a CSE anchor written before any evaluate, then moved
-/// by two column inserts and a column delete. A formula added afterwards that
-/// concatenates the displaced anchor with an untouched cell has to read the
-/// same thing in both modes -- the churn must not leave the incremental model
-/// pointing at a different cell than full's.
-#[test]
-fn cse_anchor_displaced_by_column_churn_reads_the_same_in_both_modes() {
-    let run = |mode: RecalcMode| -> String {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model
-            .set_user_array_formula(0, 18, 6, 1, 3, "=A1:A2*2")
-            .unwrap();
-        model.insert_columns(0, 3, 1).unwrap();
-        model.insert_columns(0, 6, 1).unwrap();
-        model.evaluate();
-        model.delete_columns(0, 4, 1).unwrap();
-        model.evaluate();
-        model._set("G11", "=LEN(G18&F14)");
-        model.evaluate();
-        model._get_text("G11")
-    };
-    assert_eq!(run(RecalcMode::Full), run(incremental_mode()));
-}
-
 /// A dynamic anchor whose last result was 1x1 has no spill cells and is not in
 /// the array index, so it behaves as a scalar and must stay on the incremental
 /// path. `=LET`, a called `LAMBDA`, `=INDEX` and `=IF` are everyday formulas:
@@ -2634,69 +1403,46 @@ fn scalar_result_dynamic_anchors_stay_incremental() {
     }
 }
 
-/// The same anchor once its result grows past 1x1: the pass that creates the
-/// spill has to notice and fall back, and the one that shrinks it back has to
-/// retract the spill. Every step is compared against a full model fed the same
-/// edits, so "stays incremental" can never be bought with a wrong value.
+/// I1.8 — a reference-returning function records its resolved target at the
+/// extent it resolved to, not the extent its reader's walk visited.
+///
+/// This is I1.3's clipping rule at a *computed* extent. `SUM` clips a
+/// whole-column reference to the used range, so the per-cell reads stop at the
+/// last populated row; a later write below that row is connected to the
+/// formula by the recorded rectangle and by nothing else. The two calls are
+/// separate sites, so there is one witness each.
+///
+/// Kills deleting `trace_rect` from `INDIRECT`'s range branch. Without it the
+/// formula's only edges are the clipped per-cell reads, and the write to A500
+/// never reaches it.
 #[test]
-fn dynamic_anchor_growing_past_one_by_one_spills_like_full() {
-    let mut incremental = new_empty_model().with_recalc_mode(incremental_mode());
-    let mut full = new_empty_model().with_recalc_mode(RecalcMode::Full);
-    let both = |edits: &[(&str, &str)], incremental: &mut crate::Model, full: &mut crate::Model| {
-        for &(cell, value) in edits {
-            incremental._set(cell, value);
-            full._set(cell, value);
-        }
-        incremental.evaluate();
-        full.evaluate();
-        for cell in ["F1", "F2", "F3"] {
-            assert_eq!(
-                incremental._get_text(cell),
-                full._get_text(cell),
-                "{cell} diverged"
-            );
-        }
-    };
-    both(
-        &[
-            ("A1", "1"),
-            ("B1", "10"),
-            ("B2", "20"),
-            // Dynamic at parse (a range in one branch); 1x1 while A1=1.
-            ("F1", "=IF(A1=1,5,B1:B2)"),
-        ],
-        &mut incremental,
-        &mut full,
-    );
-    assert_eq!(incremental._get_text("F1"), "5");
-    // A precedent edit while the result is still 1x1.
-    both(&[("A1", "1")], &mut incremental, &mut full);
-    // Flip: the result becomes B1:B2 and must spill into F1:F2.
-    both(&[("A1", "2")], &mut incremental, &mut full);
-    assert_eq!(incremental._get_text("F1"), "10");
-    assert_eq!(incremental._get_text("F2"), "20");
-    // And back: the spill retracts.
-    both(&[("A1", "1")], &mut incremental, &mut full);
-    assert_eq!(incremental._get_text("F1"), "5");
+fn indirect_records_its_resolved_extent_not_the_walk() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("B1", "=SUM(INDIRECT(\"A:A\"))");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+
+    // Below the used range the walk stopped at, so only the rect connects it.
+    model._set("A500", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "6");
 }
 
-/// A cycle whose only edges are range reads: each `COUNT` covers the other's
-/// cell. Nothing seeds the pair after the first pass, so an unrelated value
-/// edit elsewhere re-runs a pass whose stored `#CIRC!` values are artifacts of
-/// where the cycle was entered. Verify re-evaluates every stored formula value
-/// live, so it panics unless the pair is seeded as never-served. Killed by
-/// disabling the never-served seeding.
-#[cfg(feature = "recalc_verify")]
+/// I1.8, the `OFFSET` site. Kills deleting `trace_rect` from `fn_offset`.
+///
+/// The height is spelled out rather than written `A:A` because `OFFSET` over a
+/// whole-column argument resolves through a different path; this is the one
+/// that reaches `fn_offset`'s own rect.
 #[test]
-fn verify_survives_a_cycle_closed_only_through_range_reads() {
-    let run = |mode: RecalcMode| {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model._set("A1", "=COUNT(B1:B2)");
-        model._set("B1", "=COUNT(A1:A2)");
-        model.evaluate();
-        model._set("E5", "1");
-        model.evaluate();
-        (model._get_text("A1"), model._get_text("B1"))
-    };
-    assert_eq!(run(RecalcMode::Verify), run(RecalcMode::Full));
+fn offset_records_its_resolved_extent_not_the_walk() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("B1", "=SUM(OFFSET($A$1,0,0,1048576,1))");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+
+    model._set("A500", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "6");
 }

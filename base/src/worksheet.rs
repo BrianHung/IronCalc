@@ -103,7 +103,8 @@ impl Worksheet {
         // reaches this push. A no-op write (identical cell) is not an edit.
         if changed && !style_only {
             self.write_log.push(Write::Cell {
-                at: (0, row, column),
+                row,
+                column,
                 was_formula,
                 is_formula,
             });
@@ -464,7 +465,6 @@ impl Worksheet {
                 r.hidden = hidden;
                 if currently != hidden {
                     self.write_log.push(Write::Hidden {
-                        sheet: 0,
                         row: Some(row),
                         column: None,
                     });
@@ -482,7 +482,6 @@ impl Worksheet {
         });
         if hidden {
             self.write_log.push(Write::Hidden {
-                sheet: 0,
                 row: Some(row),
                 column: None,
             });
@@ -542,7 +541,6 @@ impl Worksheet {
         self.set_column_width_and_style(column, width, hidden, style)?;
         if currently != hidden {
             self.write_log.push(Write::Hidden {
-                sheet: 0,
                 row: None,
                 column: Some(column),
             });
@@ -759,7 +757,8 @@ impl Worksheet {
         }
         if is_edit {
             self.write_log.push(Write::Cell {
-                at: (0, row, column),
+                row,
+                column,
                 was_formula,
                 is_formula: false,
             });
@@ -775,7 +774,8 @@ impl Worksheet {
             for (column, cell) in row_data {
                 if removal_is_an_edit(&cell) {
                     self.write_log.push(Write::Cell {
-                        at: (0, row, column),
+                        row,
+                        column,
                         was_formula: cell.get_formula().is_some(),
                         is_formula: false,
                     });
@@ -791,7 +791,8 @@ impl Worksheet {
     pub(crate) fn restore_row(&mut self, row: i32, data: HashMap<i32, Cell>) {
         for (column, cell) in &data {
             self.write_log.push(Write::Cell {
-                at: (0, row, *column),
+                row,
+                column: *column,
                 was_formula: self
                     .cell(row, *column)
                     .and_then(Cell::get_formula)
