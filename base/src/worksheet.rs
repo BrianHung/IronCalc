@@ -23,6 +23,16 @@ pub enum NavigationDirection {
     Down,
 }
 
+/// Whether removing `cell` is an edit a reader could observe.
+///
+/// A blank cell that only ever carried a style is not: the public API cannot
+/// tell an `EmptyCell` from a missing one (both read as value `None`, type
+/// `Number`), so its removal moves nothing. Journaling it anyway would seed the
+/// graph with a cell no formula can depend on.
+fn removal_is_an_edit(cell: &Cell) -> bool {
+    cell.get_formula().is_some() || !matches!(cell, Cell::EmptyCell { .. })
+}
+
 impl Worksheet {
     pub fn get_name(&self) -> String {
         self.name.clone()
@@ -735,18 +745,19 @@ impl Worksheet {
         Ok(column_cell_references)
     }
 
+    /// Drops the cell entirely, style included, and journals the removal when
+    /// it is one a reader could observe. See [`removal_is_an_edit`].
     pub(crate) fn remove_cell(&mut self, row: i32, column: i32) -> Result<(), String> {
         let cell = self.cell(row, column);
         let was_formula = cell.and_then(Cell::get_formula).is_some();
-        let existed = cell.is_some();
-        let was_empty = matches!(cell, Some(Cell::EmptyCell { .. }) | None);
+        let is_edit = cell.is_some_and(removal_is_an_edit);
         if let Some(row_data) = self.sheet_data.get_mut(&row) {
             row_data.remove(&column);
             if row_data.is_empty() {
                 self.sheet_data.remove(&row);
             }
         }
-        if existed && (was_formula || !was_empty) {
+        if is_edit {
             self.write_log.push(Write::Cell {
                 at: (0, row, column),
                 was_formula,
@@ -756,10 +767,13 @@ impl Worksheet {
         Ok(())
     }
 
+    /// Drops a whole row's cells at once, journaling each removal that is one.
+    /// The same removals [`Worksheet::remove_cell`] would journal one at a time,
+    /// which is why both ask [`removal_is_an_edit`].
     pub(crate) fn remove_row_data(&mut self, row: i32) {
         if let Some(row_data) = self.sheet_data.remove(&row) {
             for (column, cell) in row_data {
-                if cell.get_formula().is_some() || !matches!(cell, Cell::EmptyCell { .. }) {
+                if removal_is_an_edit(&cell) {
                     self.write_log.push(Write::Cell {
                         at: (0, row, column),
                         was_formula: cell.get_formula().is_some(),
@@ -770,6 +784,10 @@ impl Worksheet {
         }
     }
 
+    /// Reinstates a row's cells wholesale, replacing whatever is there, and
+    /// journals every position it writes. Undo's counterpart to
+    /// [`Worksheet::remove_row_data`]: unlike a removal, a restore is an edit
+    /// at every position, because the row it replaces is not this one.
     pub(crate) fn restore_row(&mut self, row: i32, data: HashMap<i32, Cell>) {
         for (column, cell) in &data {
             self.write_log.push(Write::Cell {
