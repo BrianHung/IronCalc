@@ -40,6 +40,8 @@ use crate::{cf_types::CfCellResult, tz::Tz};
 
 pub(crate) mod cse_guard;
 mod incremental;
+#[cfg(feature = "recalc_verify")]
+mod verify;
 
 #[cfg(any(test, feature = "mock_time"))]
 pub use crate::mock_time::get_milliseconds_since_epoch;
