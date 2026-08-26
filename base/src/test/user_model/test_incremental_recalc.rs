@@ -808,6 +808,51 @@ fn style_on_blank_cell_does_not_enter_the_delta() {
     }
 }
 
+/// I2.5 — a batch's pre-batch formula-ness is read off its *first* entry.
+///
+/// Between full passes `formula_cell_count` is maintained by the journal
+/// rather than recounted, and the drain accounts each cell once: the batch's
+/// final state against the state it held before the batch began. Only the
+/// first entry carries that; every later entry's `was_formula` is an
+/// intermediate the batch already passed through.
+///
+/// Kills `first_was.entry(p).or_insert(..)` becoming `insert(..)` (last-wins),
+/// in both directions — a formula round-tripped through a value would count a
+/// formula that was already there, and a value round-tripped through a formula
+/// would discount one that never existed. The counter is checked against a
+/// from-scratch recount rather than a literal, so the test states the
+/// invariant and not an arithmetic coincidence.
+#[test]
+fn journal_accounts_a_batch_against_its_pre_batch_state() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=1+1");
+    model._set("B1", "7");
+    model.evaluate();
+
+    // Each direction is checked on its own: batched together they would be a
+    // double-count and a double-discount that cancel, and the drain would look
+    // right while being wrong twice.
+    fn agrees(model: &mut crate::Model, label: &str) {
+        flush_writes(model);
+        let from_journal = model.formula_cell_count;
+        model.recount_formula_cells();
+        assert_eq!(
+            from_journal, model.formula_cell_count,
+            "journal-maintained formula count disagrees with a recount after {label}"
+        );
+    }
+
+    // A formula round-tripped through a value is still the formula it was.
+    model._set("A1", "5");
+    model._set("A1", "=2+2");
+    agrees(&mut model, "formula -> value -> formula");
+
+    // A value round-tripped through a formula never became one.
+    model._set("B1", "=3");
+    model._set("B1", "9");
+    agrees(&mut model, "value -> formula -> value");
+}
+
 #[test]
 fn journal_rejected_write_logs_nothing() {
     let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
