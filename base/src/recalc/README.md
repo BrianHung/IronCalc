@@ -83,7 +83,9 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 
 A full pass is not a fixed point. Its phase 1 spills arrays and its phase 2 evaluates the rest, so a formula can read a spill member before the anchor refills it, and a cycle that runs through an array member resolves against that member's stored value. Full recalculation heals those readers on its *next* pass, because it rescans everything unconditionally.
 
-Incremental has to match that pass for pass. So a full pass run from the incremental scheduler compares the array footprint's values across the pass: if a footprint cell moved and something read it (or a cycle resolved through the array), the pass left debt, and the graph records it so the next pass is full too. The debt clears itself, because the healing pass moves nothing and the pass after it is selective again. A workbook with no arrays never records debt, so plain editing is unaffected.
+Incremental has to match that pass for pass. So a full pass run from the incremental scheduler compares the array footprint's values across the pass: if a footprint cell moved and something read it, the pass left debt, and the graph records it so the next pass is full too. The debt clears itself, because the healing pass moves nothing and the pass after it is selective again. A workbook with no arrays never records debt, so plain editing is unaffected.
+
+The condition used to have a second arm: a cycle running through the array (a member read while its anchor was still evaluating) also counted as debt, on the grounds that such a read leaves no edge behind. That arm could not decide anything, and it is gone. Reading a footprint member records an edge on its anchor (I1.9), so a cycle through a footprint puts the anchor on the cycle; the anchor therefore lands in `never_served`, which every later pass seeds dirty; and a cone holding an array position takes the arrays→Full fallback. The next pass was already full, which is the whole of what the debt flag would have forced.
 
 ## Design rules
 
@@ -139,7 +141,7 @@ Four things can enforce a clause, and only two of them owe a test:
 | I1.5 Reading a cell's formula text or formula-ness records `FormulaText` — three independent call sites | test, one per site | `formulatext_sees_value_overwrite_of_its_argument`, `isformula_sees_value_overwrite_of_its_argument`; SUBTOTAL's scan is covered by the I1.2 gate |
 | I1.6 Reading row visibility records `RowHidden`, keyed per row | test | `incremental_subtotal_sees_hidden_row`; the per-row keying is `subtotal_sees_hidden_row_it_scans_not_own_row` |
 | I1.7 Reading a defined name records `Name` | test | `name_reader_redirty_on_insert` |
-| I1.8 A reference-returning function's resolved target becomes an edge | test | `offset_target_change_without_static_edge` |
+| I1.8 A reference-returning function's resolved target becomes an edge, at the extent it resolved to | test; the extent is one per call site | `offset_target_change_without_static_edge`; the extent is `offset_records_its_resolved_extent_not_the_walk` and `indirect_records_its_resolved_extent_not_the_walk` (I1.3's clipping rule, reached through a computed extent) |
 | I1.9 Reading an array-footprint position records an edge on its anchor, taken from the array index and recorded ahead of the scope gate | test | `cse_footprint_cycle_stored_value_diverges_from_a_live_reeval` (dies only under `recalc_verify`) |
 | I1.10 A formula commits its reads on both exits | construction | — |
 
@@ -151,7 +153,7 @@ Four things can enforce a clause, and only two of them owe a test:
 | I2.2 Nothing outside the journal drain dirties the graph | gate | `graph_is_only_notified_by_the_journal` |
 | I2.3 Recording is paused only through a `#[must_use]` Drop guard | construction (`set_recording` is private to `mod journal`) | — |
 | I2.4 A displacement journals a value write substituted for the suppressed formula write | test | `incremental_handles_row_delete` |
-| I2.5 A batch's pre-batch formula-ness is read off its first entry | **unwitnessed** — see Gaps | — |
+| I2.5 A batch's pre-batch formula-ness is read off its first entry, so the journal-maintained formula count agrees with a recount | test | `journal_accounts_a_batch_against_its_pre_batch_state` |
 | I2.6 A cell that stops being a formula loses its outgoing edges, through every write API | test | `journal_value_over_formula_drops_edges` |
 | I2.7 Overwriting a cell re-dirties the readers of its formula text | test | the two I1.5 witnesses |
 | I2.8 A link write and a link removal journal, from each producer, including a link stranded at a position with no cell | test, one per producer | `cell_link_write_is_reported_in_the_delta`, `range_clear_reports_a_stranded_link_removal` |
@@ -185,14 +187,19 @@ Four things can enforce a clause, and only two of them owe a test:
 
 ### I5 — a structural edit rewrites every positional index
 
-The remapping is deliberately conservative: an index that keeps a stale entry costs a redundant recompute or one full fallback, never a wrong value, because a dirtied cell re-records its reads from scratch. So the arithmetic in `Displacement` is *not* the load-bearing part — the marking that runs before it is.
+The remapping is deliberately conservative: an index that keeps a stale entry costs a redundant recompute or one full fallback, never a wrong value, because a dirtied cell re-records its reads from scratch. That argument covers *which* entries survive; it does not cover *where* they land, so the two comparisons that decide that are pinned directly.
 
 | Clause | Enforcement | Witness |
 |---|---|---|
 | I5.1 No positional index is forgotten | construction (`DependencyGraph::shift` destructures `Self`) | — a test asserting "index X shifted" is tautological and is not kept |
 | I5.2 The reverse index (`precedents`) and the dynamic-link map move with the cells they key | test | `incremental_structural_edit_moves_volatile_with_the_graph`, `incremental_insert_moves_hyperlink_with_the_cell` |
-| I5.3 A delete that would only shrink a tracked range rebuilds instead of shifting | test | `incremental_row_delete_shrinking_range_forces_full` |
-| I5.4 A structural edit dirties what can change with no precedent moving | partly **unwitnessed** — see Gaps | `name_reader_redirty_on_insert` covers the name half by way of its cell edge |
+| I5.3 A delete that would only shrink a tracked range rebuilds instead of shifting — and both ends of that overlap test are exact | test | `incremental_row_delete_shrinking_range_forces_full`; the band edges are `shrink_detection_is_exact_at_the_band_edges` |
+| I5.4 A structural edit dirties what can change with no precedent moving | **redundant second path** — see below | the journal is the primary; `name_reader_redirty_on_insert` covers the name half by way of its cell edge |
+| I5.5 The remapping rule is exact at the edit boundary | test | `displacement_remaps_at_the_edit_boundary` |
+
+**On I5.4.** `mark_structural_dependents` marks four things beyond the cell-edge half: range dependents, `Name`/`SheetStructure`/`Computed` readers, and `OwnCoord`/`FormulaText` readers. Each of the four can be deleted with nothing failing, and so can all four at once — the dirty set after an insert is still non-empty and still correct. The primary path is the journal, in two parts: `displace_cells` rewrites and journals every formula whose *text* the edit changes (which is every literal range that moves, and which re-dirties `FORMULATEXT` readers through the drain's own text-reader marking), and the worksheet's row/column shift journals every non-blank cell that physically moves, so ordinary reachability through the already-shifted edges reaches the dependents of everything that moved — through a rectangle included. A computed reference is the sharpest case and it resolves the same way: `=OFFSET($C$1,5,0)` above an insert keeps its text, but the cells it resolves through are journaled, and its shifted rect still reaches one of them.
+
+The four are kept anyway, as belt over braces, because the subsumption argument is empirical rather than structural: it says the journal happens to cover every shape anyone has constructed, not that it must. The oracle is what carries them — `base/tests/common/` now plants whole-column and whole-row reads on the data columns, defined names targeting whole columns, and `OFFSET`/`INDIRECT`/`ROW`/`FORMULATEXT` forms whose text is displacement-stable, which is exactly the shape class where the journal is silent and only this marking speaks.
 
 ### I6 — the delta is sound and complete
 
@@ -221,7 +228,7 @@ The remapping is deliberately conservative: an index that keeps a stale entry co
 | Clause | Enforcement | Witness |
 |---|---|---|
 | I8.1 The graph is not ready: a reparse (names, sheets), a locale or timezone change | test, one per call site | `incremental_defined_name_retarget_forces_full`, `incremental_set_locale_forces_full` |
-| I8.2 The previous pass left convergence debt | test for the reader arm | `incremental_heals_spill_debt_left_by_a_forced_full_pass`; the cycle-through-the-array arm is **unwitnessed** — see Gaps |
+| I8.2 The previous pass left convergence debt | test | `incremental_heals_spill_debt_left_by_a_forced_full_pass` (the condition has one arm now; the cycle-through-the-array arm is gone — see Convergence debt) |
 | I8.3 The cone reaches more than half the formulas, and the fallback actually runs a pass | test | `incremental_wide_fanout_stays_correct` |
 | I8.4 The cone reaches a reader of a blocked spill anchor | test | `a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass` |
 | I8.5 The cone reaches an array footprint; and a 1x1 dynamic anchor is *not* one | test, one per direction | `incremental_overwrite_spill_anchor_updates_dependents`, `scalar_result_dynamic_anchors_stay_incremental` |
@@ -232,15 +239,17 @@ The remapping is deliberately conservative: an index that keeps a stale entry co
 
 ### Gaps this map does not close
 
-These are clauses whose mechanism exists but which nothing was observed to catch: not the lib suite in either mode, and not 40 seeds x 120 steps of differential fuzzing with Verify on, which each was re-run against. They are recorded rather than papered over.
+Empty. The eighteen mechanisms this section used to list were dispositioned: **eight now die to a witness, two were deleted, and eight are kept as a deliberate second path with the reason recorded** — either here or in the section that owns them. Nothing is left "unwitnessed, no reason given".
 
-- **I2.5** the journal drain reads a batch's pre-batch formula-ness off its *first* entry (`or_insert`, not `insert`). Changing it to last-wins passes everything.
-- **I5.4** `mark_structural_dependents`' extra marking: the range half, the `Name`/`SheetStructure`/`Computed` half, and the `OwnCoord`/`FormulaText` half can each be deleted with nothing failing. The cell-edge half carries the dependency in every shape the suite and the generator produce.
-- **I8.2** the convergence-debt condition's `circular` arm.
-- **I8.5** the "a seed is a fresh dynamic anchor" half of the arrays fallback.
-- `recompute_frontier`'s memo restore and its second `reports_change` sweep, `Displacement`'s arithmetic (four separate off-by-ones), `INDIRECT`/`OFFSET`/`get_range`'s `trace_rect` calls and their `Input::Computed`, and the `Name` input itself: each can be deleted or broken with nothing failing.
+Witnessed. `Displacement`'s arithmetic turned out to be five one-sided comparisons, not four, and it is pinned at the unit level (I5.5, I5.3) rather than through a model whose fallbacks mask it: `shift_coord` is the single definition every stored coordinate moves through, and `range_overlaps_band` is the whole of the shrink test. The journal drain's first-entry rule is I2.5, checked against a from-scratch recount, one direction at a time because the two errors cancel. And the `trace_rect` calls turned out **not** to be the benign optimisation this section used to claim: at a wide extent the reader's per-cell walk is clipped to the used range and the rectangle is the only edge, which is I1.3's own lesson reached through a computed extent (I1.8).
 
-For the trace calls the reason is known and benign: the reader's per-cell walk records the same edges the rect would, so the rect is an optimisation, not the edge. For most of `Shift` the reason is structural and is the one stated above — the remapping is conservative, and a cell the marking dirties re-records its reads from scratch, so a stale index costs a pass, not a value. What that argument does **not** cover is the marking itself, which is why three of its four halves being deletable is the sharpest item on this list. Two clauses that no deterministic test covers turn out to be squarely in the **oracle** column rather than in this list: the row/column-move fallback (I8.8) dies on seed 6 in four operations, and the `debt_over_pending_edits` branch of I6 dies on seed 1 in nine. Everything left above survives 4,032 evaluates.
+Deleted. The convergence-debt condition's `circular` arm, which could not decide anything — a cycle through a footprint puts the anchor in `never_served`, which forces the next pass full through the arrays fallback anyway (see Convergence debt). And `INDIRECT`'s 1×1 rectangle, which is the same edge as the cell read its reader already records, and which as a *range* made a delete of that row rebuild the graph for nothing.
+
+Kept as a second path, reason recorded. `mark_structural_dependents`' four extra halves and the `Name`/`SheetStructure`/`Computed` inputs that feed them: the journal is the primary and covers every constructed shape, but that argument is empirical rather than structural, so the marking stays and the generator now plants the shape class where the journal is silent (see I5.4). `recompute_frontier`'s memo restore bounds work rather than fixing a value — a skipped helper recomputed unscoped returns the same value, by the third design rule — and its second `reports_change` sweep is the delta-completeness net that Verify's own delta check is the oracle for. The arrays fallback's fresh-anchor half is redundant with the post-pass `wrote_array_cells` redo for any anchor that spills; it stays so a fresh anchor gets Full's two-phase ordering on the pass it is first seen, rather than after a wasted incremental attempt. `get_range`'s `trace_rect` is I1.8's rule at the range-composition site.
+
+A caution learned closing these, worth more than any single item: **fuzz silence is not evidence a mechanism is dead.** Deleting all ten of the then-open mechanisms at once left the lib suite green in all three modes and the differential fuzzer green too — including the two `trace_rect` calls that a twelve-line test proves are load-bearing. A mechanism may be deleted for a *structural* subsumption argument, never for the oracle failing to notice.
+
+Two clauses that no deterministic test covers are squarely in the **oracle** column rather than here: the row/column-move fallback (I8.8) dies on seed 6 in four operations, and the `debt_over_pending_edits` branch of I6 dies on seed 1 in nine.
 
 Closing a gap means adding the minimal witness, not a shape; a shape that dies to no mutant is not a witness.
 
