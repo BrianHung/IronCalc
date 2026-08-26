@@ -35,16 +35,23 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 |---|---|
 | `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges, so `SUM(A:A)` stays one edge. |
-| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. |
-| `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, the change cutoff, `take_changed_cells`, and the Verify assertions. This is the only module whose behavior depends on the mode. |
+| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. |
+| `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, and the frontier and whole-cone recomputes. This is the only module whose behavior depends on the mode. |
+| `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
+| `model/array_index.rs` | `array_footprint` and the walks that maintain the array/spill index and the formula count between full passes. |
+| `model/unstable_cells.rs` | Rebuilds the two sets of cells whose stored value may not be served (below), from the state the last pass left. |
+| `model/cse_guard.rs` | The CSE member guard flag and the only scope that may suspend it. |
+| `model/verify.rs` | The `RecalcMode::Verify` oracle. Compiled only under the `recalc_verify` feature. |
 | `worksheet.rs` | The only producer of journal entries. `sheet_data` is written through mutators that push a `Write`. |
-| `model/mod.rs` | `evaluate_cell` pushes a `ReadSet` frame, the `trace_cell`/`trace_rect`/`trace_input` helpers record into it, and a finished formula commits its reads to the graph. Tracing runs only in incremental mode. |
+| `model/mod.rs` | `evaluate_cell` pushes a `ReadSet` frame, the `trace_cell`/`trace_rect`/`trace_input` helpers record into it, and a finished formula commits its reads to the graph. Tracing runs only in incremental mode. Also `evaluate_full`, whose two-phase order the incremental path must reproduce: `is_phase_one_cell` and `cells_in_order` are that order's one definition. |
 
 ## Cells that never serve a stored value
 
 Serving a stored value is only sound when that value is a function of the cell's inputs. Two kinds of cell fail that test, and both are found by reading the state the last pass left rather than by matching a shape:
 
-- **A cell on a dependency cycle, anything downstream of one, and any cell that reported `#CIRC!`.** A cycle has no fixed point: what its members hold is an artifact of which member the walk entered first, and a reader of one holds whatever it saw mid-cycle (`COUNT` swallows a `#CIRC!` into a number). Full re-derives all of it from scratch on every pass, so incremental seeds those cells dirty on every pass and recomputes them and their readers. The set is the cells `topo_order` cannot place (those on a cycle plus everything after one), rebuilt over the whole graph after each full pass and over the cone after each incremental one, plus every cell whose stored value is `#CIRC!` — the evaluator's own report that it re-entered itself, which stands even where no edge recorded the read that closed the loop.
+- **A cell on a dependency cycle and anything downstream of one.** A cycle has no fixed point: what its members hold is an artifact of which member the walk entered first, and a reader of one holds whatever it saw mid-cycle (`COUNT` swallows a `#CIRC!` into a number). Full re-derives all of it from scratch on every pass, so incremental seeds those cells dirty on every pass and recomputes them and their readers. The set is the cells `topo_order` cannot place (those on a cycle plus everything after one), rebuilt over the whole graph after each full pass and over the cone after each incremental one.
+
+  The set used to carry a second half: every cell whose stored value was `#CIRC!` — the evaluator's own report that it re-entered itself — kept in case some read that closed a loop left no edge behind. There is no such read. `evaluate_cell` records the read before any early return, including the one the incremental scope answers from the store, and a formula commits its reads on both exits, so every cross-cell read that can re-enter is an edge. The one edge the graph drops on purpose is a cell's read of *itself* (`replace_reads`: `if p != dependent`), and that is exactly what the witness half added: self-references, and the `#CIRC!` that propagates out of one. A self-cycle has a single entry point, so what it holds *is* a function of the cell's inputs, and every non-self read it makes is still an edge, so anything that could move its value dirties it the ordinary way. The half is gone: it never changed a result, and while it stood it left every self-referential cell permanently dirty — and, for one inside an array footprint, every later pass full.
 - **A reader of a blocked spill anchor.** The anchor stores `#SPILL!` but hands a same-pass reader the live array's top-left value, so a reader recomputed against the stored error gets something a full pass never produces. Their stored values are served — they are what full computed — but recomputing one takes a full pass, which is the only pass that evaluates the anchor live, so a cone that reaches one falls back.
 
 `RecalcMode::Verify`'s stored-vs-live check skips exactly these cells, because they are exactly the cells a one-cell scratch frame reading the store cannot reproduce. The two lists are the same list.
@@ -53,7 +60,9 @@ Cycle cells are recomputed on every pass but are not *reported* on every pass: t
 
 ## Array footprints are edges
 
-An array anchor writes its spill members as evaluation writes, not edits, so nothing journals them. Reading a member is therefore recorded as a read of the anchor: the array index maps every footprint position to its anchor, and `evaluate_cell` records the anchor's position along with the position actually read — including for a footprint cell the anchor has not filled yet, and including reads that the incremental scope answers from the store. Without that edge a cycle running through an array footprint is invisible to the graph, and the cells around it look like ordinary results.
+An array anchor writes its spill members as evaluation writes, not edits, so nothing journals them. Reading a member is therefore recorded as a read of the anchor: the array index maps every footprint position to its anchor, and `evaluate_cell` records the anchor's position along with the position actually read — including a position whose spill cell a structural edit dropped, whose index entry survives until the next full pass refills it, and including reads that the incremental scope answers from the store. Without that edge a cycle running through an array footprint is invisible to the graph, and the cells around it look like ordinary results.
+
+The index holds each anchor and each spill cell, not each anchor's declared rectangle. A CSE anchor owns a rectangle it refills whether or not the cells are there, but a *ghost* member — a declared position with no spill cell — only exists between the write that created it and the anchor's next evaluation, and that write dirties the anchor. The anchor is in the index, so the cone holding it goes full, and that is the pass that refills the rectangle. Indexing the rectangle restated what the anchor's own entry already said.
 
 ## Non-cell inputs
 
@@ -102,3 +111,24 @@ cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
 ```
 
 `RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts that the change report lists every change and nothing else, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the check cannot repair the state it is checking.
+
+## Test discipline
+
+Every test in this engine's suite must pin one named invariant: the name says what breaks, a doc comment
+says why it matters when that is not obvious, and the shape is the minimal one that fails when the
+mechanism is wrong. Before adding a test, check whether an existing one already dies for the same
+mutation; before deleting or merging tests, re-apply the relevant mutants (see the nightly-recalc-audit
+workflow) and confirm nothing that used to die now survives. Redundancy is measured by kill-power, not by
+reading similarity.
+
+Where a test goes follows from that. The default is the lib suite: it is what
+`IRONCALC_RECALC=incremental`/`verify` re-run under a different strategy and what the nightly
+`cargo mutants` job executes, so a test outside it is a test those two oracles never see. Each
+`base/tests/*.rs` file is also its own compile-and-link, so a new one costs build time on every
+`cargo test`. Only three things earn a place there:
+
+- `fuzz_differential.rs` and `common/`, the lockstep harness and generator.
+- `fuzz_covfuzz_regressions.rs`, minimized fuzz artifacts replayed through that harness — one shape
+  per kill class, each doc comment naming the mutant it dies to.
+- `recalc_cost.rs`, the one wall-clock invariant, kept out of the lib suite so the mutation job does
+  not pay for a 32k-cell workbook once per mutant.
