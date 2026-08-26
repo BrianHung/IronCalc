@@ -2546,7 +2546,8 @@ impl<'a> Model<'a> {
             self.workbook.worksheets[sheet as usize]
                 .write_log
                 .push(Write::Cell {
-                    at: (0, row, column),
+                    row,
+                    column,
                     was_formula,
                     is_formula: false,
                 });
@@ -3389,10 +3390,14 @@ impl<'a> Model<'a> {
         for (sheet, write) in writes {
             match write {
                 Write::Cell {
-                    at: (_, row, column),
+                    row,
+                    column,
                     was_formula,
                     is_formula,
                 } => {
+                    // The worksheet named a position inside itself; `sheet`
+                    // comes from the enumeration above, which is the only
+                    // thing that knows which log this was.
                     let p = (sheet, row, column);
                     // The first write of a batch carries the pre-batch
                     // formula-ness; the cell itself carries the final state.
@@ -3417,7 +3422,7 @@ impl<'a> Model<'a> {
                     self.graph.mark_dirty(at);
                     self.write_seeds.insert(at);
                 }
-                Write::Hidden { row, column, .. } => {
+                Write::Hidden { row, column } => {
                     let deps = if let Some(r) = row {
                         self.graph.dependents_of_inputs(
                             |i| matches!(i, Input::RowHidden(s, rr) if *s == sheet && *rr == r),
