@@ -36,10 +36,19 @@ use crate::{
     utils as common,
 };
 
+use crate::recalc::{Input, ReadSet, Write};
 use crate::{cf_types::CfCellResult, tz::Tz};
 
+mod array_index;
+mod changed_cells;
 pub(crate) mod cse_guard;
 mod incremental;
+mod unstable_cells;
+#[cfg(feature = "recalc_verify")]
+mod verify;
+
+pub(crate) use changed_cells::ChangedCells;
+pub use changed_cells::ChangedSinceRead;
 
 #[cfg(any(test, feature = "mock_time"))]
 pub use crate::mock_time::get_milliseconds_since_epoch;
@@ -107,31 +116,6 @@ pub(crate) enum CellState {
     Evaluated,
     /// The cell is being evaluated
     Evaluating,
-}
-
-/// What cells changed since the last [`Model::take_changed_cells`], backing the
-/// incremental delta API.
-pub(crate) enum ChangedCells {
-    /// A full recompute ran: the next `take_changed_cells` is `Everything`,
-    /// not an empty `Cells` list.
-    All,
-    /// Cells whose observable state moved on an incremental pass since the last
-    /// read (not every cell that ran).
-    Delta(HashSet<Position>),
-}
-
-/// Cells that changed since the last [`Model::take_changed_cells`].
-///
-/// `Everything` is a full pass (rescan the workbook). `Cells` is the incremental
-/// delta, possibly empty. These are not the same kind of answer, so this is not
-/// an `Option`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChangedSinceRead {
-    /// A full pass ran, or an insert/delete moved cells the dirty cone cannot
-    /// name. Rescan the workbook.
-    Everything,
-    /// The incremental delta since the last read, possibly empty.
-    Cells(Vec<CellReferenceIndex>),
 }
 
 /// A parsed formula for a defined name
@@ -296,7 +280,7 @@ pub struct Model<'a> {
     pub(crate) saw_circular_reference: bool,
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
-    pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
+    pub(crate) read_stack: Vec<ReadSet>,
     /// What cells changed since the last [`Model::take_changed_cells`], backing
     /// the incremental delta API. See [`ChangedCells`].
     pub(crate) changed_cells: ChangedCells,
@@ -304,6 +288,22 @@ pub struct Model<'a> {
     /// These always-report in the delta; FormulaText/Hidden readers are dirty
     /// but only reported if their observable value moved.
     pub(crate) write_seeds: HashSet<Position>,
+}
+
+/// Whether `cell` belongs to the full pass's phase 1.
+///
+/// Phase 1 is every [`Cell::ArrayFormula`], CSE anchors included: a freshly set
+/// anchor has placeholder members, and a reader of a member must not evaluate
+/// before the anchor fills its rectangle, or the first pass stores a stale read
+/// that only a second full pass would heal.
+///
+/// This is the single definition of phase-1 membership.
+/// [`Model::collect_spill_cells`] selects phase 1 out of the whole workbook
+/// with it; [`Model::in_full_pass_order`] reorders a cone with it. Those two
+/// walk different inputs and so cannot share a traversal, but the order they
+/// produce has to agree, and this is the half of it that can be shared.
+pub(crate) fn is_phase_one_cell(cell: &Cell) -> bool {
+    matches!(cell, Cell::ArrayFormula { .. })
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -803,7 +803,7 @@ impl<'a> Model<'a> {
             }
             ArrayKind(s) => CalcResult::Array(s.to_owned()),
             DefinedNameKind((name, scope, _)) => {
-                self.trace_input(crate::recalc::Input::Name {
+                self.trace_input(Input::Name {
                     name: name.clone(),
                     scope: *scope,
                 });
@@ -1540,7 +1540,7 @@ impl<'a> Model<'a> {
         }
     }
 
-    pub(crate) fn trace_input(&mut self, input: crate::recalc::Input) {
+    pub(crate) fn trace_input(&mut self, input: Input) {
         if let Some(top) = self.read_stack.last_mut() {
             top.record_input(input);
         }
@@ -1552,25 +1552,25 @@ impl<'a> Model<'a> {
         &mut self,
         sheet: u32,
     ) -> Result<crate::worksheet::WorksheetDimension, String> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         Ok(self.workbook.worksheet(sheet)?.dimension())
     }
 
     /// Whether `row` is hidden. Records `RowHidden`.
     pub(crate) fn row_hidden(&mut self, sheet: u32, row: i32) -> Result<bool, String> {
-        self.trace_input(crate::recalc::Input::RowHidden(sheet, row));
+        self.trace_input(Input::RowHidden(sheet, row));
         self.workbook.worksheet(sheet)?.is_row_hidden(row)
     }
 
     /// Table definition by name. Records `SheetStructure`.
     pub(crate) fn table_by_name(&mut self, name: &str) -> Option<&crate::types::Table> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         self.workbook.tables.get(name)
     }
 
     /// All tables. Records `SheetStructure`.
     pub(crate) fn tables(&mut self) -> &std::collections::HashMap<String, crate::types::Table> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         &self.workbook.tables
     }
 
@@ -1579,7 +1579,7 @@ impl<'a> Model<'a> {
     }
 
     pub(crate) fn sheet_count(&mut self) -> usize {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         self.workbook.worksheets.len()
     }
 
@@ -1589,7 +1589,7 @@ impl<'a> Model<'a> {
 
     /// Formula index of a cell, if any. Records `FormulaText`.
     pub(crate) fn formula_index_at(&mut self, sheet: u32, row: i32, column: i32) -> Option<i32> {
-        self.trace_input(crate::recalc::Input::FormulaText((sheet, row, column)));
+        self.trace_input(Input::FormulaText((sheet, row, column)));
         self.workbook
             .worksheets
             .get(sheet as usize)?
@@ -1597,7 +1597,7 @@ impl<'a> Model<'a> {
             .get_formula()
     }
 
-    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: crate::recalc::ReadSet) {
+    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: ReadSet) {
         if !self.tracing() {
             return;
         }
@@ -1615,11 +1615,12 @@ impl<'a> Model<'a> {
         // A cell inside an array's footprint holds a value its anchor wrote, so
         // reading it is a read of the anchor. Nothing else records that: the
         // anchor's writes into its footprint are evaluation writes, not edits.
-        // Taken from the array index rather than the cell, so a footprint
-        // position the anchor has not filled yet still names its anchor, and
-        // recorded before the scope gate below, which can serve the stored
-        // value without ever reaching the anchor. Without this edge a cycle
-        // closing through an array footprint is invisible to the graph.
+        // Taken from the array index rather than the cell, so a position whose
+        // spill cell a structural edit dropped still names its anchor until the
+        // next full pass refills it, and recorded before the scope gate below,
+        // which can serve the stored value without ever reaching the anchor.
+        // Without this edge a cycle closing through an array footprint is
+        // invisible to the graph.
         if !self.graph.arrays.is_empty() && self.tracing() {
             let position = (
                 cell_reference.sheet,
@@ -1745,7 +1746,7 @@ impl<'a> Model<'a> {
                 // mark cell as being evaluated
                 self.cells.insert(key, CellState::Evaluating);
                 if self.tracing() {
-                    self.read_stack.push(crate::recalc::ReadSet::default());
+                    self.read_stack.push(ReadSet::default());
                 }
                 let (node, _static_result) =
                     &self.parsed_formulas[cell_reference.sheet as usize][f as usize];
@@ -2544,7 +2545,7 @@ impl<'a> Model<'a> {
         if result.is_ok() {
             self.workbook.worksheets[sheet as usize]
                 .write_log
-                .push(crate::recalc::Write::Cell {
+                .push(Write::Cell {
                     at: (0, row, column),
                     was_formula,
                     is_formula: false,
@@ -2707,7 +2708,7 @@ impl<'a> Model<'a> {
             let ws = self.workbook.worksheet_mut(sheet)?;
             ws.cell_clear_contents(row, column)?;
             if ws.links.remove(&(row, column)).is_some() {
-                ws.write_log.push(crate::recalc::Write::Link {
+                ws.write_log.push(Write::Link {
                     at: (sheet, row, column),
                 });
             }
@@ -3240,56 +3241,58 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Returns a list of all cells
-    pub fn get_all_cells(&self) -> Vec<CellIndex> {
-        let mut cells = Vec::new();
-        for (index, sheet) in self.workbook.worksheets.iter().enumerate() {
-            let mut sorted_rows: Vec<_> = sheet.sheet_data.keys().collect();
-            sorted_rows.sort_unstable();
-            for row in sorted_rows {
-                let row_data = &sheet.sheet_data[row];
-                let mut sorted_columns: Vec<_> = row_data.keys().collect();
-                sorted_columns.sort_unstable();
-                for column in sorted_columns {
-                    cells.push(CellIndex {
-                        index: index as u32,
-                        row: *row,
-                        column: *column,
-                    });
-                }
-            }
-        }
-        cells
+    /// The stored cell at `position`, if any. `None` for a blank cell and for
+    /// an out-of-range sheet alike: neither has content to read.
+    pub(crate) fn cell_at(&self, (sheet, row, column): Position) -> Option<&Cell> {
+        self.workbook
+            .worksheet(sheet)
+            .ok()
+            .and_then(|ws| ws.cell(row, column))
     }
 
-    /// Collects all dynamic-formula anchor cells in natural (sheet, row, column) order
-    /// and stores them in `self.spill_cells`.
+    /// Every stored cell in the workbook, in `(sheet, row, column)` order.
+    ///
+    /// `sheet_data` is a hash map, so the sort is what makes the order exist at
+    /// all. This is the order the full pass evaluates in and the order every
+    /// index built from a whole-workbook walk is built in, so it has one
+    /// definition. A caller that needs `&mut self` afterwards collects first.
+    pub(crate) fn cells_in_order(&self) -> impl Iterator<Item = (Position, &Cell)> + '_ {
+        self.workbook
+            .worksheets
+            .iter()
+            .enumerate()
+            .flat_map(|(sheet_index, worksheet)| {
+                let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+                sorted_rows.sort_unstable();
+                sorted_rows.into_iter().flat_map(move |row| {
+                    let row_data = &worksheet.sheet_data[&row];
+                    let mut sorted_columns: Vec<i32> = row_data.keys().copied().collect();
+                    sorted_columns.sort_unstable();
+                    sorted_columns
+                        .into_iter()
+                        .map(move |column| ((sheet_index as u32, row, column), &row_data[&column]))
+                })
+            })
+    }
+
+    /// Returns a list of all cells
+    pub fn get_all_cells(&self) -> Vec<CellIndex> {
+        self.cells_in_order()
+            .map(|((index, row, column), _)| CellIndex { index, row, column })
+            .collect()
+    }
+
+    /// Collects the cells the full pass evaluates in phase 1, in natural
+    /// (sheet, row, column) order, and stores them in `self.spill_cells`.
+    ///
+    /// This is one of the two selections on [`is_phase_one_cell`]; the other is
+    /// [`Model::in_full_pass_order`], which reproduces this order over a cone.
     fn collect_spill_cells(&mut self) {
-        let mut spill_cells = Vec::new();
-        for (sheet_index, worksheet) in self.workbook.worksheets.iter().enumerate() {
-            let mut sorted_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
-            sorted_rows.sort_unstable();
-            for row in &sorted_rows {
-                let row_data = &worksheet.sheet_data[row];
-                let mut sorted_cols: Vec<i32> = row_data.keys().copied().collect();
-                sorted_cols.sort_unstable();
-                for col in &sorted_cols {
-                    // CSE anchors are phase-1 too: a freshly set anchor has
-                    // placeholder members, and a reader of a member must not
-                    // evaluate before the anchor fills its rectangle, or the
-                    // first pass stores a stale read that only a second full
-                    // pass would heal.
-                    if matches!(&row_data[col], Cell::ArrayFormula { .. }) {
-                        spill_cells.push(CellReferenceIndex {
-                            sheet: sheet_index as u32,
-                            row: *row,
-                            column: *col,
-                        });
-                    }
-                }
-            }
-        }
-        self.spill_cells = spill_cells;
+        self.spill_cells = self
+            .cells_in_order()
+            .filter(|(_, cell)| is_phase_one_cell(cell))
+            .map(|((sheet, row, column), _)| CellReferenceIndex { sheet, row, column })
+            .collect();
     }
 
     /// Returns all cells in the current spill area of a dynamic-formula anchor,
@@ -3385,7 +3388,7 @@ impl<'a> Model<'a> {
             std::collections::HashMap::new();
         for (sheet, write) in writes {
             match write {
-                crate::recalc::Write::Cell {
+                Write::Cell {
                     at: (_, row, column),
                     was_formula,
                     is_formula,
@@ -3403,26 +3406,26 @@ impl<'a> Model<'a> {
                     // A number-to-number write does not change that.
                     if was_formula || is_formula {
                         let text_readers = self.graph.dependents_of_inputs(
-                            |i| matches!(i, crate::recalc::Input::FormulaText(q) if *q == p),
+                            |i| matches!(i, Input::FormulaText(q) if *q == p),
                         );
                         for r in text_readers {
                             self.graph.mark_dirty(r);
                         }
                     }
                 }
-                crate::recalc::Write::Link { at } => {
+                Write::Link { at } => {
                     self.graph.mark_dirty(at);
                     self.write_seeds.insert(at);
                 }
-                crate::recalc::Write::Hidden { row, column, .. } => {
+                Write::Hidden { row, column, .. } => {
                     let deps = if let Some(r) = row {
-                        self.graph.dependents_of_inputs(|i| {
-                            matches!(i, crate::recalc::Input::RowHidden(s, rr) if *s == sheet && *rr == r)
-                        })
+                        self.graph.dependents_of_inputs(
+                            |i| matches!(i, Input::RowHidden(s, rr) if *s == sheet && *rr == r),
+                        )
                     } else if let Some(c) = column {
-                        self.graph.dependents_of_inputs(|i| {
-                            matches!(i, crate::recalc::Input::ColHidden(s, cc) if *s == sheet && *cc == c)
-                        })
+                        self.graph.dependents_of_inputs(
+                            |i| matches!(i, Input::ColHidden(s, cc) if *s == sheet && *cc == c),
+                        )
                     } else {
                         std::collections::HashSet::new()
                     };
@@ -3439,6 +3442,8 @@ impl<'a> Model<'a> {
         // which at worst forces a conservative Full fallback that rebuilds the
         // index exactly.
         for ((sheet, row, column), was_formula) in first_was {
+            // Not `cell_at`: that borrows all of `self`, and the CSE-rect
+            // memo is invalidated below while this borrow is still live.
             let cell = self
                 .workbook
                 .worksheet(sheet)
@@ -3456,7 +3461,7 @@ impl<'a> Model<'a> {
                 ) {
                     self.cse_rects = None;
                 }
-                incremental::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
+                array_index::array_footprint(cell, sheet, row, column, &mut |p, anchor| {
                     footprint.push((p, anchor))
                 });
             }
@@ -3530,10 +3535,7 @@ impl<'a> Model<'a> {
                 return false;
             };
             let anchor_live = matches!(
-                self.workbook
-                    .worksheet(s)
-                    .ok()
-                    .and_then(|ws| ws.cell(r, c)),
+                self.cell_at((s, r, c)),
                 Some(Cell::ArrayFormula {
                     kind: ArrayKind::Cse,
                     r: (width, height),
@@ -3624,7 +3626,7 @@ impl<'a> Model<'a> {
             // they never seed.
             let nodes = self.graph.nodes();
             let cone = self.graph.cycle_cone(&nodes);
-            self.refresh_unstable_cells(cone, &nodes);
+            self.graph.set_never_served(cone);
             self.refresh_blocked_array_readers();
             // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();
@@ -3701,7 +3703,7 @@ impl<'a> Model<'a> {
             .collect();
         for (row, column) in removed_links {
             ws.links.remove(&(row, column));
-            ws.write_log.push(crate::recalc::Write::Link {
+            ws.write_log.push(Write::Link {
                 at: (range.sheet, row, column),
             });
         }
@@ -3836,7 +3838,7 @@ impl<'a> Model<'a> {
             .collect();
         for (row, column) in removed_links {
             worksheet.links.remove(&(row, column));
-            worksheet.write_log.push(crate::recalc::Write::Link {
+            worksheet.write_log.push(Write::Link {
                 at: (area.sheet, row, column),
             });
         }

@@ -30,6 +30,8 @@ pub(crate) struct CseMemberGuard {
 }
 
 impl CseMemberGuard {
+    /// Whether a write into a CSE rectangle is currently allowed through.
+    /// True only inside [`Model::with_cse_guard_suspended`].
     pub(crate) fn is_suspended(self) -> bool {
         self.suspended
     }

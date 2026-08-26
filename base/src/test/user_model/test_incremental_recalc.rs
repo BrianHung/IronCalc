@@ -2488,3 +2488,215 @@ fn verify_liveness_survives_overwrite_and_clear_of_a_volatile() {
         model.evaluate();
     }
 }
+
+// --- Relocated from base/tests/ ------------------------------------------
+// These pin engine invariants with plain public-API models and no fuzz
+// harness, so they belong in the lib suite: it is the suite the Verify job and
+// the nightly mutation run execute, and a `base/tests/*.rs` file is a separate
+// compile-and-link that neither of them ever sees.
+
+/// A link write is journaled like a value write, so the incremental delta names
+/// the cell. Killed by dropping the `Write::Link` arm of the journal drain.
+#[test]
+fn cell_link_write_is_reported_in_the_delta() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "hello");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+
+    model
+        .set_cell_link(
+            0,
+            1,
+            1,
+            crate::types::Link::External {
+                target: "https://ironcalc.com".to_string(),
+                tooltip: None,
+            },
+        )
+        .unwrap();
+    model.evaluate();
+    assert!(delta_names(&mut model, (1, 1)), "set_cell_link");
+
+    model.delete_cell_link(0, 1, 1).unwrap();
+    model.evaluate();
+    assert!(delta_names(&mut model, (1, 1)), "delete_cell_link");
+}
+
+/// A link can sit at a position with no cell -- a structural edit strands them
+/// there. Clearing a range that covers it removes the link, and that removal
+/// must reach the delta the same way (fuzz seed 18 at 200 steps). Killed by the
+/// same mutant, through the other caller.
+#[test]
+fn range_clear_reports_a_stranded_link_removal() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model
+        .set_cell_link(
+            0,
+            2,
+            2,
+            crate::types::Link::External {
+                target: "https://ironcalc.com".to_string(),
+                tooltip: None,
+            },
+        )
+        .unwrap();
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    assert_eq!(model.get_links_list(0).unwrap().len(), 1);
+
+    model
+        .range_clear_contents(&crate::expressions::types::Area {
+            sheet: 0,
+            row: 1,
+            column: 1,
+            width: 3,
+            height: 3,
+        })
+        .unwrap();
+    model.evaluate();
+    assert_eq!(
+        model.get_links_list(0).unwrap().len(),
+        0,
+        "link not removed"
+    );
+    assert!(delta_names(&mut model, (2, 2)), "stranded link removal");
+}
+
+/// Whether the incremental delta names `(row, column)` on sheet 0. `Everything`
+/// counts: it is the conservative answer, not a miss.
+fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
+    match model.take_changed_cells() {
+        ChangedSinceRead::Everything => true,
+        ChangedSinceRead::Cells(cells) => cells
+            .iter()
+            .any(|c| (c.sheet, c.row, c.column) == (0, row, column)),
+    }
+}
+
+/// Fuzz seed 7, minimized: a CSE anchor written before any evaluate, then moved
+/// by two column inserts and a column delete. A formula added afterwards that
+/// concatenates the displaced anchor with an untouched cell has to read the
+/// same thing in both modes -- the churn must not leave the incremental model
+/// pointing at a different cell than full's.
+#[test]
+fn cse_anchor_displaced_by_column_churn_reads_the_same_in_both_modes() {
+    let run = |mode: RecalcMode| -> String {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model
+            .set_user_array_formula(0, 18, 6, 1, 3, "=A1:A2*2")
+            .unwrap();
+        model.insert_columns(0, 3, 1).unwrap();
+        model.insert_columns(0, 6, 1).unwrap();
+        model.evaluate();
+        model.delete_columns(0, 4, 1).unwrap();
+        model.evaluate();
+        model._set("G11", "=LEN(G18&F14)");
+        model.evaluate();
+        model._get_text("G11")
+    };
+    assert_eq!(run(RecalcMode::Full), run(incremental_mode()));
+}
+
+/// A dynamic anchor whose last result was 1x1 has no spill cells and is not in
+/// the array index, so it behaves as a scalar and must stay on the incremental
+/// path. `=LET`, a called `LAMBDA`, `=INDEX` and `=IF` are everyday formulas:
+/// falling back to a full pass for them removes the feature silently, with no
+/// wrong value to notice.
+#[test]
+fn scalar_result_dynamic_anchors_stay_incremental() {
+    for (formula, expected) in [
+        ("=A1+1", "3"),
+        ("=LET(y,A1*2,y+1)", "5"),
+        ("=LAMBDA(x,x+A1)(3)", "5"),
+        ("=INDEX(A1:A3,1)", "2"),
+        ("=IF(A1>1,A2,A3)", "1"),
+    ] {
+        let mut model = new_empty_model().with_recalc_mode(RecalcMode::Incremental);
+        for cell in ["A1", "A2", "A3"] {
+            model._set(cell, "1");
+        }
+        model._set("B1", formula);
+        model.evaluate();
+        let _ = model.take_changed_cells();
+
+        model._set("A1", "2");
+        model.evaluate();
+        assert_eq!(
+            model._get_text("B1"),
+            expected,
+            "{formula} value after edit"
+        );
+        assert!(
+            matches!(model.take_changed_cells(), ChangedSinceRead::Cells(_)),
+            "{formula} fell back to a full pass"
+        );
+    }
+}
+
+/// The same anchor once its result grows past 1x1: the pass that creates the
+/// spill has to notice and fall back, and the one that shrinks it back has to
+/// retract the spill. Every step is compared against a full model fed the same
+/// edits, so "stays incremental" can never be bought with a wrong value.
+#[test]
+fn dynamic_anchor_growing_past_one_by_one_spills_like_full() {
+    let mut incremental = new_empty_model().with_recalc_mode(incremental_mode());
+    let mut full = new_empty_model().with_recalc_mode(RecalcMode::Full);
+    let both = |edits: &[(&str, &str)], incremental: &mut crate::Model, full: &mut crate::Model| {
+        for &(cell, value) in edits {
+            incremental._set(cell, value);
+            full._set(cell, value);
+        }
+        incremental.evaluate();
+        full.evaluate();
+        for cell in ["F1", "F2", "F3"] {
+            assert_eq!(
+                incremental._get_text(cell),
+                full._get_text(cell),
+                "{cell} diverged"
+            );
+        }
+    };
+    both(
+        &[
+            ("A1", "1"),
+            ("B1", "10"),
+            ("B2", "20"),
+            // Dynamic at parse (a range in one branch); 1x1 while A1=1.
+            ("F1", "=IF(A1=1,5,B1:B2)"),
+        ],
+        &mut incremental,
+        &mut full,
+    );
+    assert_eq!(incremental._get_text("F1"), "5");
+    // A precedent edit while the result is still 1x1.
+    both(&[("A1", "1")], &mut incremental, &mut full);
+    // Flip: the result becomes B1:B2 and must spill into F1:F2.
+    both(&[("A1", "2")], &mut incremental, &mut full);
+    assert_eq!(incremental._get_text("F1"), "10");
+    assert_eq!(incremental._get_text("F2"), "20");
+    // And back: the spill retracts.
+    both(&[("A1", "1")], &mut incremental, &mut full);
+    assert_eq!(incremental._get_text("F1"), "5");
+}
+
+/// A cycle whose only edges are range reads: each `COUNT` covers the other's
+/// cell. Nothing seeds the pair after the first pass, so an unrelated value
+/// edit elsewhere re-runs a pass whose stored `#CIRC!` values are artifacts of
+/// where the cycle was entered. Verify re-evaluates every stored formula value
+/// live, so it panics unless the pair is seeded as never-served. Killed by
+/// disabling the never-served seeding.
+#[cfg(feature = "recalc_verify")]
+#[test]
+fn verify_survives_a_cycle_closed_only_through_range_reads() {
+    let run = |mode: RecalcMode| {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model._set("A1", "=COUNT(B1:B2)");
+        model._set("B1", "=COUNT(A1:A2)");
+        model.evaluate();
+        model._set("E5", "1");
+        model.evaluate();
+        (model._get_text("A1"), model._get_text("B1"))
+    };
+    assert_eq!(run(RecalcMode::Verify), run(RecalcMode::Full));
+}

@@ -1,0 +1,14 @@
+/private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/5aa2a392eefddd68/out/serde-5aa2a392eefddd68.d: /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/24af376c59695fb9/out/private.rs
+
+/private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/5aa2a392eefddd68/out/libserde-5aa2a392eefddd68.rlib: /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/24af376c59695fb9/out/private.rs
+
+/private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/5aa2a392eefddd68/out/libserde-5aa2a392eefddd68.rmeta: /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/24af376c59695fb9/out/private.rs
+
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/brian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/24af376c59695fb9/out/private.rs:
+
+# env-dep:OUT_DIR=/private/tmp/fix90/base/fuzz/target/aarch64-apple-darwin/release/build/serde/24af376c59695fb9/out

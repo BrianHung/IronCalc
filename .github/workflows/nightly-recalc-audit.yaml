@@ -1,0 +1,53 @@
+# Nightly deep audit of the incremental-recalc engine. The per-push CI fuzz
+# (40x120) catches quick breaks; the bug classes this stack actually shipped
+# were only visible to long soaks and mutation testing, so those run here.
+name: nightly-recalc-audit
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # 09:17 UTC daily
+  workflow_dispatch:
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rotating-window differential soak (400 seeds x 400 steps)
+        # A new seed window every night; regressions overfit to a fixed
+        # window are exactly what rotation exists to catch.
+        run: |
+          START=$(( ( $(date +%s) / 86400 % 50 ) * 400 + 1 ))
+          echo "seed window: $START..$(( START + 399 ))"
+          FUZZ_START=$START FUZZ_SEEDS=400 FUZZ_STEPS=400 \
+            cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
+      - name: Verify-mode soak (oracle assertions on)
+        run: |
+          START=$(( ( $(date +%s) / 86400 % 50 ) * 400 + 1 ))
+          FUZZ_START=$START FUZZ_SEEDS=100 FUZZ_STEPS=300 \
+            cargo test -p ironcalc_base --features recalc_verify --test fuzz_differential -- --nocapture
+
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+      - name: Mutation-test the recalc engine against the Verify suite
+        # A surviving mutant means the oracles have a hole, not that the code
+        # is wrong. Triage survivors: equivalent -> document, else add the
+        # killing test. mutants.out is uploaded either way.
+        run: |
+          IRONCALC_RECALC=verify cargo mutants --no-shuffle -p ironcalc_base \
+            -f base/src/recalc/ -f base/src/dependency_graph.rs \
+            -f base/src/model/incremental.rs -f base/src/model/cse_guard.rs \
+            -- --features recalc_verify --lib
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-out
+          path: mutants.out
