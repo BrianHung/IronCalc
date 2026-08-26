@@ -1,10 +1,17 @@
-//! Incremental recalculation: observed-read graph, selective evaluation, and
-//! the changed-cell delta it exposes.
+//! The incremental scheduler: which cells a pass recomputes, in what order,
+//! and when it gives up and runs a full pass instead.
 //!
-//! Edges are the reads recorded while a formula evaluates. The incremental
-//! pass recomputes only the cells reachable from those that changed (plus
-//! formulas that read RAND/NOW/TODAY) and records which ones moved, so
-//! [`Model::take_changed_cells`] can report a precise delta.
+//! Edges are the reads recorded while a formula evaluates. A pass recomputes
+//! only the cells reachable from those that changed (plus the formulas that
+//! read RAND/NOW/TODAY), stopping wherever a recomputed value turns out
+//! unchanged. Everything it cannot model is answered by falling back to full,
+//! so the fallbacks here are the list of what incremental does not handle.
+//!
+//! What counts as unchanged, and the delta the pass records, are
+//! [`super::changed_cells`]. The array index it consults is
+//! [`super::array_index`], the two sets of untrustworthy stored values are
+//! [`super::unstable_cells`], and the oracle that checks the whole thing is
+//! `super::verify`.
 
 use std::collections::{HashMap, HashSet};
 
