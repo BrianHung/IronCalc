@@ -99,6 +99,70 @@ fn shift_coord(x: i32, boundary: i32, delta: i32) -> Option<i32> {
     }
 }
 
+/// One row/column insert (`delta > 0`) or delete (`delta < 0`) of `|delta|`
+/// lines at `boundary` on `sheet`, seen as a coordinate remapping.
+///
+/// Every coordinate the graph stores is rewritten through this one value, so
+/// the remapping rule has a single definition. `None` from any of its methods
+/// means the coordinate fell inside a deleted band: the entry holding it is
+/// dropped, and the next full pass rebuilds it.
+#[derive(Clone, Copy)]
+pub(crate) struct Displacement {
+    sheet: u32,
+    axis: Axis,
+    boundary: i32,
+    delta: i32,
+}
+
+impl Displacement {
+    fn coord(self, x: i32) -> Option<i32> {
+        shift_coord(x, self.boundary, self.delta)
+    }
+
+    /// The new location of `pos`, or `None` if it was deleted.
+    fn position(self, pos: Position) -> Option<Position> {
+        let (s, row, column) = pos;
+        if s != self.sheet {
+            return Some(pos);
+        }
+        match self.axis {
+            Axis::Row => self.coord(row).map(|r| (s, r, column)),
+            Axis::Column => self.coord(column).map(|c| (s, row, c)),
+        }
+    }
+
+    /// The new extent of `area`, or `None` if either edge was deleted.
+    /// A delete that would only *shrink* a tracked range never reaches here:
+    /// [`DependencyGraph::structural_edit`] rebuilds instead.
+    fn area(self, area: Area) -> Option<Area> {
+        let (s, row1, column1, row2, column2) = area;
+        if s != self.sheet {
+            return Some(area);
+        }
+        match self.axis {
+            Axis::Row => Some((s, self.coord(row1)?, column1, self.coord(row2)?, column2)),
+            Axis::Column => Some((s, row1, self.coord(column1)?, row2, self.coord(column2)?)),
+        }
+    }
+
+    /// The new form of a non-cell input. Only the position- and line-keyed
+    /// variants move; the rest are keyed by nothing this edit touches.
+    fn input(self, input: crate::recalc::Input) -> Option<crate::recalc::Input> {
+        use crate::recalc::Input;
+        match input {
+            Input::OwnCoord(p) => Some(Input::OwnCoord(self.position(p)?)),
+            Input::FormulaText(p) => Some(Input::FormulaText(self.position(p)?)),
+            Input::RowHidden(s, r) if s == self.sheet && matches!(self.axis, Axis::Row) => {
+                Some(Input::RowHidden(s, self.coord(r)?))
+            }
+            Input::ColHidden(s, c) if s == self.sheet && matches!(self.axis, Axis::Column) => {
+                Some(Input::ColHidden(s, self.coord(c)?))
+            }
+            other => Some(other),
+        }
+    }
+}
+
 pub(crate) fn shift_position(
     sheet: u32,
     axis: Axis,
@@ -106,36 +170,116 @@ pub(crate) fn shift_position(
     delta: i32,
     pos: Position,
 ) -> Option<Position> {
-    let (s, row, column) = pos;
-    if s != sheet {
-        return Some(pos);
+    Displacement {
+        sheet,
+        axis,
+        boundary,
+        delta,
     }
-    match axis {
-        Axis::Row => shift_coord(row, boundary, delta).map(|r| (s, r, column)),
-        Axis::Column => shift_coord(column, boundary, delta).map(|c| (s, row, c)),
+    .position(pos)
+}
+
+/// A stored index whose coordinates move with a structural edit.
+///
+/// Every positional field of [`DependencyGraph`] implements this, and
+/// [`DependencyGraph::shift`] applies it to each one by name. Adding an index
+/// and forgetting to shift it has already been a bug here (the banded range
+/// index shifted its areas but not its bands); the destructuring in `shift`
+/// turns the next occurrence into a compile error.
+trait Shift {
+    /// Rewrites every coordinate this index stores, dropping entries whose
+    /// coordinates were deleted.
+    fn shift(&mut self, displacement: Displacement);
+}
+
+impl Shift for HashMap<Position, HashSet<Position>> {
+    fn shift(&mut self, displacement: Displacement) {
+        let mut shifted: HashMap<Position, HashSet<Position>> = HashMap::new();
+        for (precedent, dependents) in self.drain() {
+            let Some(precedent) = displacement.position(precedent) else {
+                continue;
+            };
+            let dependents: HashSet<Position> = dependents
+                .into_iter()
+                .filter_map(|p| displacement.position(p))
+                .collect();
+            if !dependents.is_empty() {
+                shifted.entry(precedent).or_default().extend(dependents);
+            }
+        }
+        *self = shifted;
     }
 }
 
-fn shift_area(sheet: u32, axis: Axis, boundary: i32, delta: i32, area: Area) -> Option<Area> {
-    let (s, row1, column1, row2, column2) = area;
-    if s != sheet {
-        return Some(area);
+impl Shift for HashMap<u32, SheetRanges> {
+    fn shift(&mut self, displacement: Displacement) {
+        // Reinserting rebuilds `bands`/`wide` from the shifted areas, which is
+        // why those two need no shift of their own.
+        let mut shifted: HashMap<u32, SheetRanges> = HashMap::new();
+        for (area, dependents) in self
+            .drain()
+            .flat_map(|(_, sheet_ranges)| sheet_ranges.dependents)
+        {
+            let Some(area) = displacement.area(area) else {
+                continue;
+            };
+            for dependent in dependents
+                .into_iter()
+                .filter_map(|p| displacement.position(p))
+            {
+                shifted.entry(area.0).or_default().insert(area, dependent);
+            }
+        }
+        *self = shifted;
     }
-    match axis {
-        Axis::Row => Some((
-            s,
-            shift_coord(row1, boundary, delta)?,
-            column1,
-            shift_coord(row2, boundary, delta)?,
-            column2,
-        )),
-        Axis::Column => Some((
-            s,
-            row1,
-            shift_coord(column1, boundary, delta)?,
-            row2,
-            shift_coord(column2, boundary, delta)?,
-        )),
+}
+
+impl Shift for HashMap<crate::recalc::Input, HashSet<Position>> {
+    fn shift(&mut self, displacement: Displacement) {
+        *self = self
+            .drain()
+            .filter_map(|(input, deps)| {
+                let deps: HashSet<Position> = deps
+                    .into_iter()
+                    .filter_map(|p| displacement.position(p))
+                    .collect();
+                if deps.is_empty() {
+                    return None;
+                }
+                Some((displacement.input(input)?, deps))
+            })
+            .collect();
+    }
+}
+
+impl Shift for HashMap<Position, crate::recalc::ReadSet> {
+    fn shift(&mut self, displacement: Displacement) {
+        *self = self
+            .drain()
+            .filter_map(|(dependent, reads)| {
+                let dependent = displacement.position(dependent)?;
+                Some((
+                    dependent,
+                    crate::recalc::ReadSet {
+                        cells: reads
+                            .cells
+                            .into_iter()
+                            .filter_map(|p| displacement.position(p))
+                            .collect(),
+                        rects: reads
+                            .rects
+                            .into_iter()
+                            .filter_map(|area| displacement.area(area))
+                            .collect(),
+                        inputs: reads
+                            .inputs
+                            .into_iter()
+                            .filter_map(|input| displacement.input(input))
+                            .collect(),
+                    },
+                ))
+            })
+            .collect();
     }
 }
 
@@ -247,6 +391,17 @@ enum GraphState {
     MustRebuild,
 }
 
+impl Shift for GraphState {
+    fn shift(&mut self, displacement: Displacement) {
+        if let GraphState::Ready { dirty } = self {
+            *dirty = dirty
+                .drain()
+                .filter_map(|p| displacement.position(p))
+                .collect();
+        }
+    }
+}
+
 /// Shared storage for the role-typed sets on [`DependencyGraph`].
 #[derive(Clone, Default)]
 struct Positions(HashSet<Position>);
@@ -255,9 +410,15 @@ impl Positions {
     fn replace(&mut self, cells: HashSet<Position>) {
         self.0 = cells;
     }
+}
 
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
-        self.0 = self.0.drain().filter_map(shift_pos).collect();
+impl Shift for Positions {
+    fn shift(&mut self, displacement: Displacement) {
+        self.0 = self
+            .0
+            .drain()
+            .filter_map(|p| displacement.position(p))
+            .collect();
     }
 }
 
@@ -298,12 +459,16 @@ impl ArrayCells {
     fn replace(&mut self, cells: HashMap<Position, Position>) {
         self.0 = cells;
     }
+}
 
-    fn shift(&mut self, shift_pos: impl Fn(Position) -> Option<Position>) {
+impl Shift for ArrayCells {
+    fn shift(&mut self, displacement: Displacement) {
         self.0 = self
             .0
             .drain()
-            .filter_map(|(cell, anchor)| Some((shift_pos(cell)?, shift_pos(anchor)?)))
+            .filter_map(|(cell, anchor)| {
+                Some((displacement.position(cell)?, displacement.position(anchor)?))
+            })
             .collect();
     }
 }
@@ -696,7 +861,12 @@ impl DependencyGraph {
             return;
         }
         self.mark_structural_dependents(sheet, axis, boundary);
-        self.shift(sheet, axis, boundary, delta);
+        self.shift(Displacement {
+            sheet,
+            axis,
+            boundary,
+            delta,
+        });
         // Data cells in the shift band are not dirty. The cell-list delta cannot
         // name them, so `take_changed_cells` reports Everything after this pass.
         self.structural_unknown = true;
@@ -748,104 +918,36 @@ impl DependencyGraph {
             })
     }
 
-    /// Rewrites every stored position for a displacement at `boundary`. Edges
-    /// and ranges landing in a deleted band are dropped; the next full pass
-    /// rebuilds them.
-    fn shift(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
-        let shift_pos = |p| shift_position(sheet, axis, boundary, delta, p);
-        let mut shifted: HashMap<Position, HashSet<Position>> = HashMap::new();
-        for (precedent, dependents) in self.cell_dependents.drain() {
-            let Some(precedent) = shift_pos(precedent) else {
-                continue;
-            };
-            let dependents: HashSet<Position> =
-                dependents.into_iter().filter_map(shift_pos).collect();
-            if !dependents.is_empty() {
-                shifted.entry(precedent).or_default().extend(dependents);
-            }
-        }
-        self.cell_dependents = shifted;
-        let mut shifted_ranges: HashMap<u32, SheetRanges> = HashMap::new();
-        for (area, dependents) in self
-            .range_dependents
-            .drain()
-            .flat_map(|(_, sheet_ranges)| sheet_ranges.dependents)
-        {
-            let Some(area) = shift_area(sheet, axis, boundary, delta, area) else {
-                continue;
-            };
-            for dependent in dependents.into_iter().filter_map(shift_pos) {
-                shifted_ranges
-                    .entry(area.0)
-                    .or_default()
-                    .insert(area, dependent);
-            }
-        }
-        self.range_dependents = shifted_ranges;
-        if let GraphState::Ready { dirty } = &mut self.state {
-            *dirty = dirty.drain().filter_map(shift_pos).collect();
-        }
-        self.arrays.shift(shift_pos);
-        self.never_served.shift(shift_pos);
-        self.blocked_array_readers.shift(shift_pos);
-        let shift_input = |input: crate::recalc::Input| -> Option<crate::recalc::Input> {
-            match input {
-                crate::recalc::Input::OwnCoord(p) => {
-                    Some(crate::recalc::Input::OwnCoord(shift_pos(p)?))
-                }
-                crate::recalc::Input::FormulaText(p) => {
-                    Some(crate::recalc::Input::FormulaText(shift_pos(p)?))
-                }
-                crate::recalc::Input::RowHidden(s, r)
-                    if s == sheet && matches!(axis, Axis::Row) =>
-                {
-                    Some(crate::recalc::Input::RowHidden(
-                        s,
-                        shift_coord(r, boundary, delta)?,
-                    ))
-                }
-                crate::recalc::Input::ColHidden(s, c)
-                    if s == sheet && matches!(axis, Axis::Column) =>
-                {
-                    Some(crate::recalc::Input::ColHidden(
-                        s,
-                        shift_coord(c, boundary, delta)?,
-                    ))
-                }
-                other => Some(other),
-            }
-        };
-        let shifted_inputs: HashMap<crate::recalc::Input, HashSet<Position>> = self
-            .input_dependents
-            .drain()
-            .filter_map(|(input, deps)| {
-                let deps: HashSet<Position> = deps.into_iter().filter_map(shift_pos).collect();
-                if deps.is_empty() {
-                    return None;
-                }
-                Some((shift_input(input)?, deps))
-            })
-            .collect();
-        self.input_dependents = shifted_inputs;
-        self.precedents = self
-            .precedents
-            .drain()
-            .filter_map(|(dep, reads)| {
-                let dep = shift_pos(dep)?;
-                Some((
-                    dep,
-                    crate::recalc::ReadSet {
-                        cells: reads.cells.into_iter().filter_map(shift_pos).collect(),
-                        rects: reads
-                            .rects
-                            .into_iter()
-                            .filter_map(|area| shift_area(sheet, axis, boundary, delta, area))
-                            .collect(),
-                        inputs: reads.inputs.into_iter().filter_map(shift_input).collect(),
-                    },
-                ))
-            })
-            .collect();
+    /// Rewrites every stored position for `displacement`. Edges and ranges
+    /// landing in a deleted band are dropped; the next full pass rebuilds them.
+    ///
+    /// The destructuring is the mechanism, not a style choice: it names every
+    /// field of [`DependencyGraph`], so a new index cannot be added without
+    /// deciding here whether it shifts. Without it, an index that quietly keeps
+    /// pre-edit coordinates is a silent wrong answer; with it, it is a compile
+    /// error. Non-positional fields are bound to `_` with a reason.
+    fn shift(&mut self, displacement: Displacement) {
+        let Self {
+            cell_dependents,
+            range_dependents,
+            input_dependents,
+            precedents,
+            state,
+            arrays,
+            never_served,
+            blocked_array_readers,
+            // Facts about the pass that just ran. They hold no coordinates.
+            structural_unknown: _,
+            convergence_debt: _,
+        } = self;
+        cell_dependents.shift(displacement);
+        range_dependents.shift(displacement);
+        input_dependents.shift(displacement);
+        precedents.shift(displacement);
+        state.shift(displacement);
+        arrays.shift(displacement);
+        never_served.shift(displacement);
+        blocked_array_readers.shift(displacement);
     }
 
     /// Whether this pass follows an insert/delete whose delta cannot name every
