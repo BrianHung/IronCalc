@@ -182,10 +182,7 @@ impl Model<'_> {
             // Spills rewrite a rectangle; a one-cell scratch frame is not a
             // faithful re-eval of an array formula.
             if matches!(
-                self.workbook
-                    .worksheet(c.index)
-                    .ok()
-                    .and_then(|ws| ws.cell(c.row, c.column)),
+                self.cell_at(position),
                 Some(Cell::ArrayFormula { .. } | Cell::SpillCell { .. })
             ) {
                 continue;

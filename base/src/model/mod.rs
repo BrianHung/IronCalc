@@ -3258,6 +3258,15 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// The stored cell at `position`, if any. `None` for a blank cell and for
+    /// an out-of-range sheet alike: neither has content to read.
+    pub(crate) fn cell_at(&self, (sheet, row, column): Position) -> Option<&Cell> {
+        self.workbook
+            .worksheet(sheet)
+            .ok()
+            .and_then(|ws| ws.cell(row, column))
+    }
+
     /// Every stored cell in the workbook, in `(sheet, row, column)` order.
     ///
     /// `sheet_data` is a hash map, so the sort is what makes the order exist at
@@ -3450,6 +3459,8 @@ impl<'a> Model<'a> {
         // which at worst forces a conservative Full fallback that rebuilds the
         // index exactly.
         for ((sheet, row, column), was_formula) in first_was {
+            // Not `cell_at`: that borrows all of `self`, and the CSE-rect
+            // memo is invalidated below while this borrow is still live.
             let cell = self
                 .workbook
                 .worksheet(sheet)
@@ -3541,10 +3552,7 @@ impl<'a> Model<'a> {
                 return false;
             };
             let anchor_live = matches!(
-                self.workbook
-                    .worksheet(s)
-                    .ok()
-                    .and_then(|ws| ws.cell(r, c)),
+                self.cell_at((s, r, c)),
                 Some(Cell::ArrayFormula {
                     kind: ArrayKind::Cse,
                     r: (width, height),

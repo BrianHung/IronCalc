@@ -445,14 +445,6 @@ impl Model<'_> {
         self.graph.set_blocked_array_readers(readers);
     }
 
-    /// The stored cell at `position`, if any.
-    fn cell_at(&self, (sheet, row, column): Position) -> Option<&Cell> {
-        self.workbook
-            .worksheet(sheet)
-            .ok()
-            .and_then(|ws| ws.cell(row, column))
-    }
-
     /// A cell's observable signature: value, type (so an error and a same-text
     /// literal differ), and dynamic link (a HYPERLINK target can move under a
     /// fixed label).
@@ -590,12 +582,9 @@ impl Model<'_> {
     /// It is in the array index precisely because its extent is unknown, and it
     /// has no pre-pass value to compare against: every first evaluation would
     /// look like a mid-pass move.
-    fn is_unevaluated_array(&self, (sheet, row, column): Position) -> bool {
+    fn is_unevaluated_array(&self, position: Position) -> bool {
         matches!(
-            self.workbook
-                .worksheet(sheet)
-                .ok()
-                .and_then(|ws| ws.cell(row, column)),
+            self.cell_at(position),
             Some(Cell::ArrayFormula {
                 v: crate::types::FormulaValue::Unevaluated,
                 ..
@@ -622,12 +611,9 @@ impl Model<'_> {
 
     /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
     /// two-phase spill order even before they appear in `graph.arrays`.
-    fn is_dynamic_array_anchor(&self, (sheet, row, column): Position) -> bool {
+    fn is_dynamic_array_anchor(&self, position: Position) -> bool {
         matches!(
-            self.workbook
-                .worksheet(sheet)
-                .ok()
-                .and_then(|ws| ws.cell(row, column)),
+            self.cell_at(position),
             Some(Cell::ArrayFormula {
                 kind: ArrayKind::Dynamic,
                 ..
