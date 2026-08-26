@@ -36,6 +36,7 @@ use crate::{
     utils as common,
 };
 
+use crate::recalc::{Input, ReadSet, Write};
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 mod array_index;
@@ -279,7 +280,7 @@ pub struct Model<'a> {
     pub(crate) saw_circular_reference: bool,
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
-    pub(crate) read_stack: Vec<crate::recalc::ReadSet>,
+    pub(crate) read_stack: Vec<ReadSet>,
     /// What cells changed since the last [`Model::take_changed_cells`], backing
     /// the incremental delta API. See [`ChangedCells`].
     pub(crate) changed_cells: ChangedCells,
@@ -802,7 +803,7 @@ impl<'a> Model<'a> {
             }
             ArrayKind(s) => CalcResult::Array(s.to_owned()),
             DefinedNameKind((name, scope, _)) => {
-                self.trace_input(crate::recalc::Input::Name {
+                self.trace_input(Input::Name {
                     name: name.clone(),
                     scope: *scope,
                 });
@@ -1539,7 +1540,7 @@ impl<'a> Model<'a> {
         }
     }
 
-    pub(crate) fn trace_input(&mut self, input: crate::recalc::Input) {
+    pub(crate) fn trace_input(&mut self, input: Input) {
         if let Some(top) = self.read_stack.last_mut() {
             top.record_input(input);
         }
@@ -1551,25 +1552,25 @@ impl<'a> Model<'a> {
         &mut self,
         sheet: u32,
     ) -> Result<crate::worksheet::WorksheetDimension, String> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         Ok(self.workbook.worksheet(sheet)?.dimension())
     }
 
     /// Whether `row` is hidden. Records `RowHidden`.
     pub(crate) fn row_hidden(&mut self, sheet: u32, row: i32) -> Result<bool, String> {
-        self.trace_input(crate::recalc::Input::RowHidden(sheet, row));
+        self.trace_input(Input::RowHidden(sheet, row));
         self.workbook.worksheet(sheet)?.is_row_hidden(row)
     }
 
     /// Table definition by name. Records `SheetStructure`.
     pub(crate) fn table_by_name(&mut self, name: &str) -> Option<&crate::types::Table> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         self.workbook.tables.get(name)
     }
 
     /// All tables. Records `SheetStructure`.
     pub(crate) fn tables(&mut self) -> &std::collections::HashMap<String, crate::types::Table> {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         &self.workbook.tables
     }
 
@@ -1578,7 +1579,7 @@ impl<'a> Model<'a> {
     }
 
     pub(crate) fn sheet_count(&mut self) -> usize {
-        self.trace_input(crate::recalc::Input::SheetStructure);
+        self.trace_input(Input::SheetStructure);
         self.workbook.worksheets.len()
     }
 
@@ -1588,7 +1589,7 @@ impl<'a> Model<'a> {
 
     /// Formula index of a cell, if any. Records `FormulaText`.
     pub(crate) fn formula_index_at(&mut self, sheet: u32, row: i32, column: i32) -> Option<i32> {
-        self.trace_input(crate::recalc::Input::FormulaText((sheet, row, column)));
+        self.trace_input(Input::FormulaText((sheet, row, column)));
         self.workbook
             .worksheets
             .get(sheet as usize)?
@@ -1596,7 +1597,7 @@ impl<'a> Model<'a> {
             .get_formula()
     }
 
-    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: crate::recalc::ReadSet) {
+    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: ReadSet) {
         if !self.tracing() {
             return;
         }
@@ -1744,7 +1745,7 @@ impl<'a> Model<'a> {
                 // mark cell as being evaluated
                 self.cells.insert(key, CellState::Evaluating);
                 if self.tracing() {
-                    self.read_stack.push(crate::recalc::ReadSet::default());
+                    self.read_stack.push(ReadSet::default());
                 }
                 let (node, _static_result) =
                     &self.parsed_formulas[cell_reference.sheet as usize][f as usize];
@@ -2543,7 +2544,7 @@ impl<'a> Model<'a> {
         if result.is_ok() {
             self.workbook.worksheets[sheet as usize]
                 .write_log
-                .push(crate::recalc::Write::Cell {
+                .push(Write::Cell {
                     at: (0, row, column),
                     was_formula,
                     is_formula: false,
@@ -2706,7 +2707,7 @@ impl<'a> Model<'a> {
             let ws = self.workbook.worksheet_mut(sheet)?;
             ws.cell_clear_contents(row, column)?;
             if ws.links.remove(&(row, column)).is_some() {
-                ws.write_log.push(crate::recalc::Write::Link {
+                ws.write_log.push(Write::Link {
                     at: (sheet, row, column),
                 });
             }
@@ -3386,7 +3387,7 @@ impl<'a> Model<'a> {
             std::collections::HashMap::new();
         for (sheet, write) in writes {
             match write {
-                crate::recalc::Write::Cell {
+                Write::Cell {
                     at: (_, row, column),
                     was_formula,
                     is_formula,
@@ -3404,26 +3405,26 @@ impl<'a> Model<'a> {
                     // A number-to-number write does not change that.
                     if was_formula || is_formula {
                         let text_readers = self.graph.dependents_of_inputs(
-                            |i| matches!(i, crate::recalc::Input::FormulaText(q) if *q == p),
+                            |i| matches!(i, Input::FormulaText(q) if *q == p),
                         );
                         for r in text_readers {
                             self.graph.mark_dirty(r);
                         }
                     }
                 }
-                crate::recalc::Write::Link { at } => {
+                Write::Link { at } => {
                     self.graph.mark_dirty(at);
                     self.write_seeds.insert(at);
                 }
-                crate::recalc::Write::Hidden { row, column, .. } => {
+                Write::Hidden { row, column, .. } => {
                     let deps = if let Some(r) = row {
-                        self.graph.dependents_of_inputs(|i| {
-                            matches!(i, crate::recalc::Input::RowHidden(s, rr) if *s == sheet && *rr == r)
-                        })
+                        self.graph.dependents_of_inputs(
+                            |i| matches!(i, Input::RowHidden(s, rr) if *s == sheet && *rr == r),
+                        )
                     } else if let Some(c) = column {
-                        self.graph.dependents_of_inputs(|i| {
-                            matches!(i, crate::recalc::Input::ColHidden(s, cc) if *s == sheet && *cc == c)
-                        })
+                        self.graph.dependents_of_inputs(
+                            |i| matches!(i, Input::ColHidden(s, cc) if *s == sheet && *cc == c),
+                        )
                     } else {
                         std::collections::HashSet::new()
                     };
@@ -3701,7 +3702,7 @@ impl<'a> Model<'a> {
             .collect();
         for (row, column) in removed_links {
             ws.links.remove(&(row, column));
-            ws.write_log.push(crate::recalc::Write::Link {
+            ws.write_log.push(Write::Link {
                 at: (range.sheet, row, column),
             });
         }
@@ -3836,7 +3837,7 @@ impl<'a> Model<'a> {
             .collect();
         for (row, column) in removed_links {
             worksheet.links.remove(&(row, column));
-            worksheet.write_log.push(crate::recalc::Write::Link {
+            worksheet.write_log.push(Write::Link {
                 at: (area.sheet, row, column),
             });
         }

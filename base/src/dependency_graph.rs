@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::recalc::{Input, ReadSet};
+
 /// Strategy [`Model::evaluate`](crate::Model::evaluate) uses to recompute the
 /// workbook, chosen at construction via
 /// [`Model::with_recalc_mode`](crate::Model::with_recalc_mode).
@@ -149,8 +151,7 @@ impl Displacement {
 
     /// The new form of a non-cell input. Only the position- and line-keyed
     /// variants move; the rest are keyed by nothing this edit touches.
-    fn input(self, input: crate::recalc::Input) -> Option<crate::recalc::Input> {
-        use crate::recalc::Input;
+    fn input(self, input: Input) -> Option<Input> {
         match input {
             Input::OwnCoord(p) => Some(Input::OwnCoord(self.position(p)?)),
             Input::FormulaText(p) => Some(Input::FormulaText(self.position(p)?)),
@@ -242,7 +243,7 @@ impl Shift for HashMap<u32, SheetRanges> {
     }
 }
 
-impl Shift for HashMap<crate::recalc::Input, HashSet<Position>> {
+impl Shift for HashMap<Input, HashSet<Position>> {
     fn shift(&mut self, displacement: Displacement) {
         *self = self
             .drain()
@@ -260,7 +261,7 @@ impl Shift for HashMap<crate::recalc::Input, HashSet<Position>> {
     }
 }
 
-impl Shift for HashMap<Position, crate::recalc::ReadSet> {
+impl Shift for HashMap<Position, ReadSet> {
     fn shift(&mut self, displacement: Displacement) {
         *self = self
             .drain()
@@ -268,7 +269,7 @@ impl Shift for HashMap<Position, crate::recalc::ReadSet> {
                 let dependent = displacement.position(dependent)?;
                 Some((
                     dependent,
-                    crate::recalc::ReadSet {
+                    ReadSet {
                         cells: reads
                             .cells
                             .into_iter()
@@ -510,10 +511,10 @@ pub(crate) struct DependencyGraph {
     range_dependents: HashMap<u32, SheetRanges>,
     /// Non-cell inputs (hidden flags, own coordinates, clock, names…) to the
     /// formulas that read them.
-    input_dependents: HashMap<crate::recalc::Input, HashSet<Position>>,
+    input_dependents: HashMap<Input, HashSet<Position>>,
     /// What each formula read last time it evaluated; the reverse of the edge
     /// maps, so a formula's edges can be dropped in O(degree) before re-record.
-    precedents: HashMap<Position, crate::recalc::ReadSet>,
+    precedents: HashMap<Position, ReadSet>,
     state: GraphState,
     /// The array/spill footprint index. Public to the crate because the
     /// scheduler tests membership directly to decide the arrays->Full fallback;
@@ -579,7 +580,7 @@ impl DependencyGraph {
     }
 
     /// Records that `dependent` reads a non-cell input. Idempotent.
-    pub(crate) fn add_input_edge(&mut self, input: crate::recalc::Input, dependent: Position) {
+    pub(crate) fn add_input_edge(&mut self, input: Input, dependent: Position) {
         self.input_dependents
             .entry(input)
             .or_default()
@@ -587,10 +588,7 @@ impl DependencyGraph {
     }
 
     /// Formulas that read any input for which `pred` holds.
-    pub(crate) fn dependents_of_inputs(
-        &self,
-        pred: impl Fn(&crate::recalc::Input) -> bool,
-    ) -> HashSet<Position> {
+    pub(crate) fn dependents_of_inputs(&self, pred: impl Fn(&Input) -> bool) -> HashSet<Position> {
         self.input_dependents
             .iter()
             .filter(|(input, _)| pred(input))
@@ -601,17 +599,12 @@ impl DependencyGraph {
     /// RAND/NOW/TODAY and CELL/INFO: re-roll every pass and always-report.
     pub(crate) fn always_dirty_cells(&self) -> HashSet<Position> {
         self.dependents_of_inputs(|i| {
-            matches!(
-                i,
-                crate::recalc::Input::Random
-                    | crate::recalc::Input::Clock
-                    | crate::recalc::Input::Environment
-            )
+            matches!(i, Input::Random | Input::Clock | Input::Environment)
         })
     }
 
     /// Replaces `dependent`'s outgoing edges with the reads just observed.
-    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: crate::recalc::ReadSet) {
+    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: ReadSet) {
         self.remove_dependent(dependent);
         for &p in &reads.cells {
             if p != dependent {
@@ -659,11 +652,7 @@ impl DependencyGraph {
     /// `pred`. Test-only: it reads an edge the graph otherwise only walks
     /// backwards.
     #[cfg(test)]
-    pub(crate) fn cell_reads(
-        &self,
-        cell: Position,
-        pred: impl Fn(&crate::recalc::Input) -> bool,
-    ) -> bool {
+    pub(crate) fn cell_reads(&self, cell: Position, pred: impl Fn(&Input) -> bool) -> bool {
         self.precedents
             .get(&cell)
             .is_some_and(|reads| reads.inputs.iter().any(pred))
@@ -928,11 +917,8 @@ impl DependencyGraph {
         // Coordinates, formula text, and name resolutions can change without
         // any precedent value moving. Re-run everything that read them.
         extra.extend(self.dependents_of_inputs(|input| match input {
-            crate::recalc::Input::OwnCoord((s, ..))
-            | crate::recalc::Input::FormulaText((s, ..)) => *s == sheet,
-            crate::recalc::Input::Name { .. }
-            | crate::recalc::Input::SheetStructure
-            | crate::recalc::Input::Computed => true,
+            Input::OwnCoord((s, ..)) | Input::FormulaText((s, ..)) => *s == sheet,
+            Input::Name { .. } | Input::SheetStructure | Input::Computed => true,
             _ => false,
         }));
         if let GraphState::Ready { dirty } = &mut self.state {
