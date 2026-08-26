@@ -1615,11 +1615,12 @@ impl<'a> Model<'a> {
         // A cell inside an array's footprint holds a value its anchor wrote, so
         // reading it is a read of the anchor. Nothing else records that: the
         // anchor's writes into its footprint are evaluation writes, not edits.
-        // Taken from the array index rather than the cell, so a footprint
-        // position the anchor has not filled yet still names its anchor, and
-        // recorded before the scope gate below, which can serve the stored
-        // value without ever reaching the anchor. Without this edge a cycle
-        // closing through an array footprint is invisible to the graph.
+        // Taken from the array index rather than the cell, so a position whose
+        // spill cell a structural edit dropped still names its anchor until the
+        // next full pass refills it, and recorded before the scope gate below,
+        // which can serve the stored value without ever reaching the anchor.
+        // Without this edge a cycle closing through an array footprint is
+        // invisible to the graph.
         if !self.graph.arrays.is_empty() && self.tracing() {
             let position = (
                 cell_reference.sheet,
@@ -3624,7 +3625,7 @@ impl<'a> Model<'a> {
             // they never seed.
             let nodes = self.graph.nodes();
             let cone = self.graph.cycle_cone(&nodes);
-            self.refresh_unstable_cells(cone, &nodes);
+            self.graph.set_never_served(cone);
             self.refresh_blocked_array_readers();
             // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();

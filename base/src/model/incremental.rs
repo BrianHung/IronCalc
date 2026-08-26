@@ -52,17 +52,25 @@ pub(crate) enum EvalPass {
 }
 
 /// The positions `cell` contributes to the array index, each with the anchor
-/// that produces it: every position of a CSE anchor's declared rectangle (a
-/// structural delete can drop a member cell while the anchor still owns and
-/// refills the rectangle), a spill cell plus its anchor, and a dynamic anchor
-/// unless its last result was a plain 1x1 scalar. A scalar dynamic anchor
-/// (`=LET(..)`, a called LAMBDA, `=INDEX(..)`) stays out so it does not force
-/// a Full pass; a blocked anchor (stored
+/// that produces it: a CSE anchor, a spill cell plus its anchor, and a dynamic
+/// anchor unless its last result was a plain 1x1 scalar. A scalar dynamic
+/// anchor (`=LET(..)`, a called LAMBDA, `=INDEX(..)`) stays out so it does not
+/// force a Full pass; a blocked anchor (stored
 /// `#SPILL!`) stays in, because full-mode same-pass readers observe the live
 /// array's top-left value rather than the stored error, which incremental can
 /// only match through the full pass; an unevaluated anchor's extent is unknown,
 /// so it stays in too. Shared by the full-pass rebuild and the journal drain so
 /// both index by the same rules.
+///
+/// A member is indexed as the spill cell it is, not from its anchor's declared
+/// rectangle. The two only differ for a *ghost* member -- a declared position
+/// holding no spill cell -- and a ghost exists only between the write that
+/// created it (`set_user_array_formula`, or a structural edit that drops a
+/// member and resets the anchor to `Unevaluated`) and the anchor's next
+/// evaluation. That write dirties the anchor, the anchor is in this index, and
+/// a cone holding it goes to Full, which is the pass that refills the
+/// rectangle. So no gate ever reads a ghost's membership: indexing the
+/// rectangle only restated what the anchor's own entry already said.
 pub(super) fn array_footprint(
     cell: &Cell,
     sheet: u32,
@@ -74,14 +82,9 @@ pub(super) fn array_footprint(
     match cell {
         Cell::ArrayFormula {
             kind: ArrayKind::Cse,
-            r: (width, height),
             ..
         } => {
-            for r in row..row + height {
-                for c in col..col + width {
-                    out((sheet, r, c), anchor);
-                }
-            }
+            out(anchor, anchor);
         }
         Cell::ArrayFormula {
             kind: ArrayKind::Dynamic,
@@ -548,15 +551,15 @@ impl Model<'_> {
         // lost an edge re-evaluated inside it, so a cycle that formed or broke
         // is visible here and cells outside the cone cannot have changed
         // status. When the cone ordered cleanly and no `#CIRC!` was reported
-        // there is no cycle to find, and only the per-cell witnesses can add
-        // anything. A blocked anchor cannot appear here at all: it is in the
-        // array index, so a cone reaching one left through the Full fallback.
+        // there is no cycle to find. A blocked anchor cannot appear here at
+        // all: it is in the array index, so a cone reaching one left through
+        // the Full fallback.
         let cycle_cone = if cycle_was_known || self.saw_circular_reference {
             self.graph.cycle_cone(&affected)
         } else {
             HashSet::new()
         };
-        self.refresh_unstable_cells(cycle_cone, &affected);
+        self.graph.set_never_served(cycle_cone);
         // Record only the changed cells for `take_changed_cells`, unless a full
         // pass has already marked everything changed since the last read, or an
         // insert/delete moved cells the dirty cone does not name.
@@ -570,52 +573,6 @@ impl Model<'_> {
         self.evaluate_conditional_formatting();
         self.record_cf_changes(cf_before);
         EvalPass::Incremental
-    }
-
-    /// Rebuilds the set of cells whose last result was not a genuine function
-    /// value: `cone`, the cells the graph could not order, plus every cell in
-    /// `scope` that reported `#CIRC!`.
-    ///
-    /// The witness is not redundant with the cone. The cone is what the
-    /// recorded edges say; a stored `#CIRC!` is the evaluator's own report that
-    /// a cell re-entered itself, and it stands even if the read that closed the
-    /// loop left no edge behind.
-    pub(crate) fn refresh_unstable_cells(
-        &mut self,
-        mut cone: HashSet<Position>,
-        scope: &HashSet<Position>,
-    ) {
-        cone.extend(
-            scope
-                .iter()
-                .copied()
-                .filter(|&position| self.stores_circular_error(position)),
-        );
-        self.graph.set_never_served(cone);
-    }
-
-    /// Whether the cell at `position` reported `#CIRC!`: the evaluator's own
-    /// record that it was re-entered while it was still evaluating.
-    fn stores_circular_error(&self, position: Position) -> bool {
-        use crate::expressions::token::Error::CIRC;
-        use crate::types::{FormulaValue, SpillValue};
-        match self.cell_at(position) {
-            Some(
-                Cell::CellFormula {
-                    v: FormulaValue::Error { ei, .. },
-                    ..
-                }
-                | Cell::ArrayFormula {
-                    v: FormulaValue::Error { ei, .. },
-                    ..
-                },
-            ) => *ei == CIRC,
-            Some(Cell::SpillCell {
-                v: SpillValue::Error(ei),
-                ..
-            }) => *ei == CIRC,
-            _ => false,
-        }
     }
 
     /// Rebuilds the readers of blocked spill anchors: the cells a full pass

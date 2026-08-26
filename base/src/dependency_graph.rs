@@ -328,12 +328,12 @@ pub(crate) struct DependencyGraph {
     state: GraphState,
     pub(crate) arrays: ArrayCells,
     /// Cells whose last result was not a genuine function value, because they
-    /// sit on a dependency cycle, downstream of one, or reported `#CIRC!`. A
-    /// cycle has no fixed point, so what they hold is an artifact of where the
-    /// cycle was entered. Their stored value is never served: every pass seeds
-    /// them dirty, so they and their readers recompute, exactly as a full pass
-    /// re-derives them from scratch. Rebuilt after every pass by
-    /// `Model::refresh_unstable_cells`.
+    /// sit on a dependency cycle or downstream of one. A cycle has no fixed
+    /// point, so what they hold is an artifact of where the cycle was entered.
+    /// Their stored value is never served: every pass seeds them dirty, so they
+    /// and their readers recompute, exactly as a full pass re-derives them from
+    /// scratch. Rebuilt after every pass from [`Self::cycle_cone`], over the
+    /// whole graph after a full pass and over the cone after a selective one.
     never_served: Positions,
     /// Readers of a blocked spill anchor: the other cells whose last result was
     /// not a function of the store. The anchor holds `#SPILL!` but hands a

@@ -63,8 +63,8 @@ fn covfuzz_blocked_spill_subtotal_reader_diverges_after_unrelated_edit() {
 /// OFFSET reading it, with no arrays and no structural ops. Overwriting an
 /// unrelated formula cell with a number makes incremental serve 0.0 where a
 /// full pass keeps `#CIRC!`. The cycle class: killed by disabling never-served
-/// seeding, and by seeding it from the stored-`#CIRC!` witness alone without
-/// the unorderable cone.
+/// seeding, and by dropping the whole-graph rebuild of the set that each full
+/// pass does -- the only test in the suite that dies to either.
 #[test]
 fn covfuzz_count_offset_cycle_lost_after_number_overwrite() {
     assert_clean(&[

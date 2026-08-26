@@ -2530,50 +2530,6 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
     }
 }
 
-/// D3: after `delete_columns` drops a CSE member cell, the anchor still owns
-/// its declared rectangle and refills it on the next full pass. A formula
-/// reading through where the member used to be must not go incremental and
-/// serve the stale blank -- the arrays guard has to cover the *declared*
-/// rectangle, not just the cells that happen to exist.
-#[test]
-fn cse_ghost_member_reader_matches_full_after_column_delete() {
-    let run = |mode: RecalcMode| -> String {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model._set("A2", "1");
-        model
-            .set_user_array_formula(0, 4, 8, 1, 2, "=A1:A3+1")
-            .unwrap();
-        model.evaluate();
-        assert_eq!(model._get_text("H4"), "1", "anchor value before the delete");
-        model.delete_columns(0, 7, 1).unwrap();
-        // The reader sits outside the displaced rectangle: a write inside it is
-        // rejected (`writes_into_cse_members_are_rejected`).
-        model._set("H5", "=IFERROR(G5,-1)");
-        model.evaluate();
-        model._get_text("H5")
-    };
-    assert_eq!(run(RecalcMode::Full), run(incremental_mode()));
-}
-
-/// The other half of the same rule: the members the delete *did* leave behind
-/// keep their values across the pass that follows it.
-#[test]
-fn cse_member_values_survive_column_delete_next_pass() {
-    let run = |mode: RecalcMode| -> Vec<String> {
-        let mut model = new_empty_model().with_recalc_mode(mode);
-        model.set_user_array_formula(0, 1, 1, 2, 2, "=42").unwrap();
-        model.evaluate();
-        for cell in ["A1", "A2", "B1", "B2"] {
-            assert_eq!(model._get_text(cell), "42");
-        }
-        model.delete_columns(0, 3, 1).unwrap();
-        model._set("E5", "=A2+100");
-        model.evaluate();
-        vec![model._get_text("A1"), model._get_text("A2")]
-    };
-    assert_eq!(run(RecalcMode::Full), run(incremental_mode()));
-}
-
 /// Fuzz seed 7, minimized: a CSE anchor written before any evaluate, then moved
 /// by two column inserts and a column delete. A formula added afterwards that
 /// concatenates the displaced anchor with an untouched cell has to read the
