@@ -145,14 +145,22 @@ Four things can enforce a clause, and only two of them owe a test:
 | I1.9 Reading an array-footprint position records an edge on its anchor, taken from the array index and recorded ahead of the scope gate | test | `cse_footprint_cycle_stored_value_diverges_from_a_live_reeval` (dies only under `recalc_verify`) |
 | I1.10 A formula commits its reads on both exits | construction | — |
 
-Two reads in `functions/` still bypass I1, and are named rather than hidden:
-`EvalCtx::untraced_sheet_dimension` (the financial whole-column clip does not
-record `SheetStructure`) and `EvalCtx::untraced_defined_name` (`SHEET(a_name)`
-does not record `Name`). The grep-gate that used to stand for I1.2 saw neither
-— it matched one line at a time, and it only knew the name `workbook`. Closing
-them changes which cells an incremental pass recomputes, so each wants its own
-witness and its own commit. Until then, the clause they break is I1.2, and the
-count of exceptions is two, greppable by name.
+Two reads in `functions/` used to bypass the recording accessors — the
+financial whole-column clip and `SHEET(a_defined_name)`. Both now go through
+`EvalCtx::sheet_dimension` and `EvalCtx::defined_name`, so I1.2 has no
+exceptions. Neither was ever a wrong answer, and neither has a witness,
+because neither *can* be one:
+
+- the clip's declared rect is recorded whole when the `RangeKind` node is
+  evaluated, before any function clips its walk (I1.3), so the rect already
+  covers every write that could move the result. Delete that `trace_rect` and
+  a whole-column `NPV` does go stale — which is I1.3's witness, not a new one.
+- every defined-name edit calls `invalidate_graph`, so a name reader is never
+  served from the store at all.
+
+A test asserting either would pass before the fix as readily as after. They
+are routed for one reason only: so that "every accessor on `EvalCtx` records"
+has no exceptions to remember.
 
 ### I2 — every user mutation journals; the pause is guard-scoped
 

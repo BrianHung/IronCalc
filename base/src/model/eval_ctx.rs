@@ -5,7 +5,8 @@
 //! `arithmetic.rs` — take `EvalCtx` rather than `Model`, so the only workbook
 //! state they can reach is what is re-exposed below, and everything re-exposed
 //! below either routes through the tracer (`trace_cell` via `evaluate_cell`,
-//! `trace_rect`, `trace_input`) or is not a read of cell state at all.
+//! `trace_rect`, `trace_input`) or is not a read of cell state at all. There
+//! are no exceptions: every accessor here that reads cell state records it.
 //!
 //! This is what makes invariant I1 — every read a formula evaluation performs
 //! is recorded — constructional rather than conventional. `self.workbook` does
@@ -127,44 +128,18 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
             .map(|(node, _)| node)
     }
 
-    // -- known I1 gaps, named so they cannot hide --------------------------
-    //
-    // Two call sites in `functions/` read workbook state without recording an
-    // Input. Both predate this type: the grep-gate that used to stand in for
-    // I1 scanned for `self.workbook` on a single line and saw neither — one is
-    // split across lines by rustfmt, the other reads a different field. They
-    // are re-exposed here unchanged rather than fixed, so that turning
-    // `functions/` into `EvalCtx` is a pure refactor; the fix is a follow-up
-    // with its own witness test, because recording an Input *changes* which
-    // cells an incremental pass recomputes.
-    //
-    // Note what the type buys even while the gaps remain: they are now two
-    // named methods a reviewer can grep for and count, instead of an open set
-    // of ways to reach the workbook.
-
-    /// Used dimension of `sheet`, **without** recording `SheetStructure`.
-    ///
-    /// Used by the financial whole-column clip (`NPV(rate, A:A)` and friends).
-    /// A structural edit that moves the used range should re-run those
-    /// formulas and currently does not. Prefer [`Self::sheet_dimension`].
-    pub(crate) fn untraced_sheet_dimension(
+    /// A parsed defined name by exact (scope, lowercased name) key. Records
+    /// `Name`, so `SHEET(a_name)` reads it the same way evaluating a
+    /// `DefinedNameKind` node does.
+    pub(crate) fn defined_name(
         &mut self,
-        sheet: u32,
-    ) -> Result<WorksheetDimension, String> {
-        Ok(self.0.workbook.worksheet(sheet)?.dimension())
-    }
-
-    /// A parsed defined name by exact (scope, lowercased name) key,
-    /// **without** recording `Input::Name`.
-    ///
-    /// Used by `SHEET(a_defined_name)`. Redefining the name should re-run the
-    /// formula and currently does not. Prefer the recording path taken by
-    /// `Node::DefinedNameKind` evaluation.
-    pub(crate) fn untraced_defined_name(
-        &self,
         scope: Option<u32>,
         lowercased_name: &str,
     ) -> Option<&crate::model::ParsedDefinedName> {
+        self.0.trace_input(Input::Name {
+            name: lowercased_name.to_string(),
+            scope,
+        });
         self.0
             .parsed_defined_names
             .get(&(scope, lowercased_name.to_string()))

@@ -272,8 +272,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         match &args[0] {
             Node::DefinedNameKind((name, scope, _)) => {
                 // Let's see if it is a defined name
-                if let Some(defined_name) = self.untraced_defined_name(*scope, &name.to_lowercase())
-                {
+                if let Some(defined_name) = self.defined_name(*scope, &name.to_lowercase()) {
                     match defined_name {
                         ParsedDefinedName::CellReference(reference) => {
                             return CalcResult::Number(reference.sheet as f64 + 1.0)

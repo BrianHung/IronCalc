@@ -234,7 +234,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                 let mut column2 = right.column;
                 if row1 == 1 && row2 == LAST_ROW {
                     row2 = self
-                        .untraced_sheet_dimension(sheet)
+                        .sheet_dimension(sheet)
                         .map_err(|_| {
                             CalcResult::new_error(
                                 Error::ERROR,
@@ -246,7 +246,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                 }
                 if column1 == 1 && column2 == LAST_COLUMN {
                     column2 = self
-                        .untraced_sheet_dimension(sheet)
+                        .sheet_dimension(sheet)
                         .map_err(|_| {
                             CalcResult::new_error(
                                 Error::ERROR,
