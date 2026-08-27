@@ -3,7 +3,6 @@ use regex::Regex;
 #[cfg(target_arch = "wasm32")]
 use regex_lite::Regex;
 
-use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
     calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
@@ -220,32 +219,10 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                 }
 
                 // Honour entire-column/row references: clamp to worksheet used range.
-                let mut row2 = right.row;
-                let mut col2 = right.column;
-                if left.row == 1 && row2 == LAST_ROW {
-                    row2 = match self.sheet_dimension(left.sheet) {
-                        Ok(s) => s.max_row,
-                        Err(_) => {
-                            return CalcResult::new_error(
-                                Error::ERROR,
-                                cell,
-                                format!("Invalid worksheet index: '{}'", left.sheet),
-                            )
-                        }
-                    };
-                }
-                if left.column == 1 && col2 == LAST_COLUMN {
-                    col2 = match self.sheet_dimension(left.sheet) {
-                        Ok(s) => s.max_column,
-                        Err(_) => {
-                            return CalcResult::new_error(
-                                Error::ERROR,
-                                cell,
-                                format!("Invalid worksheet index: '{}'", left.sheet),
-                            )
-                        }
-                    };
-                }
+                let (_, row2, _, col2) = match self.clip_range_to_used(&left, &right, cell) {
+                    Ok(bounds) => bounds,
+                    Err(e) => return e,
+                };
                 let right = CellReferenceIndex {
                     sheet: right.sheet,
                     row: row2,
