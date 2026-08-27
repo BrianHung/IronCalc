@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 
-use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
@@ -70,8 +69,10 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                         ));
                     }
 
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
+                    let (row1, row2, column1, column2) =
+                        self.clip_range_to_used(&left, &right, cell)?;
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -164,8 +165,10 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                         ));
                     }
 
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
+                    let (row1, row2, column1, column2) =
+                        self.clip_range_to_used(&left, &right, cell)?;
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -241,8 +244,13 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -351,8 +359,13 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             if let CalcResult::Number(_) = self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -387,8 +400,13 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -487,35 +505,11 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                         );
                     }
 
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
 
                     for row in row1..=row2 {
                         for column in column1..=column2 {
@@ -871,10 +865,12 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     }
                 }
             },
-            CalcResult::Range { left, right } => match self.values_from_range(left, right) {
-                Ok(v) => v,
-                Err(e) => return e,
-            },
+            CalcResult::Range { left, right } => {
+                match self.values_from_range_clipped(left, right, cell) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                }
+            }
             CalcResult::Boolean(value) => {
                 if !matches!(args[0], Node::ReferenceKind { .. }) {
                     vec![Some(if value { 1.0 } else { 0.0 })]
@@ -971,10 +967,12 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     }
                 }
             },
-            CalcResult::Range { left, right } => match self.values_from_range(left, right) {
-                Ok(v) => v,
-                Err(e) => return e,
-            },
+            CalcResult::Range { left, right } => {
+                match self.values_from_range_clipped(left, right, cell) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                }
+            }
             CalcResult::Boolean(value) => {
                 if !matches!(args[0], Node::ReferenceKind { .. }) {
                     vec![Some(if value { 1.0 } else { 0.0 })]

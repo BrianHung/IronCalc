@@ -2,7 +2,7 @@ use chrono::Datelike;
 
 use crate::{
     calc_result::CalcResult,
-    constants::{LAST_COLUMN, LAST_ROW, MAXIMUM_DATE_SERIAL_NUMBER, MINIMUM_DATE_SERIAL_NUMBER},
+    constants::{MAXIMUM_DATE_SERIAL_NUMBER, MINIMUM_DATE_SERIAL_NUMBER},
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
@@ -228,34 +228,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     ));
                 }
                 let sheet = left.sheet;
-                let row1 = left.row;
-                let mut row2 = right.row;
-                let column1 = left.column;
-                let mut column2 = right.column;
-                if row1 == 1 && row2 == LAST_ROW {
-                    row2 = self
-                        .sheet_dimension(sheet)
-                        .map_err(|_| {
-                            CalcResult::new_error(
-                                Error::ERROR,
-                                *cell,
-                                format!("Invalid worksheet index: '{sheet}'"),
-                            )
-                        })?
-                        .max_row;
-                }
-                if column1 == 1 && column2 == LAST_COLUMN {
-                    column2 = self
-                        .sheet_dimension(sheet)
-                        .map_err(|_| {
-                            CalcResult::new_error(
-                                Error::ERROR,
-                                *cell,
-                                format!("Invalid worksheet index: '{sheet}'"),
-                            )
-                        })?
-                        .max_column;
-                }
+                let (row1, row2, column1, column2) =
+                    self.clip_range_to_used(&left, &right, *cell)?;
                 for row in row1..=row2 {
                     for column in column1..=column2 {
                         let cell_ref = CellReferenceIndex { sheet, row, column };
@@ -822,34 +796,11 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
                     for row in row1..row2 + 1 {
                         for column in column1..(column2 + 1) {
                             match self.evaluate_cell(CellReferenceIndex {

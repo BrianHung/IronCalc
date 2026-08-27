@@ -864,8 +864,10 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                         "Ranges are in different sheets".to_string(),
                     ));
                 }
-                for row in left.row..=right.row {
-                    for column in left.column..=right.column {
+                let (row1, row2, column1, column2) =
+                    self.clip_range_to_used(&left, &right, cell)?;
+                for row in row1..=row2 {
+                    for column in column1..=column2 {
                         match self.evaluate_cell(CellReferenceIndex {
                             sheet: left.sheet,
                             row,

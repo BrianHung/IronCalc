@@ -17,7 +17,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         for arg in args {
             match self.evaluate_node_in_context(arg, cell) {
                 CalcResult::Range { left, right } => {
-                    let v = self.values_from_range(left, right)?;
+                    let v = self.values_from_range_clipped(left, right, cell)?;
                     values.extend(v.into_iter().flatten())
                 }
                 CalcResult::Array(arr) => match self.values_from_array(arr) {
