@@ -1,7 +1,8 @@
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 // ─── Matrix helpers ──────────────────────────────────────────────────────────
@@ -112,7 +113,7 @@ struct RegressionData {
     p: usize,
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Collect Y and X data for regression functions.
     /// `x_arg`: None → auto-generate x = 1, 2, ..., n
     fn collect_regression_data(
@@ -460,7 +461,7 @@ fn build_output_array(reg: RegResult, stats: bool) -> CalcResult {
 
 // ─── Public function implementations ─────────────────────────────────────────
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // LINEST(known_y's, [known_x's], [const], [stats])
     pub(crate) fn fn_linest(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if !(1..=4).contains(&args.len()) {
@@ -664,7 +665,7 @@ impl<'a> Model<'a> {
 /// Evaluate an optional boolean argument, returning `default` when the argument
 /// is absent or an empty cell/arg (which Excel treats as omitted).
 fn eval_optional_bool(
-    model: &mut Model<'_>,
+    model: &mut EvalCtx<'_, '_>,
     arg: Option<&Node>,
     cell: CellReferenceIndex,
     default: bool,

@@ -6,7 +6,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     functions::Function,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 /// Excel has a complicated way of filtering + hidden rows
@@ -32,7 +32,7 @@ pub enum CellTableStatus {
     Filtered,
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_table_for_cell(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
         let Ok(sheet_name) = self.worksheet_name(sheet_index) else {
             return false;
@@ -74,7 +74,9 @@ impl<'a> Model<'a> {
     fn cell_is_subtotal(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
         match self.formula_index_at(sheet_index, row, column) {
             Some(f) => {
-                let node = &self.parsed_formulas[sheet_index as usize][f as usize].0;
+                let Some(node) = self.parsed_formula_node(sheet_index, f) else {
+                    return false;
+                };
                 matches!(
                     node,
                     Node::FunctionKind {

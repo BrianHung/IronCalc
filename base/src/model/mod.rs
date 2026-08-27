@@ -42,6 +42,7 @@ use crate::{cf_types::CfCellResult, tz::Tz};
 mod array_index;
 mod changed_cells;
 pub(crate) mod cse_guard;
+pub(crate) mod eval_ctx;
 // `pub(crate)` for `EvalPass`: the benches report whether a pass stayed
 // incremental or fell back, which is otherwise indistinguishable from outside.
 pub(crate) mod incremental;
@@ -490,7 +491,9 @@ impl<'a> Model<'a> {
                 Some(stripped)
             }
         } else if let Some(stripped) = value.strip_prefix(['+', '-']) {
-            if stripped.is_empty() || self.cast_number(stripped).is_some() {
+            if stripped.is_empty()
+                || crate::cast::cast_number_with_locale(stripped, self.locale).is_some()
+            {
                 None
             } else {
                 Some(value)
@@ -651,8 +654,12 @@ impl<'a> Model<'a> {
         use Node::*;
         match node {
             OpSumKind { kind, left, right } => match kind {
-                OpSum::Add => self.handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 + f2)),
-                OpSum::Minus => self.handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 - f2)),
+                OpSum::Add => self
+                    .eval_ctx()
+                    .handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 + f2)),
+                OpSum::Minus => self
+                    .eval_ctx()
+                    .handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 - f2)),
             },
             NumberKind(value) => CalcResult::Number(*value),
             StringKind(value) => CalcResult::String(value.replace(r#""""#, r#"""#)),
@@ -746,23 +753,30 @@ impl<'a> Model<'a> {
                     },
                 }
             }
-            OpConcatenateKind { left, right } => self.handle_concatenate(left, right, cell),
+            OpConcatenateKind { left, right } => {
+                self.eval_ctx().handle_concatenate(left, right, cell)
+            }
             OpProductKind { kind, left, right } => match kind {
                 OpProduct::Times => {
-                    self.handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 * f2))
+                    self.eval_ctx()
+                        .handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1 * f2))
                 }
-                OpProduct::Divide => self.handle_arithmetic(left, right, cell, &|f1, f2| {
-                    if f2 == 0.0 {
-                        Err(Error::DIV)
-                    } else {
-                        Ok(f1 / f2)
-                    }
-                }),
+                OpProduct::Divide => {
+                    self.eval_ctx()
+                        .handle_arithmetic(left, right, cell, &|f1, f2| {
+                            if f2 == 0.0 {
+                                Err(Error::DIV)
+                            } else {
+                                Ok(f1 / f2)
+                            }
+                        })
+                }
             },
             OpPowerKind { left, right } => {
-                self.handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1.powf(f2)))
+                self.eval_ctx()
+                    .handle_arithmetic(left, right, cell, &|f1, f2| Ok(f1.powf(f2)))
             }
-            FunctionKind { kind, args } => self.evaluate_function(kind, args, cell),
+            FunctionKind { kind, args } => self.eval_ctx().evaluate_function(kind, args, cell),
             NamedFunctionKind { name, args, id } => {
                 let lambda_result = if let Some(var_id) = id {
                     // Bound by LET — look up the variable, which should be a Lambda.
@@ -801,7 +815,7 @@ impl<'a> Model<'a> {
                         }
                     }
                 };
-                self.call_lambda(lambda_result, args, cell)
+                self.eval_ctx().call_lambda(lambda_result, args, cell)
             }
             ArrayKind(s) => CalcResult::Array(s.to_owned()),
             DefinedNameKind((name, scope, _)) => {
@@ -866,9 +880,11 @@ impl<'a> Model<'a> {
                 cell,
                 format!("Variable name \"{name}\" not found."),
             ),
-            CompareKind { kind, left, right } => self.handle_comparison(left, right, cell, kind),
+            CompareKind { kind, left, right } => {
+                self.eval_ctx().handle_comparison(left, right, cell, kind)
+            }
             UnaryKind { kind, right } => {
-                let r = match self.get_number(right, cell) {
+                let r = match self.eval_ctx().get_number(right, cell) {
                     Ok(f) => f,
                     Err(s) => {
                         return s;
@@ -960,7 +976,7 @@ impl<'a> Model<'a> {
             }
             LambdaCallKind { lambda, args } => {
                 let lambda_result = self.evaluate_node_in_context(lambda, cell);
-                self.call_lambda(lambda_result, args, cell)
+                self.eval_ctx().call_lambda(lambda_result, args, cell)
             }
         }
     }

@@ -5,10 +5,10 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_not(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.get_boolean(&args[0], cell) {
