@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
 
-use crate::dependency_graph::{Axis, DependencyGraph, Position, RecalcMode};
+use crate::dependency_graph::{Axis, DependencyGraph, Position, RecalcMode, SheetLayout};
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -3386,6 +3386,7 @@ impl<'a> Model<'a> {
     /// Recomputes the workbook using the configured [`RecalcMode`] (`Full` by
     /// default).
     pub fn evaluate(&mut self) {
+        self.check_sheet_layout();
         self.drain_write_journal();
         let mode = self.recalc_mode;
         // Storing a formula result is not a user edit, so the journal stays
@@ -3522,6 +3523,44 @@ impl<'a> Model<'a> {
     pub(crate) fn invalidate_graph(&mut self) {
         self.graph.force_full();
         self.cse_rects = None;
+    }
+
+    /// The sheet numbering the workbook is currently in. See [`SheetLayout`].
+    fn sheet_layout(&self) -> SheetLayout {
+        SheetLayout::from_sheet_ids(self.workbook.worksheets.iter().map(|w| w.sheet_id))
+    }
+
+    /// Catches a sheet added, deleted, duplicated or moved without the
+    /// `invalidate_graph` that renumbering the workbook obliges.
+    ///
+    /// Every `Position` the graph stores names its sheet by *index*, so sheet
+    /// CRUD shifts all of them onto the wrong sheet at once, and the old index
+    /// still names a live sheet — the corruption is silent, and reads it
+    /// poisons range edges, array anchors and the never-served set alike. The
+    /// existing defence is a convention (`reset_parsed_structures` calls
+    /// `invalidate_graph`), and this is the check that the convention held.
+    ///
+    /// Run at every pass entry, which is where it is both cheap and sufficient:
+    /// the graph's positions are only *read* during a pass, so a numbering that
+    /// still agrees here agrees everywhere it matters, and the comparison is over
+    /// a handful of sheet ids rather than anything per-cell.
+    ///
+    /// Debug and test builds panic, because this was silent wrongness before and
+    /// the edit that skipped the invalidation is the only place worth reporting.
+    /// Release builds fall back to a full pass — which is what the missing
+    /// `invalidate_graph` should have asked for — so a shipped workbook is
+    /// recalculated correctly rather than served stale edges.
+    fn check_sheet_layout(&mut self) {
+        if self.graph.sync_sheet_layout(self.sheet_layout()) {
+            debug_assert!(
+                false,
+                "sheet structure changed without invalidate_graph: the dependency graph still \
+                 holds positions numbered against the previous sheet order, so every stored \
+                 coordinate now names the wrong sheet. Sheet add/delete/duplicate/move must go \
+                 through reset_parsed_structures (or call invalidate_graph directly)."
+            );
+            self.cse_rects = None;
+        }
     }
 
     /// Whether `(row, column)` lies inside some CSE array's declared rectangle
