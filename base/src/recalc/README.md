@@ -89,6 +89,8 @@ The layout is *derived* rather than counted, which is the whole point of the sha
 
 This detects staleness; it does not make it unrepresentable. The stronger move — keying positions by stable sheet ids so renumbering stops existing — was assessed and deferred; see Follow-ups.
 
+**Kill-proof.** The mutant is `delete_sheet` reparsing but not invalidating: the sheet arm of I8.1 with the convention removed and nothing else touched. Before this mechanism it survived the entire lib suite in every mode — 2342 passed, 0 failed under `IRONCALC_RECALC=incremental`. The only thing that caught it was the differential fuzzer, on seed 1, minimized to six operations (two `AddSheet`s, a write to the third sheet, evaluate, `DeleteSheet`, evaluate) and surfacing as a missing delta entry for a cell on a sheet that no longer exists. With the mechanism it dies deterministically in thirteen tests across `test_sheets`, `test_add_delete_sheets`, `test_move_sheet`, `test_defined_names`, `test_duplicate_sheet` and `test_sheets_undo_redo`, each reporting the edit that skipped the invalidation rather than a divergence at whatever cell happened to read the stale edge first. That is the clause moving out of the **oracle** column: not a new witness, a mechanism that makes hunting for one unnecessary.
+
 ## Convergence debt
 
 A full pass is not a fixed point. Its phase 1 spills arrays and its phase 2 evaluates the rest, so a formula can read a spill member before the anchor refills it, and a cycle that runs through an array member resolves against that member's stored value. Full recalculation heals those readers on its *next* pass, because it rescans everything unconditionally.
@@ -282,6 +284,8 @@ Kept as a second path, reason recorded. `mark_structural_dependents`' four extra
 A caution learned closing these, worth more than any single item: **fuzz silence is not evidence a mechanism is dead.** Deleting all ten of the then-open mechanisms at once left the lib suite green in all three modes and the differential fuzzer green too — including the two `trace_rect` calls that a twelve-line test proves are load-bearing. A mechanism may be deleted for a *structural* subsumption argument, never for the oracle failing to notice.
 
 Two clauses that no deterministic test covers are squarely in the **oracle** column rather than here: the row/column-move fallback (I8.8) dies on seed 6 in four operations, and the `debt_over_pending_edits` branch of I6 dies on seed 1 in nine.
+
+There used to be a third: the *sheets* arm of I8.1. Its two listed witnesses cover the defined-name and locale call sites, and nothing in the lib suite exercised sheet CRUD under incremental at all — a `delete_sheet` that skipped `invalidate_graph` was caught only by the fuzzer, on seed 1. It is closed now, and not by adding the witness: `SheetLayout` (I8.10) makes the omission a checked condition at pass entry, which is the better outcome, because the shape a witness would have had to guess at is exactly what the stale-coordinate class makes unguessable — *which* cell reads the wrong sheet first depends on the workbook, not on the bug.
 
 Closing a gap means adding the minimal witness, not a shape; a shape that dies to no mutant is not a witness.
 
