@@ -4,8 +4,9 @@
 //! Edges are the reads recorded while a formula evaluates. A pass recomputes
 //! only the cells reachable from those that changed (plus the formulas that
 //! read RAND/NOW/TODAY), stopping wherever a recomputed value turns out
-//! unchanged. Everything it cannot model is answered by falling back to full,
-//! so the fallbacks here are the list of what incremental does not handle.
+//! unchanged -- but only when `cone_is_plain` says the cone is one a selective
+//! pass can model. The default is the full pass, so what this module does not
+//! handle costs time rather than correctness.
 //!
 //! What counts as unchanged, and the delta the pass records, are
 //! [`super::changed_cells`]. The array index it consults is
@@ -220,55 +221,22 @@ impl Model<'_> {
     /// Whether `cone` is **plain**: every cell in it is one a selective pass can
     /// model, so this pass may be selective. Anything else runs the full pass.
     ///
-    /// This is the whole of the scheduling decision that is about the cone. It
-    /// is a whitelist on purpose. The engine used to carry a blacklist of
-    /// hazards -- arrays in the cone, a dynamic anchor among the seeds, a
-    /// blocked reader, an evaluation write into a footprint found out about
-    /// afterwards -- and a hazard nobody had thought of was a wrong value.
-    /// Inverted, a case nobody thought of fails the predicate and costs a full
-    /// pass: a missed case degrades to slow rather than to wrong.
+    /// This is the whole of the scheduling decision that is about the cone, and
+    /// it is a whitelist on purpose: the engine used to carry a blacklist of
+    /// hazards, where one nobody had thought of was a wrong value, and inverted
+    /// one nobody thought of is only a full pass.
     ///
-    /// The clauses, each with its own witness:
-    ///
-    /// - **P1, no array in the cone.** No cone member is in `graph.arrays`,
-    ///   which holds every anchor and every spill member. Spilling needs the
+    /// - **P1** no cone member is in the array index (I8.5). Spilling needs the
     ///   full pass's two-phase ordering, and a spill member's value is its
-    ///   anchor's output rather than its own. This is the index rather than the
-    ///   cells, deliberately: it is what sees a *ghost* member -- a declared
-    ///   footprint position whose spill cell a structural edit dropped, where
-    ///   the live cell no longer says "array" but the anchor still owns the
-    ///   position. It cannot miss a live one either, because
-    ///   [`array_footprint`](super::array_index::array_footprint) is the single
-    ///   definition of what goes in and every array cell reaches it: a
-    ///   user-written one through the journal drain, an evaluation-written one
-    ///   through the `wrote_array_cells` redo below, and a moved one through
-    ///   `shift`. A dynamic anchor whose last result was a plain 1x1 scalar is
-    ///   not in the index and is plain: `=LET(..)`, a called `LAMBDA`,
-    ///   `=INDEX(..)` are everyday formulas and must not cost a full pass.
-    ///   Whether such an anchor's result is *still* 1x1 is not a property of any
-    ///   stored state, so that one hazard survives the inversion as a post-pass
-    ///   redo on `wrote_array_cells`; see `evaluate_selective`.
-    /// - **P2, trust.** No cone member is a reader of a blocked spill anchor.
-    ///   Such a reader's stored value came from the live array's top-left, not
-    ///   from the anchor's stored `#SPILL!`, so recomputing it here would read
-    ///   the error instead. Only the full pass evaluates the anchor live.
+    ///   anchor's output rather than its own.
+    /// - **P2** no cone member is a reader of a blocked spill anchor (I8.4). Its
+    ///   stored value came from the live array's top-left, not from the anchor's
+    ///   stored `#SPILL!`, and only the full pass evaluates the anchor live.
     ///
-    /// Three clauses the predicate deliberately does **not** have, each because
-    /// it would cost a case incremental wins today and buys no correctness:
-    ///
-    /// - *No cone member in `never_served`.* A known cycle is seeded dirty on
-    ///   every pass, so it is in every cone, so this clause would send every
-    ///   workbook containing one cycle to a full pass forever. The cone with a
-    ///   cycle in it is handled instead by walking it in Full's own two phases
-    ///   (`recompute_all`), which is what decides where `#CIRC!` lands.
-    /// - *No structural op this drain.* Row and column *moves* already force the
-    ///   graph to rebuild, which the readiness gate above catches. Inserts and
-    ///   deletes shift the indices in place and stay selective by design, and
-    ///   the clause would throw that away.
-    /// - *No volatile beyond the seeded always-dirty.* There is no such thing to
-    ///   exclude: volatility is a recorded `Input`, every reader of one is in
-    ///   `always_dirty_cells`, and this pass seeded all of them.
-    ///
+    /// Why P1 reads the index rather than the cells, why three further clauses
+    /// are deliberately absent, and the one hazard no pre-pass predicate can see
+    /// (the `wrote_array_cells` redo in `evaluate_selective`) are in
+    /// `base/src/recalc/README.md`, "When a pass is allowed to be selective".
     /// The fanout budget is checked separately and before this, because it is a
     /// performance choice rather than a statement about what can be modelled --
     /// which is why `Verify` disables that one and not this.
@@ -416,40 +384,22 @@ impl Model<'_> {
     /// Runs the two-phase pass until the workbook settles, and leaves a newly
     /// observed array anchor dirty.
     ///
-    /// **One two-phase pass is not a fixed point.** Phase 1 spills the arrays
-    /// and phase 2 evaluates the rest, but `evaluate_cell` recurses, so a
+    /// One two-phase pass is not a fixed point: `evaluate_cell` recurses, so a
     /// phase-2 formula can be pulled in early and read a footprint position
-    /// before its anchor refills it -- after a row move, a delete, or a first
-    /// spill. That reader then holds a value the same inputs would never
-    /// produce again, and only a *further* whole-workbook pass repairs it.
+    /// before its anchor refills it, and only a further whole-workbook pass
+    /// repairs that reader. `evaluate` runs the further pass itself, so what it
+    /// returns is the settled state rather than the first approximation of it.
     ///
-    /// A single `evaluate` therefore has to run that further pass itself.
-    /// Excel settles fully per recalculation, so this is what a caller expects,
-    /// and it is what makes `evaluate` a function of the workbook's inputs
-    /// rather than of how many times it has been called. The engine used to
-    /// reproduce the unsettled window instead: the full pass recorded
-    /// *convergence debt* and the next pass healed it, so `Incremental` matched
-    /// `Full`'s accident pass for pass. Both sides of that agreement are gone;
-    /// see "Intentional divergences" in `base/src/recalc/README.md`.
+    /// The re-run condition is the footprint comparison alone, with no test for
+    /// whether anything read the moved position: edges exist only in the tracing
+    /// modes, so a reader test would settle `Incremental` and leave `Full` one
+    /// healing window behind, which is the one divergence this engine may not
+    /// have. An extra pass over a footprint nothing read recomputes the same
+    /// values and stops.
     ///
-    /// The re-run condition is the one the debt flag used to defer: this pass
-    /// moved an array footprint. The reader half of the old condition is not
-    /// repeated here, deliberately -- edges only exist in the tracing modes, so
-    /// a reader test would settle `Incremental` and leave `Full` unsettled,
-    /// which is the one divergence this engine may not have. An extra pass over
-    /// a footprint nothing read recomputes the same values and stops.
-    ///
-    /// **Termination.** Iteration *k*+1 runs the same deterministic pass over
-    /// iteration *k*'s output, and stops as soon as the footprint it was handed
-    /// comes back unchanged. A re-run only fires when the previous pass wrote a
-    /// *different* value into a footprint position, which happens only where an
-    /// anchor's inputs or extent moved under it; the anchor's own inputs are
-    /// settled by the pass that moved them, so each re-run resolves one layer
-    /// of anchor-reads-anchor and the cascade is bounded by the depth of that
-    /// chain. Two passes is what every shape found so far needs. The bound
-    /// below is the belt: a workbook that has not settled by then is reported,
-    /// and in release the pass stops rather than spins -- identically in both
-    /// modes, so the modes still agree.
+    /// Termination, the bound, and the exact extent of the divergence from
+    /// pre-engine behaviour are in `base/src/recalc/README.md`, "One `evaluate`
+    /// settles" and "Intentional divergences".
     fn evaluate_full_to_fixed_point(&mut self) {
         let arrays_at_entry = self.graph.arrays.snapshot();
         let mut settled = false;
