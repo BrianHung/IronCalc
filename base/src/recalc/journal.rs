@@ -71,6 +71,15 @@ impl WriteLog {
         }
     }
 
+    /// Whether a [`Self::push`] would keep the entry.
+    ///
+    /// Only for callers whose *argument* costs something to build: a paused log
+    /// discards the entry either way, so asking first is an optimization, never
+    /// a second definition of what gets journaled. [`Self::push`] still checks.
+    pub(crate) fn is_recording(&self) -> bool {
+        self.recording
+    }
+
     /// Takes every entry recorded since the last drain, leaving the log empty.
     /// In push order, which the consumer relies on to read a batch's pre-batch
     /// formula-ness off its first entry.

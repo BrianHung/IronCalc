@@ -9,7 +9,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     formatter::dates::from_excel_date,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 mod accrint;
@@ -200,7 +200,7 @@ fn compute_ppmt(
 // All, except for rate are easily solvable in terms of the others.
 // In these formulas the payment (pmt) is normally negative
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_array_of_numbers_generic(
         &mut self,
         arg: &Node,
@@ -234,8 +234,7 @@ impl<'a> Model<'a> {
                 let mut column2 = right.column;
                 if row1 == 1 && row2 == LAST_ROW {
                     row2 = self
-                        .workbook
-                        .worksheet(sheet)
+                        .sheet_dimension(sheet)
                         .map_err(|_| {
                             CalcResult::new_error(
                                 Error::ERROR,
@@ -243,13 +242,11 @@ impl<'a> Model<'a> {
                                 format!("Invalid worksheet index: '{sheet}'"),
                             )
                         })?
-                        .dimension()
                         .max_row;
                 }
                 if column1 == 1 && column2 == LAST_COLUMN {
                     column2 = self
-                        .workbook
-                        .worksheet(sheet)
+                        .sheet_dimension(sheet)
                         .map_err(|_| {
                             CalcResult::new_error(
                                 Error::ERROR,
@@ -257,7 +254,6 @@ impl<'a> Model<'a> {
                                 format!("Invalid worksheet index: '{sheet}'"),
                             )
                         })?
-                        .dimension()
                         .max_column;
                 }
                 for row in row1..=row2 {

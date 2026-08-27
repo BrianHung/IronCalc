@@ -14,7 +14,7 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 // ── IF array helpers ──────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ fn array_node_to_bool(node: &ArrayNode) -> Result<bool, ArrayNode> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_true(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.is_empty() {
             CalcResult::Boolean(true)

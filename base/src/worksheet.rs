@@ -71,23 +71,44 @@ impl Worksheet {
             return Err("Incorrect row or column".to_string());
         }
 
-        let old = self.cell(row, column).cloned();
-        let was_formula = old.as_ref().and_then(Cell::get_formula).is_some();
-        let old_formula = old.as_ref().and_then(Cell::get_formula);
-        let new_formula = new_cell.get_formula();
-        // True when the write installs a formula the cell did not already have,
-        // as opposed to the same formula written back with different spill
-        // geometry or style. The drain's only use for it is re-running
-        // FORMULATEXT and ISFORMULA readers, which observe formula-ness rather
-        // than the value; `was_formula` is what drops the outgoing edges.
-        let is_formula = new_formula.is_some() && old_formula != new_formula;
-        let changed = old.as_ref() != Some(&new_cell);
-        // A style on a blank cell materializes EmptyCell; that is not a
-        // value or formula edit and must not dirty the graph. The public API
-        // does not distinguish a missing cell from an EmptyCell (both read as
-        // value None, type Number), so nothing observable moves.
-        let style_only = matches!(new_cell, Cell::EmptyCell { .. })
-            && matches!(old.as_ref(), None | Some(Cell::EmptyCell { .. }));
+        // The journal entry is decided against the cell being overwritten, so it
+        // is built here, before the write, and pushed after it.
+        //
+        // Only built when the log would keep it. Evaluation stores every formula
+        // result through this method with recording paused, so on a full pass
+        // this is one branch per formula cell instead of a lookup, a whole-`Cell`
+        // comparison and two `get_formula` calls whose answers are then thrown
+        // away. `push` still checks: this decides nothing about what is
+        // journaled, only when the argument is worth computing.
+        let entry = if self.write_log.is_recording() {
+            let old = self.cell(row, column);
+            let was_formula = old.and_then(Cell::get_formula).is_some();
+            let old_formula = old.and_then(Cell::get_formula);
+            let new_formula = new_cell.get_formula();
+            // True when the write installs a formula the cell did not already
+            // have, as opposed to the same formula written back with different
+            // spill geometry or style. The drain's only use for it is re-running
+            // FORMULATEXT and ISFORMULA readers, which observe formula-ness
+            // rather than the value; `was_formula` is what drops the outgoing
+            // edges.
+            let is_formula = new_formula.is_some() && old_formula != new_formula;
+            let changed = old != Some(&new_cell);
+            // A style on a blank cell materializes EmptyCell; that is not a
+            // value or formula edit and must not dirty the graph. The public API
+            // does not distinguish a missing cell from an EmptyCell (both read as
+            // value None, type Number), so nothing observable moves.
+            let style_only = matches!(new_cell, Cell::EmptyCell { .. })
+                && matches!(old, None | Some(Cell::EmptyCell { .. }));
+            // A no-op write (identical cell) is not an edit.
+            (changed && !style_only).then_some(Write::Cell {
+                row,
+                column,
+                was_formula,
+                is_formula,
+            })
+        } else {
+            None
+        };
 
         match self.sheet_data.get_mut(&row) {
             Some(column_data) => {
@@ -99,15 +120,8 @@ impl Worksheet {
                 self.sheet_data.insert(row, column_data);
             }
         }
-        // Evaluation stores a formula result with recording off, so it never
-        // reaches this push. A no-op write (identical cell) is not an edit.
-        if changed && !style_only {
-            self.write_log.push(Write::Cell {
-                row,
-                column,
-                was_formula,
-                is_formula,
-            });
+        if let Some(entry) = entry {
+            self.write_log.push(entry);
         }
         Ok(())
     }
