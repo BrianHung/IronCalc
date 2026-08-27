@@ -9,7 +9,7 @@ use crate::{
         utils::number_to_column,
     },
     get_all_timezones,
-    model::{Model, ParsedDefinedName},
+    model::{eval_ctx::EvalCtx, ParsedDefinedName},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,7 +22,7 @@ fn get_system() -> String {
     "browser".to_string()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_isnumber(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.evaluate_node_in_context(&args[0], cell) {
@@ -181,11 +181,6 @@ impl<'a> Model<'a> {
                     message: "argument must be a reference to a single cell".to_string(),
                 };
             }
-            self.trace_input(crate::recalc::Input::FormulaText((
-                left.sheet,
-                left.row,
-                left.column,
-            )));
             let is_formula = if let Ok(f) = self.get_cell_formula(left.sheet, left.row, left.column)
             {
                 f.is_some()
@@ -277,9 +272,7 @@ impl<'a> Model<'a> {
         match &args[0] {
             Node::DefinedNameKind((name, scope, _)) => {
                 // Let's see if it is a defined name
-                if let Some(defined_name) = self
-                    .parsed_defined_names
-                    .get(&(*scope, name.to_lowercase()))
+                if let Some(defined_name) = self.untraced_defined_name(*scope, &name.to_lowercase())
                 {
                     match defined_name {
                         ParsedDefinedName::CellReference(reference) => {

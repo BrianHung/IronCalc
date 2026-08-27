@@ -1,9 +1,10 @@
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // FORECAST(x, known_y's, known_x's) / FORECAST.LINEAR(x, known_y's, known_x's)
     // Returns the predicted y value for a given x using simple linear regression.
     fn fn_forecast_linear_impl(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {

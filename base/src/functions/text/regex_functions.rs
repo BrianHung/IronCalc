@@ -10,10 +10,10 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// REGEXEXTRACT(text, regular_expression, [return_all])
     ///
     /// Returns the first substring of `text` that matches `regular_expression`.

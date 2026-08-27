@@ -1,11 +1,12 @@
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::percentile::percentile_inc_impl;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // QUARTILE.INC(array, quart) — quart: 0..4 → 0%, 25%, 50%, 75%, 100%
     pub(crate) fn fn_quartile_inc(
         &mut self,

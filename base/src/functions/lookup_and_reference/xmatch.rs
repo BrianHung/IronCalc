@@ -6,7 +6,8 @@ use regex_lite::Regex;
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 use crate::functions::{
@@ -134,7 +135,7 @@ fn linear_search(
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// `=XMATCH(lookup_value, lookup_array, [match_mode], [search_mode])`
     ///
     /// Returns the relative position (1-based) of an item in a row or column array.

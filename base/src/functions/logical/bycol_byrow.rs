@@ -6,7 +6,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     functions::math_and_trigonometry::array_size::check_array_size,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn calc_result_to_array_node(result: CalcResult) -> ArrayNode {
@@ -20,7 +20,7 @@ fn calc_result_to_array_node(result: CalcResult) -> ArrayNode {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// `=BYCOL(array, lambda)`
     ///
     /// Applies a LAMBDA to each column of `array`, returning a 1-row array of results.

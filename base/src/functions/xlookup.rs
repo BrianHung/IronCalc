@@ -1,7 +1,8 @@
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::{
@@ -118,7 +119,7 @@ fn linear_search(
     None
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// The XLOOKUP function searches a range or an array, and then returns the item corresponding
     /// to the first match it finds. If no match exists, then XLOOKUP can return the closest (approximate) match.
     /// =XLOOKUP(lookup_value, lookup_array, return_array, [if_not_found], [match_mode], [search_mode])

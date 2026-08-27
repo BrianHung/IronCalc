@@ -1,7 +1,7 @@
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::ArrayNode, parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn array_node_to_calc_result(node: &ArrayNode, cell: CellReferenceIndex) -> CalcResult {
@@ -29,7 +29,7 @@ fn calc_result_to_array_node(result: CalcResult) -> ArrayNode {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// `=MAP(array1, [array2, ...], lambda)`
     ///
     /// Applies the lambda element-wise across one or more arrays of equal dimensions.

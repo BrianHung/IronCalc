@@ -7,7 +7,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     functions::util::compare_values,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 /// Maps an output index `i` back to the source array index, applying Excel's
@@ -37,7 +37,7 @@ fn to_f64(value: &ArrayNode) -> Result<f64, Error> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Applies `op` element‐wise for arrays/numbers.
     pub(crate) fn handle_arithmetic(
         &mut self,

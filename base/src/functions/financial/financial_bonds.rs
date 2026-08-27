@@ -5,7 +5,7 @@ use crate::{
     constants::EXCEL_DATE_BASE,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::dates::from_excel_date,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 // ============================================================
@@ -687,7 +687,7 @@ where
 // ============================================================
 
 fn parse_coupon_args(
-    model: &mut Model<'_>,
+    model: &mut EvalCtx<'_, '_>,
     args: &[Node],
     cell: CellReferenceIndex,
 ) -> Result<(i64, i64, u32, u32), CalcResult> {
@@ -731,7 +731,7 @@ fn parse_coupon_args(
 // Model implementations
 // ============================================================
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // DURATION(settlement, maturity, coupon, yld, frequency, [basis])
     pub(crate) fn fn_duration(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let arg_count = args.len();

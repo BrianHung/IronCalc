@@ -5,12 +5,12 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::r#let::assign_variable_ids;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Evaluates the body of a named lambda with the given call-site argument nodes.
     /// Optional parameters not covered by call_args receive EmptyArg.
     pub(crate) fn call_lambda(
@@ -20,7 +20,7 @@ impl<'a> Model<'a> {
         cell: CellReferenceIndex,
     ) -> CalcResult {
         let (parameters, body) = match lambda_result {
-            CalcResult::Lambda(id) => match self.lambdas.get(&id) {
+            CalcResult::Lambda(id) => match self.lambda(id) {
                 Some(l) => l.clone(),
                 None => {
                     return CalcResult::new_error(
@@ -53,13 +53,13 @@ impl<'a> Model<'a> {
             } else {
                 CalcResult::EmptyArg
             };
-            self.variable_stack.insert(*raw_id, val);
+            self.set_variable(*raw_id, val);
         }
 
         let result = self.evaluate_node_in_context(&patched_body, cell);
 
         for raw_id in bound_ids {
-            self.variable_stack.remove(&raw_id);
+            self.clear_variable(raw_id);
         }
 
         result
@@ -74,7 +74,7 @@ impl<'a> Model<'a> {
         cell: CellReferenceIndex,
     ) -> CalcResult {
         let (parameters, body) = match lambda_result {
-            CalcResult::Lambda(id) => match self.lambdas.get(&id) {
+            CalcResult::Lambda(id) => match self.lambda(id) {
                 Some(l) => l.clone(),
                 None => {
                     return CalcResult::new_error(
@@ -107,13 +107,13 @@ impl<'a> Model<'a> {
             } else {
                 CalcResult::EmptyArg
             };
-            self.variable_stack.insert(*raw_id, val);
+            self.set_variable(*raw_id, val);
         }
 
         let result = self.evaluate_node_in_context(&patched_body, cell);
 
         for raw_id in bound_ids {
-            self.variable_stack.remove(&raw_id);
+            self.clear_variable(raw_id);
         }
 
         result
@@ -149,7 +149,7 @@ impl<'a> Model<'a> {
             .collect();
 
         let id = self.get_next_lambda_id();
-        self.lambdas.insert(id, (parameters, body));
+        self.set_lambda(id, (parameters, body));
         CalcResult::Lambda(id)
     }
 }

@@ -5,14 +5,14 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn log_factorial(n: u64) -> f64 {
     (1..=n).map(|i| (i as f64).ln()).sum()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── MULTINOMIAL ───────────────────────────────────────────────────────────
 
     /// `=MULTINOMIAL(number1, [number2], ...)`
