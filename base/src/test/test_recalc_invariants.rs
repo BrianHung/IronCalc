@@ -53,6 +53,33 @@ fn graph_is_only_notified_by_the_journal() {
     );
 }
 
+/// Every stored `Position` names its sheet by index into `workbook.worksheets`,
+/// so adding, deleting, duplicating or moving a sheet renumbers all of them at
+/// once — onto sheets that still exist, which is what makes it silent. The
+/// numbering is checked once per pass, at the top of `Model::evaluate`, against
+/// the sheet-id sequence the graph last ran under.
+///
+/// The unit test `sheet_renumbering_under_a_ready_graph_is_detected` covers what
+/// the check decides. What a unit test cannot say is that the check is still
+/// *reached*: delete the one call and the mechanism is dead with every suite
+/// still green, because a correct program never trips it. That positive
+/// obligation is this gate.
+#[test]
+fn every_pass_checks_the_sheet_layout() {
+    let model = include_str!("../model/mod.rs");
+    let body = fn_items(model)
+        .into_iter()
+        .find(|(name, _)| name == "evaluate")
+        .map(|(_, body)| body)
+        .expect("Model::evaluate must exist in model/mod.rs (update this gate if renamed)");
+    assert!(
+        body.contains("check_sheet_layout("),
+        "Model::evaluate must check the sheet layout before running a pass, or \
+         a sheet add/delete/duplicate/move that skipped invalidate_graph walks \
+         edges whose every coordinate names the wrong sheet"
+    );
+}
+
 /// Extracts every `fn` item in `src` as (name, body-with-signature), by brace
 /// counting from each `fn` line. Good enough for grep-gates: a parse drift
 /// fails the calling assertion loudly rather than passing silently.

@@ -35,7 +35,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 |---|---|
 | `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges, so `SUM(A:A)` stays one edge. |
-| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. |
+| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
 | `model/incremental.rs` | The scheduler: `evaluate_selective`, the fallback decisions, and the frontier and whole-cone recomputes. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
 | `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
 | `model/array_index.rs` | `array_footprint` and the walks that maintain the array/spill index and the formula count between full passes. |
@@ -70,7 +70,7 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 
 ## When the engine falls back to a full pass
 
-- The graph is not ready: the first evaluation, or after sheet add/delete/rename, defined-name changes, locale, or timezone.
+- The graph is not ready: the first evaluation, or after sheet add/delete/rename, defined-name changes, locale, or timezone. For the sheet edits this is no longer only a convention — see "Sheet numbering" below.
 - Row or column moves. Inserts and deletes stay incremental; the graph shifts positions and edges in place.
 - A dynamic array or spill anchor is among the affected cells. Spills need the full pass's two-phase ordering.
 - The edit reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one, and Verify disables it.
@@ -78,6 +78,18 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - The pass itself wrote into an array footprint: a spill landed, a CSE range filled, or an anchor stored `#SPILL!`. This one is only visible after the fact — the pre-pass check above catches an anchor that is *already* in the array index, and this catches an affected cell that turns into one while the pass runs (a scalar-result anchor whose result grows, say). The pass is redone as full, so spill dependents are not missed and `collect_array_cells` rebuilds the index exactly rather than patching it.
 - The cone reaches a reader of a blocked spill anchor.
 - The previous pass left convergence debt (see below).
+
+## Sheet numbering
+
+A `Position`'s sheet component is an *index* into `workbook.worksheets`. Adding, deleting, duplicating or moving a sheet renumbers the sheets after it, so every position the graph stores — edges, precedents, array anchors, `never_served`, the dirty set — moves onto a different sheet at once. Nothing about the stale coordinate looks wrong: the old index still names a live sheet, so a walk over the stale graph returns confident wrong answers rather than failing.
+
+What stops that is `reset_parsed_structures` calling `invalidate_graph`, which every sheet edit routes through. That is a convention, and `SheetLayout` is the check that it held. The graph records the **sheet-id sequence** it last ran under; `Model::evaluate` compares it against the workbook's current one before dispatching a pass. A sheet id is allocated once at creation and never reassigned, so the sequence changes under exactly the edits that renumber: an insert or delete resizes it, a move permutes it, and a rename — which changes formula text, not numbering — leaves it alone and is covered by the reparse's own invalidation.
+
+The layout is *derived* rather than counted, which is the whole point of the shape. There is no generation to bump, so there is no bump for a new sheet-CRUD path to forget: such a path is checked the moment it lands, without its author knowing this mechanism exists. A mismatch against a graph that still holds edges is a `debug_assert` failure — the corruption was silent before, and the edit that skipped the invalidation is the only place worth reporting — and in release builds the graph is downgraded to `MustRebuild`, so a shipped workbook gets the correct full pass the missing `invalidate_graph` should have asked for instead of being served stale edges.
+
+This detects staleness; it does not make it unrepresentable. The stronger move — keying positions by stable sheet ids so renumbering stops existing — was assessed and deferred; see Follow-ups.
+
+**Kill-proof.** The mutant is `delete_sheet` reparsing but not invalidating: the sheet arm of I8.1 with the convention removed and nothing else touched. Before this mechanism it survived the entire lib suite in every mode — 2342 passed, 0 failed under `IRONCALC_RECALC=incremental`. The only thing that caught it was the differential fuzzer, on seed 1, minimized to six operations (two `AddSheet`s, a write to the third sheet, evaluate, `DeleteSheet`, evaluate) and surfacing as a missing delta entry for a cell on a sheet that no longer exists. With the mechanism it dies deterministically in thirteen tests across `test_sheets`, `test_add_delete_sheets`, `test_move_sheet`, `test_defined_names`, `test_duplicate_sheet` and `test_sheets_undo_redo`, each reporting the edit that skipped the invalidation rather than a divergence at whatever cell happened to read the stale edge first. That is the clause moving out of the **oracle** column: not a new witness, a mechanism that makes hunting for one unnecessary.
 
 ## Convergence debt
 
@@ -257,6 +269,7 @@ The extension paid for itself before it ever guarded anything: it turned the 40�
 | I8.7 An evaluation write changed an array footprint | test | `new_cycle_around_an_anchor_places_circ_like_full_phase_one` |
 | I8.8 A row, column or cell move forces the next pass full | oracle | the differential fuzzer catches it in four operations on seed 6; no deterministic test does |
 | I8.9 A state machine that cannot be half-ready: `mark_dirty` on a `MustRebuild` graph is ignored | test | `graph_state_is_explicit` |
+| I8.10 A pass never runs against a graph numbered for a different sheet order — a sheet add, delete, duplicate or move that skipped `invalidate_graph` is caught at the next pass entry, not read | **construction + gate** (the graph carries the sheet-id sequence it ran under; `Model::evaluate` compares before dispatching, and the sequence is derived from the workbook so there is nothing to remember to bump) | the obligation to *reach* the check is the gate `every_pass_checks_the_sheet_layout`; what the check decides is `sheet_renumbering_under_a_ready_graph_is_detected` |
 
 ### Gaps this map does not close
 
@@ -272,7 +285,20 @@ A caution learned closing these, worth more than any single item: **fuzz silence
 
 Two clauses that no deterministic test covers are squarely in the **oracle** column rather than here: the row/column-move fallback (I8.8) dies on seed 6 in four operations, and the `debt_over_pending_edits` branch of I6 dies on seed 1 in nine.
 
+There used to be a third: the *sheets* arm of I8.1. Its two listed witnesses cover the defined-name and locale call sites, and nothing in the lib suite exercised sheet CRUD under incremental at all — a `delete_sheet` that skipped `invalidate_graph` was caught only by the fuzzer, on seed 1. It is closed now, and not by adding the witness: `SheetLayout` (I8.10) makes the omission a checked condition at pass entry, which is the better outcome, because the shape a witness would have had to guess at is exactly what the stale-coordinate class makes unguessable — *which* cell reads the wrong sheet first depends on the workbook, not on the bug.
+
 Closing a gap means adding the minimal witness, not a shape; a shape that dies to no mutant is not a witness.
+
+## Follow-ups
+
+**Stable `SheetId` in `Position`.** `SheetLayout` *detects* that the sheet numbering moved. Making the staleness unrepresentable instead means keying positions by the stable `sheet_id` a worksheet is allocated at creation, so renumbering stops existing as a concept. Assessed and deliberately not taken this round, for two reasons:
+
+- **Blast radius.** 21 non-test files under `base/src` touch `Position`/`Area`, and the sheet component is consumed as a raw `Vec` index throughout the evaluator — `get_cell_value_by_index`, `worksheet(sheet)`, `parsed_formulas[sheet]`, `change_key`'s own destructuring — roughly 276 candidate construction and destructuring sites across `model/`, `recalc/` and `worksheet.rs`. Each becomes a *fallible* id→index lookup (a deleted sheet's id maps to nothing), on the evaluation hot path, and `take_changed_cells` hands `CellReferenceIndex { sheet, .. }` to the public API, so the map is needed at the boundary too. The change is not mechanical: every site acquires a `None` arm that has to be dispositioned.
+- **It would not retire the convention.** `parsed_formulas` is itself a `Vec<Vec<(Node, StaticResult)>>` keyed by raw sheet index, and every sheet edit routes through `reset_parsed_structures`, which rebuilds it from scratch. Sheet CRUD therefore obliges a graph invalidation for *reparse* reasons independent of renumbering — a rename retargets formula text, `duplicate_sheet` copies formulas. `SheetId` in `Position` would make one of two coupled failure modes unrepresentable and leave the other conventional, so `invalidate_graph` on sheet CRUD stays either way, and with it the thing `SheetLayout` checks.
+
+The hybrid — `SheetId` inside the graph only, converted at its API boundary — cuts the first cost roughly in half (the conversion concentrates at ~15 graph call sites in `model/` rather than spreading through the evaluator) but not the second, and buys a per-edge conversion the graph does not pay today. Worth revisiting if the id→index map becomes cheap for another reason — a slot-map worksheet store, say — or if `parsed_formulas` stops being index-keyed, which would leave renumbering as the *only* reason sheet CRUD invalidates and so make the stronger form actually retire something.
+
+**What this mechanism does not cover.** `SheetLayout` is about sheet *numbering*. Row and column structural edits do not change it, so it subsumes nothing in I5 — in particular `mark_structural_dependents`' four extra halves (I5.4) are untouched and still stand as the deliberate second path recorded there.
 
 ## Test discipline
 
