@@ -4,7 +4,7 @@ use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::dates::from_excel_date,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::accrint::acc_days_between;
@@ -330,7 +330,7 @@ fn amor_degrc(
     Ok(amor_round(depr))
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // VDB(cost, salvage, life, start_period, end_period, [factor], [no_switch])
     //
     // Variable declining balance depreciation between `start_period` and

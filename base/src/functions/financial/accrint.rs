@@ -4,7 +4,7 @@ use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::dates::from_excel_date,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn last_day_of_month(year: i32, month: u32) -> u32 {
@@ -277,7 +277,7 @@ fn compute_accrint(
     Ok(par * rate / freq * acc)
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])
     //
     // Canonical specification: Mayle, *Standard Securities Calculation Methods*

@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 
-use crate::{calc_result::CalcResult, expressions::types::CellReferenceIndex, model::Model};
+use crate::{
+    calc_result::CalcResult, expressions::types::CellReferenceIndex, model::eval_ctx::EvalCtx,
+};
 
 use super::util::compare_values;
 
@@ -137,7 +139,7 @@ pub(crate) fn binary_search_descending_or_greater<T: Ord>(target: &T, array: &[T
     Some((n - r - 1) as i32)
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Returns an array with the list of cell values in the range
     pub(crate) fn prepare_array(
         &mut self,

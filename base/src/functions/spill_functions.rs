@@ -8,7 +8,7 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::util::compare_values;
@@ -142,7 +142,7 @@ fn extract_key_column(data: &[Vec<ArrayNode>], expected_len: usize) -> Option<Ve
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Evaluate a node and convert the result to a 2-D array of ArrayNodes.
     /// Handles Range references, inline Arrays, and scalar values.
     pub(crate) fn eval_to_array(

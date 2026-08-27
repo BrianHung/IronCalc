@@ -1,7 +1,7 @@
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 // 8_i64.pow(10);
@@ -31,7 +31,7 @@ fn from_binary_to_decimal(value: f64) -> Result<i64, String> {
     Ok(result)
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // BIN2DEC(number)
     pub(crate) fn fn_bin2dec(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 1 {

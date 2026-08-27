@@ -1,10 +1,10 @@
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── CHOOSECOLS ────────────────────────────────────────────────────────────
 
     /// `=CHOOSECOLS(array, col_num1, [col_num2], ...)`

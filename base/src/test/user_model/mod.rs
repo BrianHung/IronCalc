@@ -1,5 +1,6 @@
 mod bench_displace;
 mod bench_incremental;
+mod bench_scenarios;
 mod test_add_delete_sheets;
 mod test_array_formulas;
 mod test_auto_link;

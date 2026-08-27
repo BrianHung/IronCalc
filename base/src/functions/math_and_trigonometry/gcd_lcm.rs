@@ -3,7 +3,8 @@ use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 const MAX_LCM_GCD: i64 = 2_i64.pow(53);
@@ -34,7 +35,7 @@ fn lcm_i64(a: i64, b: i64) -> Option<i64> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn gcd_lcm_impl<F>(
         &mut self,
         args: &[Node],

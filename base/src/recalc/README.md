@@ -135,15 +135,32 @@ Four things can enforce a clause, and only two of them owe a test:
 | Clause | Enforcement | Witness |
 |---|---|---|
 | I1.1 A cell read is recorded before any early return — the scope gate that answers from the store, and the `#CIRC!` return | construction (`trace_cell` is the first statement of `evaluate_cell`) | — |
-| I1.2 A function implementation reaches cell state only through the recording accessors | gate | `functions_do_not_touch_the_workbook_directly` |
-| I1.3 A rectangle is recorded at its declared extent, not the extent the walk visited: `SUM(B:C)` clips its per-cell walk to the used range, so only the rect connects a write outside it | test | `multi_column_range_edits_propagate`; the run-time-widened case is `incremental_sumifs_reads_resized_criteria`; the `#` operator's edge on a not-yet-written anchor is `spill_hash_of_empty_anchor_sees_later_formula` |
+| I1.2 A function implementation reaches cell state only through the recording accessors | construction (`functions/` runs on `EvalCtx`, a newtype over `&mut Model` with a private inner reference; it has no `workbook` field and no untraced getter, so the bypass does not compile) | — |
+| I1.3 A rectangle is recorded at its declared extent, not the extent the walk visited: `SUM(B:D)` clips its per-cell walk to the used range, so only the rect connects a write outside it | test | `multi_column_range_edits_propagate` (three columns wide, so it kills both a >1 and a >=3 rect drop; the old two-column shape pinned only the first); the run-time-widened case is `incremental_sumifs_reads_resized_criteria`; the `#` operator's edge on a not-yet-written anchor is `spill_hash_of_empty_anchor_sees_later_formula` |
 | I1.4 Each volatile or environment function records its `Input` | test, one per variant | Random: `volatile_rerolls_across_repeated_incremental_passes`. Clock: `clock_volatile_is_reported_on_every_incremental_pass`. OwnCoord: `incremental_argless_row_updates_after_insert` |
-| I1.5 Reading a cell's formula text or formula-ness records `FormulaText` — three independent call sites | test, one per site | `formulatext_sees_value_overwrite_of_its_argument`, `isformula_sees_value_overwrite_of_its_argument`; SUBTOTAL's scan is covered by the I1.2 gate |
-| I1.6 Reading row visibility records `RowHidden`, keyed per row | test | `incremental_subtotal_sees_hidden_row`; the per-row keying is `subtotal_sees_hidden_row_it_scans_not_own_row` |
+| I1.5 Reading a cell's formula text or formula-ness records `FormulaText` — three independent call sites | construction (all three ways in — `EvalCtx::get_cell_formula`, `get_english_cell_formula`, `formula_index_at` — record it themselves) | — |
+| I1.6 Reading row visibility records `RowHidden`, keyed per row | *that* it records: construction (`EvalCtx::row_hidden` is the only way in and traces first). *Which row* it keys on: test | `subtotal_sees_hidden_row_it_scans_not_own_row` |
 | I1.7 Reading a defined name records `Name` | test | `name_reader_redirty_on_insert` |
 | I1.8 A reference-returning function's resolved target becomes an edge, at the extent it resolved to | test; the extent is one per call site | `offset_target_change_without_static_edge`; the extent is `offset_records_its_resolved_extent_not_the_walk` and `indirect_records_its_resolved_extent_not_the_walk` (I1.3's clipping rule, reached through a computed extent) |
 | I1.9 Reading an array-footprint position records an edge on its anchor, taken from the array index and recorded ahead of the scope gate | test | `cse_footprint_cycle_stored_value_diverges_from_a_live_reeval` (dies only under `recalc_verify`) |
 | I1.10 A formula commits its reads on both exits | construction | — |
+
+Two reads in `functions/` used to bypass the recording accessors — the
+financial whole-column clip and `SHEET(a_defined_name)`. Both now go through
+`EvalCtx::sheet_dimension` and `EvalCtx::defined_name`, so I1.2 has no
+exceptions. Neither was ever a wrong answer, and neither has a witness,
+because neither *can* be one:
+
+- the clip's declared rect is recorded whole when the `RangeKind` node is
+  evaluated, before any function clips its walk (I1.3), so the rect already
+  covers every write that could move the result. Delete that `trace_rect` and
+  a whole-column `NPV` does go stale — which is I1.3's witness, not a new one.
+- every defined-name edit calls `invalidate_graph`, so a name reader is never
+  served from the store at all.
+
+A test asserting either would pass before the fix as readily as after. They
+are routed for one reason only: so that "every accessor on `EvalCtx` records"
+has no exceptions to remember.
 
 ### I2 — every user mutation journals; the pause is guard-scoped
 
@@ -155,9 +172,9 @@ Four things can enforce a clause, and only two of them owe a test:
 | I2.4 A displacement journals a value write substituted for the suppressed formula write | test | `incremental_handles_row_delete` |
 | I2.5 A batch's pre-batch formula-ness is read off its first entry, so the journal-maintained formula count agrees with a recount | test | `journal_accounts_a_batch_against_its_pre_batch_state` |
 | I2.6 A cell that stops being a formula loses its outgoing edges, through every write API | test | `journal_value_over_formula_drops_edges` |
-| I2.7 Overwriting a cell re-dirties the readers of its formula text | test | the two I1.5 witnesses |
+| I2.7 Overwriting a cell re-dirties the readers of its formula text | test | `formulatext_sees_value_overwrite_of_its_argument`, `isformula_sees_value_overwrite_of_its_argument` (they used to double as I1.5's witnesses; I1.5 is constructional now, this clause is what keeps them) |
 | I2.8 A link write and a link removal journal, from each producer, including a link stranded at a position with no cell | test, one per producer | `cell_link_write_is_reported_in_the_delta`, `range_clear_reports_a_stranded_link_removal` |
-| I2.9 A hidden-flag write dirties the readers of that line | test | `incremental_subtotal_sees_hidden_row` |
+| I2.9 A hidden-flag write dirties the readers of that line | test | `incremental_subtotal_sees_hidden_row` (it used to double as I1.6's witness; the recording half is constructional now, this clause is what keeps it) |
 | I2.10 A rejected write journals nothing | test | `journal_rejected_write_logs_nothing` |
 | I2.11 Undo's writes journal, including through a paused evaluation | test | `incremental_undo_under_pause_stays_correct` |
 

@@ -6,7 +6,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     functions::math_and_trigonometry::array_size::check_array_size,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn coerce_to_f64(node: &ArrayNode, cell: CellReferenceIndex) -> Result<f64, CalcResult> {
@@ -98,7 +98,7 @@ fn lu_decompose(mat: &mut [f64], n: usize) -> Result<(f64, Vec<usize>), ()> {
     Ok((sign, swaps))
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── MDETERM ───────────────────────────────────────────────────────────────
 
     /// `=MDETERM(array)`

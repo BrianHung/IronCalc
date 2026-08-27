@@ -965,20 +965,25 @@ fn moving_a_row_with_a_cse_anchor_always_succeeds() {
 }
 
 /// A read of a multi-column rectangle must be recorded as a rectangle, not
-/// dropped. `SUM(B:C)` clips its per-cell walk to the used range, so the only
+/// dropped. `SUM(B:D)` clips its per-cell walk to the used range, so the only
 /// edge that can connect a write below the last used row to the sum is the
 /// recorded rect. Dropping wide rects from the read set leaves A1 stale.
+///
+/// The span is three columns, not two, so that one shape kills both widths a
+/// dropping bug comes in: a rect wider than one column, and a rect three or
+/// more wide. `SUM(B:C)` pinned only the first — dropping rects of span three
+/// and up survived the whole suite, the verify oracle and the fuzzer.
 #[test]
 fn multi_column_range_edits_propagate() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("B1", "1");
-    model._set("A1", "=SUM(B:C)");
+    model._set("A1", "=SUM(B:D)");
     model.evaluate();
     assert_eq!(model._get_text("A1"), "1");
 
-    // Second column of the rect, past the used range: only the rectangle
+    // Outermost column of the rect, past the used range: only the rectangle
     // connects this write to A1.
-    model._set("C100", "5");
+    model._set("D100", "5");
     flush_writes(&mut model);
     assert!(!model.graph.should_recompute_full());
     model.evaluate();

@@ -5,8 +5,8 @@ use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::implicit_intersection::implicit_intersection;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
-    utils::ParsedReference,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx, utils::ParsedReference,
 };
 
 use super::binary_search::binary_search_on_array;
@@ -68,7 +68,7 @@ impl LookupTable {
     /// Callers must ensure the offsets are within bounds.
     fn get(
         &self,
-        model: &mut Model,
+        model: &mut EvalCtx,
         row: i32,
         column: i32,
         cell: CellReferenceIndex,
@@ -86,14 +86,14 @@ impl LookupTable {
     }
 
     /// Materializes the first row of the table (the search vector for HLOOKUP).
-    fn first_row(&self, model: &mut Model, cell: CellReferenceIndex) -> Vec<CalcResult> {
+    fn first_row(&self, model: &mut EvalCtx, cell: CellReferenceIndex) -> Vec<CalcResult> {
         (0..self.columns())
             .map(|column| self.get(model, 0, column, cell))
             .collect()
     }
 
     /// Materializes the first column of the table (the search vector for VLOOKUP).
-    fn first_column(&self, model: &mut Model, cell: CellReferenceIndex) -> Vec<CalcResult> {
+    fn first_column(&self, model: &mut EvalCtx, cell: CellReferenceIndex) -> Vec<CalcResult> {
         (0..self.rows())
             .map(|row| self.get(model, row, 0, cell))
             .collect()
@@ -197,7 +197,7 @@ fn index_from_array(
     CalcResult::Array(result)
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Materializes a value that is expected to be a vector (a single row or a
     /// single column) into a flat list of values. Accepts both range references
     /// and in-formula array literals. Used by the vector-based lookup functions
@@ -739,7 +739,7 @@ impl<'a> Model<'a> {
                 tooltip: None,
             },
         };
-        self.links.insert((cell.sheet, cell.row, cell.column), link);
+        self.set_link((cell.sheet, cell.row, cell.column), link);
         display
     }
 
@@ -894,7 +894,7 @@ impl<'a> Model<'a> {
                 let parsed_reference = ParsedReference::parse_reference_formula(
                     Some(cell.sheet),
                     &s,
-                    self.locale,
+                    self.locale(),
                     |name| self.get_sheet_index_by_name(name),
                 );
 
@@ -1075,11 +1075,6 @@ impl<'a> Model<'a> {
                     message: "argument must be a reference to a single cell".to_string(),
                 };
             }
-            self.trace_input(crate::recalc::Input::FormulaText((
-                left.sheet,
-                left.row,
-                left.column,
-            )));
             if let Ok(Some(f)) = self.get_english_cell_formula(left.sheet, left.row, left.column) {
                 CalcResult::String(f)
             } else {

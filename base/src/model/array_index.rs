@@ -84,16 +84,26 @@ impl Model<'_> {
     /// the footprint of user-written cells, structural edits shift positions,
     /// and evaluation writes that change a footprint set `wrote_array_cells`,
     /// which sends the pass to Full and back here.
+    ///
+    /// Deliberately not [`Model::cells_in_order`], for the reason
+    /// [`Model::recount_formula_cells`] gives: what this builds is a map keyed
+    /// by position and a count, neither of which can tell what order it was
+    /// walked in, and sorting every row and column of the workbook to reach an
+    /// order nothing reads is pure cost on every full pass.
     pub(crate) fn collect_array_cells(&mut self) {
         let mut array_cells = HashMap::new();
         let mut formula_cell_count = 0;
-        for ((sheet, row, col), cell) in self.cells_in_order() {
-            if cell.get_formula().is_some() {
-                formula_cell_count += 1;
+        for (sheet, worksheet) in self.workbook.worksheets.iter().enumerate() {
+            for (&row, row_data) in &worksheet.sheet_data {
+                for (&col, cell) in row_data {
+                    if cell.get_formula().is_some() {
+                        formula_cell_count += 1;
+                    }
+                    array_footprint(cell, sheet as u32, row, col, &mut |p, anchor| {
+                        array_cells.insert(p, anchor);
+                    });
+                }
             }
-            array_footprint(cell, sheet, row, col, &mut |p, anchor| {
-                array_cells.insert(p, anchor);
-            });
         }
         self.formula_cell_count = formula_cell_count;
         self.formula_count_stale = false;
