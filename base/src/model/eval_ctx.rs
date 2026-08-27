@@ -73,6 +73,23 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         self.0.evaluate_range(left, right)
     }
 
+    /// Folds a rectangular range through `reducer`, reusing cached prefixes in
+    /// incremental mode. Reads inside record their edges like any other.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fold_range(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        column1: i32,
+        row2: i32,
+        column2: i32,
+        reducer: crate::model::range_reduce::RangeReducer,
+        acc: crate::model::range_reduce::RangeAgg,
+    ) -> crate::model::range_reduce::RangeAgg {
+        self.0
+            .fold_range(sheet, row1, column1, row2, column2, reducer, acc)
+    }
+
     pub(crate) fn evaluate_node_in_context(
         &mut self,
         node: &Node,
