@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
+use crate::functions::util::clipped_away_cells;
 use crate::{
     calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
     model::eval_ctx::EvalCtx,
@@ -455,8 +456,19 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    // COUNTBLANK is the one aggregate here whose answer depends
+                    // on the cells the clip removes: each of them lies past the
+                    // used range and so is blank. Walking the clipped rectangle
+                    // and adding the removed area back leaves the count exactly
+                    // where the full walk left it.
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    result += clipped_away_cells(&left, &right, row2, column2);
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,

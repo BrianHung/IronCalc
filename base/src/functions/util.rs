@@ -20,7 +20,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
     /// whole-row reference (`1:1`) spans all `LAST_COLUMN` columns, but every
     /// cell past the used range is blank. A function that ignores blanks may
     /// therefore walk only the clipped rectangle and reach the same answer for
-    /// a fraction of the cost.
+    /// a fraction of the cost. A function that *counts* blanks must add the
+    /// clipped-away cells back arithmetically; see [`clipped_away_cells`].
     ///
     /// The dimension is read only when an axis is open, so an ordinary range
     /// keeps the dependency footprint it has today. On an open axis this
@@ -55,6 +56,28 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         }
         Ok((row1, row2, column1, column2))
     }
+}
+
+/// How many cells [`EvalCtx::clip_range_to_used`] dropped from `left..=right`.
+///
+/// Every dropped cell lies past the sheet's used range and so is blank by
+/// definition. `COUNTBLANK` adds this count back so that the clipped walk
+/// returns exactly what the full walk returned. Both axes can be clipped in
+/// the same call, so this is the area of the requested rectangle minus the
+/// area of the walked one rather than a per-axis count; the arithmetic is in
+/// `i64` because a whole sheet is 1,048,576 x 16,384 cells, well past `i32`.
+pub(crate) fn clipped_away_cells(
+    left: &CellReferenceIndex,
+    right: &CellReferenceIndex,
+    row2: i32,
+    column2: i32,
+) -> f64 {
+    let area = |last_row: i32, last_column: i32| -> i64 {
+        let rows = (last_row as i64 - left.row as i64 + 1).max(0);
+        let columns = (last_column as i64 - left.column as i64 + 1).max(0);
+        rows * columns
+    };
+    (area(right.row, right.column) - area(row2, column2)) as f64
 }
 
 /// If `s` looks like a date literal in the given locale, return its Excel
