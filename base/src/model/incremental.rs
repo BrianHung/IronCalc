@@ -125,29 +125,9 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
-        // Array and spill cells need the full pass's two-phase ordering.
-        // Parse-time dynamic formulas (`=SEQUENCE`, `=E15#`) are ArrayFormula
-        // before the first eval, but are not in `graph.arrays` until we see
-        // them; a fresh or re-dirtied dynamic anchor is a seed, so seeds are
-        // checked for anchors directly. An already-evaluated dynamic anchor
-        // whose last result was 1x1 has no spill cells, is not in `arrays`,
-        // and behaves as a scalar (`=LET(..)`, a called LAMBDA, `=INDEX(..)`);
-        // it stays incremental. If its result grows during the pass, the
-        // post-pass arrays comparison below falls back to Full.
-        // A reader of a blocked anchor is in the same position: its value came
-        // from the live array's top-left, not from the anchor's stored
-        // `#SPILL!`, so recomputing it here would read the error instead. Only
-        // the full pass evaluates the anchor live.
-        if affected
-            .iter()
-            .any(|cell| self.graph.blocked_array_readers().contains(cell))
-        {
-            self.evaluate_full_untracked();
-            return EvalPass::Full;
-        }
-        if affected.iter().any(|cell| self.graph.arrays.contains(cell))
-            || seeds.iter().any(|cell| self.is_dynamic_array_anchor(*cell))
-        {
+        // Selectivity is earned, not assumed: this pass is selective only if
+        // every cell it would touch is one a selective pass can model.
+        if !self.cone_is_plain(&affected) {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
@@ -167,7 +147,7 @@ impl Model<'_> {
         self.saw_circular_reference = false;
         let (changed, cycle_was_known) = match self.graph.topo_order(&affected) {
             Ok(order) => (
-                self.recompute_frontier(&affected, &seeds, &always_report, &order, HashSet::new()),
+                self.recompute_frontier(&affected, &seeds, &always_report, &order),
                 false,
             ),
             Err(_) => (self.recompute_all(&affected, &always_report), true),
@@ -196,10 +176,14 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
-        // An evaluation write changed an array footprint: a spill landed, a
-        // CSE range filled, or an anchor stored #SPILL!. Fall back to Full so
-        // spill dependents are not missed and `collect_array_cells` rebuilds
-        // the index exactly.
+        // The one hazard plainness cannot rule out in advance. It admits a
+        // dynamic anchor whose last result was a plain 1x1 scalar, because
+        // `=LET(..)`, a called `LAMBDA` and `=INDEX(..)` are stored that way and
+        // must not cost a full pass. Whether *this* pass's result is still 1x1
+        // is not a property of the stored cell: it is what the pass produces. An
+        // anchor that grows spills members, and this is where that is found out.
+        // Redo the pass as full so spill dependents are not missed and
+        // `collect_array_cells` rebuilds the index exactly.
         if self.wrote_array_cells {
             self.evaluate_full_untracked();
             return EvalPass::Full;
@@ -233,6 +217,68 @@ impl Model<'_> {
         EvalPass::Incremental
     }
 
+    /// Whether `cone` is **plain**: every cell in it is one a selective pass can
+    /// model, so this pass may be selective. Anything else runs the full pass.
+    ///
+    /// This is the whole of the scheduling decision that is about the cone. It
+    /// is a whitelist on purpose. The engine used to carry a blacklist of
+    /// hazards -- arrays in the cone, a dynamic anchor among the seeds, a
+    /// blocked reader, an evaluation write into a footprint found out about
+    /// afterwards -- and a hazard nobody had thought of was a wrong value.
+    /// Inverted, a case nobody thought of fails the predicate and costs a full
+    /// pass: a missed case degrades to slow rather than to wrong.
+    ///
+    /// The clauses, each with its own witness:
+    ///
+    /// - **P1, no array in the cone.** No cone member is in `graph.arrays`,
+    ///   which holds every anchor and every spill member. Spilling needs the
+    ///   full pass's two-phase ordering, and a spill member's value is its
+    ///   anchor's output rather than its own. This is the index rather than the
+    ///   cells, deliberately: it is what sees a *ghost* member -- a declared
+    ///   footprint position whose spill cell a structural edit dropped, where
+    ///   the live cell no longer says "array" but the anchor still owns the
+    ///   position. It cannot miss a live one either, because
+    ///   [`array_footprint`](super::array_index::array_footprint) is the single
+    ///   definition of what goes in and every array cell reaches it: a
+    ///   user-written one through the journal drain, an evaluation-written one
+    ///   through the `wrote_array_cells` redo below, and a moved one through
+    ///   `shift`. A dynamic anchor whose last result was a plain 1x1 scalar is
+    ///   not in the index and is plain: `=LET(..)`, a called `LAMBDA`,
+    ///   `=INDEX(..)` are everyday formulas and must not cost a full pass.
+    ///   Whether such an anchor's result is *still* 1x1 is not a property of any
+    ///   stored state, so that one hazard survives the inversion as a post-pass
+    ///   redo on `wrote_array_cells`; see `evaluate_selective`.
+    /// - **P2, trust.** No cone member is a reader of a blocked spill anchor.
+    ///   Such a reader's stored value came from the live array's top-left, not
+    ///   from the anchor's stored `#SPILL!`, so recomputing it here would read
+    ///   the error instead. Only the full pass evaluates the anchor live.
+    ///
+    /// Three clauses the predicate deliberately does **not** have, each because
+    /// it would cost a case incremental wins today and buys no correctness:
+    ///
+    /// - *No cone member in `never_served`.* A known cycle is seeded dirty on
+    ///   every pass, so it is in every cone, so this clause would send every
+    ///   workbook containing one cycle to a full pass forever. The cone with a
+    ///   cycle in it is handled instead by walking it in Full's own two phases
+    ///   (`recompute_all`), which is what decides where `#CIRC!` lands.
+    /// - *No structural op this drain.* Row and column *moves* already force the
+    ///   graph to rebuild, which the readiness gate above catches. Inserts and
+    ///   deletes shift the indices in place and stay selective by design, and
+    ///   the clause would throw that away.
+    /// - *No volatile beyond the seeded always-dirty.* There is no such thing to
+    ///   exclude: volatility is a recorded `Input`, every reader of one is in
+    ///   `always_dirty_cells`, and this pass seeded all of them.
+    ///
+    /// The fanout budget is checked separately and before this, because it is a
+    /// performance choice rather than a statement about what can be modelled --
+    /// which is why `Verify` disables that one and not this.
+    fn cone_is_plain(&self, cone: &HashSet<Position>) -> bool {
+        cone.iter().all(|position| {
+            !self.graph.arrays.contains(position)
+                && !self.graph.blocked_array_readers().contains(position)
+        })
+    }
+
     /// Clears a cell's cached state so the next `evaluate_cell` recomputes it.
     /// Drops the dynamic link too, as a full pass would, so a cell that no longer
     /// resolves to a `HYPERLINK` does not keep a stale one.
@@ -256,12 +302,9 @@ impl Model<'_> {
         must_run: &[Position],
         always_report: &[Position],
         order: &[Position],
-        extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
         let before = self.change_keys(affected.iter().copied());
-        let mut scope = affected.clone();
-        scope.extend(extra_scope);
-        self.recompute_scope = Some(scope);
+        self.recompute_scope = Some(affected.clone());
         let report: HashSet<Position> = always_report.iter().copied().collect();
         let mut stale: HashSet<Position> = must_run.iter().copied().collect();
         let mut changed = HashSet::new();

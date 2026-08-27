@@ -1342,6 +1342,40 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
     }
 }
 
+/// The boundary of P1, from the other side: a dynamic anchor whose last result
+/// was 1x1 is plain, so the cone above is selective -- and then the anchor
+/// grows and spills members the selective pass has no ordering for. Whether
+/// this pass's result is still 1x1 is not a property of the stored cell, so no
+/// pre-pass predicate can see it; the post-pass `wrote_array_cells` redo is the
+/// only thing that can, and this is what dies when it is deleted. Left to
+/// itself the pass reports a delta with the new spill members missing from it,
+/// which the differential fuzzer finds on four of its first sixty seeds.
+#[test]
+fn a_scalar_anchor_that_grows_is_redone_as_full() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("A1", "1");
+        m._set("B1", "=SEQUENCE(A1)");
+        m._set("D1", "=SUM(B1:B3)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        let _ = m.take_changed_cells();
+        // B1 is now a 1x1 dynamic anchor: plain, so the cone stays selective.
+        m._set("A1", "3");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("B3"), "3");
+    assert_eq!(full._get_text("D1"), "6");
+    assert_same_workbook(&full, &inc, "the pass a scalar anchor grew on");
+    // The spill members B2:B3 appeared. A delta that does not name them is a
+    // consumer left rendering stale cells, so the redone pass says Everything.
+    assert_eq!(inc.take_changed_cells(), ChangedSinceRead::Everything);
+}
+
 /// A dynamic anchor whose last result was 1x1 has no spill cells and is not in
 /// the array index, so it behaves as a scalar and must stay on the incremental
 /// path. `=LET`, a called `LAMBDA`, `=INDEX` and `=IF` are everyday formulas:
