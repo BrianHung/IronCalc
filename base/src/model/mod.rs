@@ -42,7 +42,9 @@ use crate::{cf_types::CfCellResult, tz::Tz};
 mod array_index;
 mod changed_cells;
 pub(crate) mod cse_guard;
-mod incremental;
+// `pub(crate)` for `EvalPass`: the benches report whether a pass stayed
+// incremental or fell back, which is otherwise indistinguishable from outside.
+pub(crate) mod incremental;
 mod unstable_cells;
 #[cfg(feature = "recalc_verify")]
 mod verify;
