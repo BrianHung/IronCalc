@@ -77,15 +77,27 @@ Volatility is an input, not a list of functions. `NOW` records `Input::Clock`, `
 - The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is walked by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, and the cone contains every cell full could reach a cycle member through, because such a cell reads one transitively and so is a reader of an always-dirty cell. Since a known cycle is in every cone, this is also the walk a cycle *closing* on this pass gets when another cycle is already open — which is why phase 1 stays: the pass an anchor first falls inside a cycle, the anchor is not yet a seed, and only phase 1 makes full enter the cycle where it does.
 - The pass itself wrote into an array footprint: a spill landed, a CSE range filled, or an anchor stored `#SPILL!`. This one is only visible after the fact — the pre-pass check above catches an anchor that is *already* in the array index, and this catches an affected cell that turns into one while the pass runs (a scalar-result anchor whose result grows, say). The pass is redone as full, so spill dependents are not missed and `collect_array_cells` rebuilds the index exactly rather than patching it.
 - The cone reaches a reader of a blocked spill anchor.
-- The previous pass left convergence debt (see below).
 
-## Convergence debt
+## One `evaluate` settles
 
-A full pass is not a fixed point. Its phase 1 spills arrays and its phase 2 evaluates the rest, so a formula can read a spill member before the anchor refills it, and a cycle that runs through an array member resolves against that member's stored value. Full recalculation heals those readers on its *next* pass, because it rescans everything unconditionally.
+A single two-phase pass is not a fixed point. Phase 1 spills the arrays and phase 2 evaluates the rest, but `evaluate_cell` recurses, so a phase-2 formula can be pulled in early and read a footprint position before its anchor refills it — after a row move, a delete, or a first spill. That reader then holds a value the same inputs would never produce again, and only a *further* whole-workbook pass repairs it.
 
-Incremental has to match that pass for pass. So a full pass run from the incremental scheduler compares the array footprint's values across the pass: if a footprint cell moved and something read it, the pass left debt, and the graph records it so the next pass is full too. The debt clears itself, because the healing pass moves nothing and the pass after it is selective again. A workbook with no arrays never records debt, so plain editing is unaffected.
+`evaluate` runs that further pass itself. `evaluate_full_to_fixed_point` repeats the two-phase pass while the pass it just ran moved an array footprint, so what `evaluate` returns is the settled state rather than the first approximation of it. Excel settles fully per recalculation; this is the same contract.
 
-The condition used to have a second arm: a cycle running through the array (a member read while its anchor was still evaluating) also counted as debt, on the grounds that such a read leaves no edge behind. That arm could not decide anything, and it is gone. Reading a footprint member records an edge on its anchor (I1.9), so a cycle through a footprint puts the anchor on the cycle; the anchor therefore lands in `never_served`, which every later pass seeds dirty; and a cone holding an array position takes the arrays→Full fallback. The next pass was already full, which is the whole of what the debt flag would have forced.
+The re-run condition is the footprint comparison alone — no test for whether anything read the moved position. Edges exist only in the tracing modes, so a reader test would settle `Incremental` and leave `Full` one healing window behind, which is the one divergence this engine may not have. An extra pass over a footprint nothing read recomputes the same values and stops. For the same reason the array index is rebuilt after every full pass in *every* mode: it is what the comparison reads, not part of the edge machinery.
+
+Termination: iteration *k*+1 runs the same deterministic pass over iteration *k*'s output and stops as soon as the footprint comes back unchanged. A re-run only fires where the previous pass wrote a *different* value into a footprint position, which is only where an anchor's inputs or extent moved under it; those inputs are settled by the pass that moved them, so each re-run resolves one layer of anchor-reads-anchor and the cascade is bounded by the depth of that chain. Every shape found so far settles in two. `MAX_SETTLING_PASSES` (4) is the belt: past it a debug build asserts loudly and a release build stops, identically in both modes, so the modes still agree.
+
+This replaces a *convergence-debt* mechanism, which reproduced the unsettled window instead of closing it: a full pass that moved a footprint under a recorded reader set a flag on the graph, and the next pass was forced full to heal it, so `Incremental` matched `Full`'s accident pass for pass. Both sides of that agreement are gone; see [Intentional divergences](#intentional-divergences).
+
+## Intentional divergences
+
+Two places where this engine deliberately does not reproduce what the pre-engine `Model::evaluate` did. Everything else is bug-for-bug identical, and a difference that is not in this list is a defect.
+
+- **A blank formula result is `0`, not blank.** A formula whose live result is an empty cell coerces to `Number(0.0)` at the result boundary, before the value is stored. The baseline was *order-dependent*: a same-pass reader that ran before the blank-returning formula saw `Empty`, one that ran after saw the stored `0`. Excel caches a blank result as `<v>0</v>`, so `0` is both the Excel answer and the one that makes the full pass order-independent — which is what lets a stored value be served at all (I3.6, `stored_empty_formula_is_live_zero`).
+- **One `evaluate` settles.** Where the baseline needed a second `evaluate` to heal a reader that had read an array footprint before the anchor refilled it, one `evaluate` now returns the healed value. The observable sequences that differ are exactly the previously-unsettled healing windows, and only within them: for a workbook where the baseline's pass *N* left a footprint moving under a reader, this engine's pass *N* holds what the baseline's pass *N*+1 held. Values are strictly more converged, never less — the extra work is the baseline's own next pass, run early. Outside such a window nothing changes, and a workbook with no arrays has no such window at all. Excel settles per recalculation, so this is Excel parity (`one_evaluate_settles_a_footprint_moved_under_a_reader`).
+
+  Both recalc modes settle, so this is not an `Incremental` ≠ `Full` divergence and the differential fuzzer — which compares a `Full` model against an `Incremental` model — is unaffected by it. One lib test pinned the unsettled intermediate directly and was rewritten as the witness above; no other test's expectations moved.
 
 ## Design rules
 
@@ -230,15 +242,15 @@ The extension paid for itself before it ever guarded anything: it turned the 40�
 | I6.2 Every always-dirty cell is reported on every pass, asserted against the **pre-pass** set | oracle; the pre-vs-post choice is test | `verify_liveness_allows_a_cell_that_becomes_volatile_mid_pass`, `verify_liveness_still_binds_when_a_cell_leaves_volatility` |
 | I6.3 `Everything` where a cell list cannot name what moved, and the flag dies with its pass | test | `take_changed_cells_reports_everything_for_data_only_shift`, and `take_changed_cells_reports_everything_for_trailing_delete` for the Ready-with-empty-dirty branch |
 | I6.4 A redundant full pass keeps the delta it inherited unless values moved; a volatile makes them move | test | `take_changed_cells_survives_redundant_evaluate`, `redundant_evaluate_keeps_rand_reporting_but_not_sumifs` |
-| I6.7 A debt-forced full pass carrying a pending edit answers `Everything`, not a delta the edit is missing from | oracle | the fuzzer catches it on seed 1 in nine operations |
 | I6.5 A conditional-format result that moves enters the delta, whether a value drove it or a rule edit did | test, one per driver | `incremental_reports_conditional_format_change`, `incremental_reports_cf_only_mutation` |
 | I6.6 Reading the delta re-arms it | test | `take_changed_cells_reports_incremental_delta` |
 
-### I7 — default Full mode is what it was before the engine existed
+### I7 — default Full mode is what it was before the engine existed, except where [Intentional divergences](#intentional-divergences) says otherwise
 
 | Clause | Enforcement | Witness |
 |---|---|---|
-| I7.1 Tracing and the graph are off in Full | construction | — |
+| I7.6 One `evaluate` returns the settled state, in both modes: a reader that read an array footprint before the anchor refilled it holds the healed value when `evaluate` returns, not one pass later | test | `one_evaluate_settles_a_footprint_moved_under_a_reader` |
+| I7.1 Tracing and the edge graph are off in Full. The array index is not edge machinery — it is what the settling comparison reads — so it alone is rebuilt in every mode | construction | — |
 | I7.2 The pre-existing suite runs in Full by default | oracle (the whole `--lib` run) | — |
 | I7.3 A structural rebuild path suspends the CSE member guard | gate for the obligation, construction for the bypass, test per axis | `unchecked_rebuild_paths_suspend_the_cse_member_guard`; `moving_a_column_with_a_cse_anchor_always_succeeds`, `moving_a_row_with_a_cse_anchor_always_succeeds` |
 | I7.4 `range_clear_all` tears a footprint down through the style-preserving primitive | gate + clippy ban + test | `range_clear_all_spill_teardown_preserves_style`; `clear_all_over_part_of_a_spill_drops_only_the_selected_styles` in `test_clear_cells.rs` |
@@ -249,7 +261,6 @@ The extension paid for itself before it ever guarded anything: it turned the 40�
 | Clause | Enforcement | Witness |
 |---|---|---|
 | I8.1 The graph is not ready: a reparse (names, sheets), a locale or timezone change | test, one per call site | `incremental_defined_name_retarget_forces_full`, `incremental_set_locale_forces_full` |
-| I8.2 The previous pass left convergence debt | test | `incremental_heals_spill_debt_left_by_a_forced_full_pass` (the condition has one arm now; the cycle-through-the-array arm is gone — see Convergence debt) |
 | I8.3 The cone reaches more than half the formulas, and the fallback actually runs a pass | test | `incremental_wide_fanout_stays_correct` |
 | I8.4 The cone reaches a reader of a blocked spill anchor | test | `a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass` |
 | I8.5 The cone reaches an array footprint; and a 1x1 dynamic anchor is *not* one | test, one per direction | `incremental_overwrite_spill_anchor_updates_dependents`, `scalar_result_dynamic_anchors_stay_incremental` |
@@ -264,13 +275,13 @@ Empty. The eighteen mechanisms this section used to list were dispositioned: **e
 
 Witnessed. `Displacement`'s arithmetic turned out to be five one-sided comparisons, not four, and it is pinned at the unit level (I5.5, I5.3) rather than through a model whose fallbacks mask it: `shift_coord` is the single definition every stored coordinate moves through, and `range_overlaps_band` is the whole of the shrink test. The journal drain's first-entry rule is I2.5, checked against a from-scratch recount, one direction at a time because the two errors cancel. And the `trace_rect` calls turned out **not** to be the benign optimisation this section used to claim: at a wide extent the reader's per-cell walk is clipped to the used range and the rectangle is the only edge, which is I1.3's own lesson reached through a computed extent (I1.8).
 
-Deleted. The convergence-debt condition's `circular` arm, which could not decide anything — a cycle through a footprint puts the anchor in `never_served`, which forces the next pass full through the arrays fallback anyway (see Convergence debt). And `INDIRECT`'s 1×1 rectangle, which is the same edge as the cell read its reader already records, and which as a *range* made a delete of that row rebuild the graph for nothing.
+Deleted. The whole convergence-debt mechanism, which deferred a healing pass that `evaluate_full_to_fixed_point` now runs in-pass (see [One `evaluate` settles](#one-evaluate-settles)); its `circular` arm had already gone, because a cycle through a footprint puts the anchor in `never_served`, which forces the next pass full through the arrays fallback anyway. And `INDIRECT`'s 1×1 rectangle, which is the same edge as the cell read its reader already records, and which as a *range* made a delete of that row rebuild the graph for nothing.
 
 Kept as a second path, reason recorded. `mark_structural_dependents`' four extra halves and the `Name`/`SheetStructure`/`Computed` inputs that feed them: the journal is the primary and covers every constructed shape, but that argument is empirical rather than structural, so the marking stays and the generator now plants the shape class where the journal is silent (see I5.4). `recompute_frontier`'s memo restore bounds work rather than fixing a value — a skipped helper recomputed unscoped returns the same value, by the third design rule — and its second `reports_change` sweep is the delta-completeness net that Verify's own delta check is the oracle for. The arrays fallback's fresh-anchor half is redundant with the post-pass `wrote_array_cells` redo for any anchor that spills; it stays so a fresh anchor gets Full's two-phase ordering on the pass it is first seen, rather than after a wasted incremental attempt. `get_range`'s `trace_rect` is I1.8's rule at the range-composition site.
 
 A caution learned closing these, worth more than any single item: **fuzz silence is not evidence a mechanism is dead.** Deleting all ten of the then-open mechanisms at once left the lib suite green in all three modes and the differential fuzzer green too — including the two `trace_rect` calls that a twelve-line test proves are load-bearing. A mechanism may be deleted for a *structural* subsumption argument, never for the oracle failing to notice.
 
-Two clauses that no deterministic test covers are squarely in the **oracle** column rather than here: the row/column-move fallback (I8.8) dies on seed 6 in four operations, and the `debt_over_pending_edits` branch of I6 dies on seed 1 in nine.
+One clause that no deterministic test covers is squarely in the **oracle** column rather than here: the row/column-move fallback (I8.8) dies on seed 6 in four operations. The `debt_over_pending_edits` branch of I6 was the other, and it is gone with the debt flag that made it reachable.
 
 Closing a gap means adding the minimal witness, not a shape; a shape that dies to no mutant is not a witness.
 

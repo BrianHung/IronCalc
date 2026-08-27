@@ -1061,12 +1061,23 @@ fn assert_same_workbook(full: &crate::Model, incremental: &crate::Model, label: 
     );
 }
 
-/// (a) A row move forces a full pass, but that pass leaves spill debt: `G12`
-/// read `E16:E17` before `E15`'s `SEQUENCE` refilled them. Full heals on its
-/// next unconditional pass; incremental used to serve `G12` its stored 0 for
-/// ever, because no later cone ever named it.
+/// One `evaluate` returns the settled state (I7.6), in both modes.
+///
+/// The row move drops `E15`'s spill members, and the pass that follows reads
+/// `E19:E20` through `G12` before `E15`'s `SEQUENCE` refills them, so a single
+/// two-phase pass leaves `G12` holding 0 -- a value the same inputs never
+/// produce again. That is the whole of the healing window this engine closes:
+/// the baseline reached 5 only on a *second* `evaluate`, and the engine used to
+/// reproduce that by recording convergence debt and forcing the next pass full.
+/// `evaluate_full_to_fixed_point` runs the second pass in-pass instead, so 5 is
+/// what one `evaluate` returns.
+///
+/// This test documents an intentional divergence from pre-engine behaviour --
+/// see "Intentional divergences" in `base/src/recalc/README.md`. Both modes are
+/// asserted, because settling in only one of them would be an `Incremental` !=
+/// `Full` divergence, which is the one thing the engine may not do.
 #[test]
-fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
+fn one_evaluate_settles_a_footprint_moved_under_a_reader() {
     let build = |mode| {
         let mut m = new_empty_model().with_recalc_mode(mode);
         m._set("E15", "=SEQUENCE(3)");
@@ -1081,15 +1092,18 @@ fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
         m.move_rows_action(0, 19, 2, -3).unwrap();
         m.evaluate();
     }
-    assert_same_workbook(&full, &inc, "the move's own full pass");
-    // The healing pass. The edit is deliberately unrelated to the spill: the
-    // dirty cone cannot reach G12, so only the debt signal brings it back.
+    // Settled after one evaluate. The baseline answered 0 here.
+    assert_eq!(full._get_text("G12"), "5");
+    assert_eq!(inc._get_text("G12"), "5");
+    assert_same_workbook(&full, &inc, "the move's own settled pass");
+    // A later unrelated edit moves nothing: the state is already a fixed point,
+    // so there is no healing pass left for either mode to run.
     for m in [&mut full, &mut inc] {
         m._set("B5", "1");
         m.evaluate();
     }
     assert_eq!(full._get_text("G12"), "5");
-    assert_same_workbook(&full, &inc, "the healing pass");
+    assert_same_workbook(&full, &inc, "an edit outside the settled cone");
 }
 
 /// (b) An error-absorbing function makes the divergence a value, not just a

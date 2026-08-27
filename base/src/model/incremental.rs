@@ -34,6 +34,12 @@ const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
 /// incremental bookkeeping it would save.
 const INCREMENTAL_FANOUT_RATIO: usize = 2;
 
+/// How many two-phase passes one `evaluate` may run while settling. Every shape
+/// found so far settles in two; the bound turns a workbook that does not into a
+/// loud debug assertion instead of a spin. See
+/// [`Model::evaluate_full_to_fixed_point`].
+const MAX_SETTLING_PASSES: usize = 4;
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -60,19 +66,7 @@ impl Model<'_> {
         // the array index; only footprint writes from this pass's frontier
         // matter below.
         self.wrote_array_cells = false;
-        // The previous pass was not a fixed point: a spill or CSE footprint
-        // moved after a reader had already read it, so its readers still hold
-        // the pre-spill value. Full mode heals that on its next unconditional
-        // pass; incremental would serve the stored values forever and land one
-        // pass behind, so this pass is full too. Consumed here, and set again
-        // below if the full pass leaves debt of its own.
-        let convergence_debt = self.graph.take_convergence_debt();
-        // Debt alone forces the pass full. When that pass also carries pending
-        // edits, the cell diff below cannot see them (a user write lands before
-        // evaluate, so it is already in the "before" snapshot), and a delta that
-        // silently drops the edit is worse than reporting Everything.
-        let debt_over_pending_edits = convergence_debt && !self.graph.should_recompute_full();
-        if convergence_debt || self.graph.should_recompute_full() {
+        if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
             // (nothing below to shift) while still emptying cells; catch that
@@ -81,8 +75,7 @@ impl Model<'_> {
             // A redundant full with nothing pending keeps the delta, unless
             // RAND/NOW/TODAY are present: a full pass re-rolls those.
             // OFFSET does not re-roll and must not wipe the delta.
-            if debt_over_pending_edits
-                || self.graph.take_structural_unknown()
+            if self.graph.take_structural_unknown()
                 || self.graph.full_reflects_change()
                 || !self.graph.always_dirty_cells().is_empty()
             {
@@ -92,7 +85,7 @@ impl Model<'_> {
                 // moved (e.g. a spill that takes two passes). Diff cells and CF.
                 let before = self.workbook_change_keys();
                 let cf_before = self.cf_cache.clone();
-                self.evaluate_full_and_follow_up_new_arrays();
+                self.evaluate_full_to_fixed_point();
                 let after = self.workbook_change_keys();
                 record_snapshot_diff(&mut self.changed_cells, &before, &after);
                 self.record_cf_changes(cf_before);
@@ -373,59 +366,88 @@ impl Model<'_> {
     /// Full recompute whose result is not expressible as a delta: it may have
     /// changed any cell, so the next `take_changed_cells` reports `Everything`.
     pub(crate) fn evaluate_full_untracked(&mut self) {
-        self.evaluate_full_and_follow_up_new_arrays();
+        self.evaluate_full_to_fixed_point();
         self.changed_cells = ChangedCells::All;
     }
 
-    /// A newly observed dynamic-array anchor may not have seen a SEQUENCE
-    /// that spilled later in the same pass (`E15#` after `=SEQUENCE(3)`).
-    /// Leave it dirty so the next evaluate takes the arrays→Full path and
-    /// matches a second Full-mode pass.
-    fn evaluate_full_and_follow_up_new_arrays(&mut self) {
-        let before = self.graph.arrays.snapshot();
-        // The array footprint's values entering the pass. Full's two phases are
-        // not a fixed point: a formula outside phase 1 can read a spill member
-        // before the anchor refills it (after a move, a delete, or a first
-        // spill), and only Full's next unconditional pass heals that reader.
-        // `change_keys` takes the snapshot eagerly, which is the point: the
-        // comparison below is against the values as they were before the pass,
-        // so this must not become a lazy view of the post-pass state.
-        let footprint_before = self.change_keys(
-            before
+    /// Runs the two-phase pass until the workbook settles, and leaves a newly
+    /// observed array anchor dirty.
+    ///
+    /// **One two-phase pass is not a fixed point.** Phase 1 spills the arrays
+    /// and phase 2 evaluates the rest, but `evaluate_cell` recurses, so a
+    /// phase-2 formula can be pulled in early and read a footprint position
+    /// before its anchor refills it -- after a row move, a delete, or a first
+    /// spill. That reader then holds a value the same inputs would never
+    /// produce again, and only a *further* whole-workbook pass repairs it.
+    ///
+    /// A single `evaluate` therefore has to run that further pass itself.
+    /// Excel settles fully per recalculation, so this is what a caller expects,
+    /// and it is what makes `evaluate` a function of the workbook's inputs
+    /// rather than of how many times it has been called. The engine used to
+    /// reproduce the unsettled window instead: the full pass recorded
+    /// *convergence debt* and the next pass healed it, so `Incremental` matched
+    /// `Full`'s accident pass for pass. Both sides of that agreement are gone;
+    /// see "Intentional divergences" in `base/src/recalc/README.md`.
+    ///
+    /// The re-run condition is the one the debt flag used to defer: this pass
+    /// moved an array footprint. The reader half of the old condition is not
+    /// repeated here, deliberately -- edges only exist in the tracing modes, so
+    /// a reader test would settle `Incremental` and leave `Full` unsettled,
+    /// which is the one divergence this engine may not have. An extra pass over
+    /// a footprint nothing read recomputes the same values and stops.
+    ///
+    /// **Termination.** Iteration *k*+1 runs the same deterministic pass over
+    /// iteration *k*'s output, and stops as soon as the footprint it was handed
+    /// comes back unchanged. A re-run only fires when the previous pass wrote a
+    /// *different* value into a footprint position, which happens only where an
+    /// anchor's inputs or extent moved under it; the anchor's own inputs are
+    /// settled by the pass that moved them, so each re-run resolves one layer
+    /// of anchor-reads-anchor and the cascade is bounded by the depth of that
+    /// chain. Two passes is what every shape found so far needs. The bound
+    /// below is the belt: a workbook that has not settled by then is reported,
+    /// and in release the pass stops rather than spins -- identically in both
+    /// modes, so the modes still agree.
+    fn evaluate_full_to_fixed_point(&mut self) {
+        let arrays_at_entry = self.graph.arrays.snapshot();
+        let mut settled = false;
+        for _ in 0..MAX_SETTLING_PASSES {
+            // The array footprint's values entering this pass. `change_keys`
+            // takes the snapshot eagerly, which is the point: the comparison
+            // below is against the values as they were before the pass, so this
+            // must not become a lazy view of the post-pass state.
+            let before = self.graph.arrays.snapshot();
+            let footprint_before = self.change_keys(
+                before
+                    .iter()
+                    .copied()
+                    .filter(|&p| !self.is_unevaluated_array(p)),
+            );
+            self.evaluate_full();
+            if footprint_before
                 .iter()
-                .copied()
-                .filter(|&p| !self.is_unevaluated_array(p)),
+                .all(|(p, was)| self.change_key(*p) == *was)
+            {
+                settled = true;
+                break;
+            }
+        }
+        debug_assert!(
+            settled,
+            "evaluate_full did not settle in {MAX_SETTLING_PASSES} passes: an array footprint \
+             is still moving under its readers. The workbook is left as the last pass wrote it."
         );
-        self.evaluate_full();
+        // A newly observed dynamic-array anchor may not have seen a SEQUENCE
+        // that spilled later in the same pass (`E15#` after `=SEQUENCE(3)`).
+        // Leave it dirty so the next evaluate takes the arrays->Full path.
         let new: Vec<Position> = self
             .graph
             .arrays
             .snapshot()
             .into_iter()
-            .filter(|p| !before.contains(p))
+            .filter(|p| !arrays_at_entry.contains(p))
             .collect();
         for p in new {
             self.graph.mark_dirty(p);
-        }
-        // A footprint cell that moved this pass and that something read this
-        // pass may have been read before it moved. The reads are exactly the
-        // edges the pass just recorded, so a dependent means a reader exists.
-        // Conservative by one pass at worst: if the reader in fact read after
-        // the write, the forced full pass moves nothing and clears the debt.
-        //
-        // A cycle running through the array used to be a second arm here, on
-        // the grounds that a member read while its anchor was still evaluating
-        // leaves no edge. It never decided anything, and could not: a cycle
-        // through a footprint puts the anchor on the cycle (reading a member is
-        // an edge on its anchor, I1.9), so the anchor lands in `never_served`,
-        // which every later pass seeds dirty -- and a cone holding an array
-        // position takes the arrays->Full fallback. The next pass was already
-        // full, which is all the debt flag could have forced.
-        let debt = footprint_before.iter().any(|(p, was)| {
-            self.change_key(*p) != *was && !self.graph.dependents_of(*p).is_empty()
-        });
-        if debt {
-            self.graph.note_convergence_debt();
         }
     }
 

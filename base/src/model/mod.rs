@@ -3646,9 +3646,15 @@ impl<'a> Model<'a> {
             });
         }
         self.evaluate_conditional_formatting();
+        // The array index is not part of the graph's edge machinery. It is the
+        // footprint that `Model::evaluate_full_to_fixed_point` compares across a
+        // pass to decide whether the workbook settled, and both modes have to
+        // reach the same fixed point or they diverge by exactly one healing
+        // window. So it is rebuilt whatever the mode; only the edge-derived sets
+        // below belong to the modes that record edges.
+        self.collect_array_cells();
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
-            self.collect_array_cells();
             // This pass rebuilt every edge, so the never-served set is rebuilt
             // over the whole graph: a cycle anywhere in the workbook has to be
             // known here, because later incremental passes only look at the
