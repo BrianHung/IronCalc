@@ -3275,6 +3275,10 @@ impl<'a> Model<'a> {
     /// all. This is the order the full pass evaluates in and the order every
     /// index built from a whole-workbook walk is built in, so it has one
     /// definition. A caller that needs `&mut self` afterwards collects first.
+    /// The full pass walks this twice over every cell in the workbook, so the
+    /// sort carries the cell reference it already has rather than the column
+    /// number to look the cell up by again: the same order, one hash lookup per
+    /// cell instead of two.
     pub(crate) fn cells_in_order(&self) -> impl Iterator<Item = (Position, &Cell)> + '_ {
         self.workbook
             .worksheets
@@ -3285,11 +3289,14 @@ impl<'a> Model<'a> {
                 sorted_rows.sort_unstable();
                 sorted_rows.into_iter().flat_map(move |row| {
                     let row_data = &worksheet.sheet_data[&row];
-                    let mut sorted_columns: Vec<i32> = row_data.keys().copied().collect();
-                    sorted_columns.sort_unstable();
+                    let mut sorted_columns: Vec<(i32, &Cell)> = row_data
+                        .iter()
+                        .map(|(&column, cell)| (column, cell))
+                        .collect();
+                    sorted_columns.sort_unstable_by_key(|&(column, _)| column);
                     sorted_columns
                         .into_iter()
-                        .map(move |column| ((sheet_index as u32, row, column), &row_data[&column]))
+                        .map(move |(column, cell)| ((sheet_index as u32, row, column), cell))
                 })
             })
     }
