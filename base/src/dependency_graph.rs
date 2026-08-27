@@ -388,6 +388,11 @@ impl SheetRanges {
     fn areas(&self) -> impl Iterator<Item = &Area> + '_ {
         self.dependents.keys()
     }
+
+    /// How many distinct ranges are read on this sheet.
+    fn len(&self) -> usize {
+        self.dependents.len()
+    }
 }
 
 /// Walkability of the stored edges. One enum so built/forced flags cannot disagree.
@@ -783,6 +788,75 @@ impl DependencyGraph {
         &self.blocked_array_readers.0
     }
 
+    /// The successors of every node, as dense ids into `nodes`: exactly what
+    /// [`Self::dependents_of`] returns for each of them, restricted to `nodes`,
+    /// sorted, duplicates kept (a dependent that reads a cell *and* a range over
+    /// it is two edges, and the walk counts it twice either way).
+    ///
+    /// Two ways to get there, and the point of this method is that they cost
+    /// differently. `dependents_of` is a point query: it scans the row band of
+    /// the range index that the cell falls in, which is right for a cone of a
+    /// few cells and ruinous for a whole-workbook set -- a band holds every
+    /// range overlapping 256 rows, so a workbook of overlapping windowed `SUM`s
+    /// pays hundreds of rejected containment tests per cell, once per cell in
+    /// the workbook. Walking the ranges instead visits each one once and hands
+    /// it to the cells it covers, which `nodes` being sorted makes a slice.
+    ///
+    /// The strategy is chosen by which side is bigger. Both produce the same
+    /// lists; this decides nothing but the cost.
+    fn successors_within(&self, nodes: &[Position], ids: &HashMap<Position, u32>) -> Vec<Vec<u32>> {
+        let mut successors: Vec<Vec<u32>> = vec![Vec::new(); nodes.len()];
+        let range_count: usize = self.range_dependents.values().map(SheetRanges::len).sum();
+        if nodes.len() < range_count {
+            for (id, &cell) in nodes.iter().enumerate() {
+                successors[id].extend(
+                    self.dependents_of(cell)
+                        .into_iter()
+                        .filter_map(|dependent| ids.get(&dependent).copied()),
+                );
+            }
+        } else {
+            for (precedent, dependents) in &self.cell_dependents {
+                let Some(&id) = ids.get(precedent) else {
+                    continue;
+                };
+                successors[id as usize].extend(
+                    dependents
+                        .iter()
+                        .filter_map(|dependent| ids.get(dependent).copied()),
+                );
+            }
+            for (&sheet, sheet_ranges) in &self.range_dependents {
+                for (&(_, row1, column1, row2, column2), dependents) in sheet_ranges.iter() {
+                    let inside: Vec<u32> = dependents
+                        .iter()
+                        .filter_map(|dependent| ids.get(dependent).copied())
+                        .collect();
+                    if inside.is_empty() {
+                        continue;
+                    }
+                    // `nodes` is sorted, so this sheet's rows within the range
+                    // are one contiguous slice and only the column is tested per
+                    // cell. A whole-column reference costs the cells it covers,
+                    // not the million rows it names.
+                    let first = nodes.partition_point(|&(s, row, _)| (s, row) < (sheet, row1));
+                    for (offset, &(s, row, column)) in nodes[first..].iter().enumerate() {
+                        if s != sheet || row > row2 {
+                            break;
+                        }
+                        if column >= column1 && column <= column2 {
+                            successors[first + offset].extend(inside.iter().copied());
+                        }
+                    }
+                }
+            }
+        }
+        for dependents in &mut successors {
+            dependents.sort_unstable();
+        }
+        successors
+    }
+
     /// Orders `affected` so each cell follows the affected cells it reads.
     /// Returns `Err` with the cells no order can place -- those on a dependency
     /// cycle plus everything downstream of one -- so the caller can fall back
@@ -792,42 +866,43 @@ impl DependencyGraph {
         &self,
         affected: &HashSet<Position>,
     ) -> Result<Vec<Position>, HashSet<Position>> {
-        let successors = |cell: Position| -> Vec<Position> {
-            let mut dependents: Vec<Position> = self
-                .dependents_of(cell)
-                .into_iter()
-                .filter(|d| affected.contains(d))
-                .collect();
-            dependents.sort_unstable();
-            dependents
-        };
-        let mut indegree: HashMap<Position, usize> = affected.iter().map(|&c| (c, 0)).collect();
-        for &cell in affected {
-            for dependent in successors(cell) {
-                *indegree.entry(dependent).or_default() += 1;
+        // Dense ids assigned in `Position` order, so the walk is index
+        // arithmetic and ascending id *is* ascending position: the order this
+        // produces is the one a sorted walk over `Position` keys produces, and
+        // a full pass no longer hashes a 12-byte tuple per edge, twice.
+        let mut nodes: Vec<Position> = affected.iter().copied().collect();
+        nodes.sort_unstable();
+        let ids: HashMap<Position, u32> = nodes
+            .iter()
+            .enumerate()
+            .map(|(id, &position)| (position, id as u32))
+            .collect();
+        let successors = self.successors_within(&nodes, &ids);
+
+        let mut indegree: Vec<u32> = vec![0; nodes.len()];
+        for dependents in &successors {
+            for &dependent in dependents {
+                indegree[dependent as usize] += 1;
             }
         }
-        let mut queue: Vec<Position> = indegree
-            .iter()
-            .filter(|(_, &n)| n == 0)
-            .map(|(&c, _)| c)
+        let mut queue: Vec<u32> = (0..nodes.len() as u32)
+            .filter(|&id| indegree[id as usize] == 0)
             .collect();
-        queue.sort_unstable();
-        let mut order = Vec::with_capacity(affected.len());
+        let mut order = Vec::with_capacity(nodes.len());
         let mut head = 0;
         while head < queue.len() {
-            let cell = queue[head];
+            let id = queue[head];
             head += 1;
-            order.push(cell);
-            for dependent in successors(cell) {
-                let n = indegree.entry(dependent).or_default();
-                *n -= 1;
-                if *n == 0 {
+            order.push(nodes[id as usize]);
+            for &dependent in &successors[id as usize] {
+                let remaining = &mut indegree[dependent as usize];
+                *remaining -= 1;
+                if *remaining == 0 {
                     queue.push(dependent);
                 }
             }
         }
-        if order.len() == affected.len() {
+        if order.len() == nodes.len() {
             return Ok(order);
         }
         let ordered: HashSet<Position> = order.into_iter().collect();
