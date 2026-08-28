@@ -708,6 +708,7 @@ impl<'a> Model<'a> {
             pass_generation: 0,
             formula_count_stale: false,
             wrote_array_cells: false,
+            evaluated_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
             cse_member_guard: crate::model::cse_guard::CseMemberGuard::default(),

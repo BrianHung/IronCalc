@@ -1220,14 +1220,20 @@ pub const ZOO: &[&str] = &[
     // not change under an insert or delete, so the displacement journal never
     // rewrites them: the range half of `mark_structural_dependents` and the
     // used-range clip (`Input::SheetStructure`) are all that connect them.
-    // Only the forms that clip to the used range are planted. COUNTA,
-    // COUNTBLANK, SUBTOTAL and AVERAGE walk all 1,048,576 rows of a
-    // whole-column reference instead of clipping the way SUM, COUNTIF and
-    // SUMIF do, which costs the fuzzer about 250ms per evaluate.
+    // Every aggregate here clips to the used range now, so all of them cost
+    // about the same per evaluate; COUNTA, COUNTBLANK, COUNT, SUBTOTAL and
+    // AVERAGE used to walk all 1,048,576 rows and were dropped for it.
+    // COUNT(1:5) is the whole-*row* form: its column axis is the one that
+    // clips.
     "=SUM(A:A)",
     "=SUM(A:C)",
+    "=COUNTA(A:A)",
+    "=COUNTBLANK(A:B)",
+    "=COUNT(1:5)",
+    "=SUBTOTAL(103,A:A)",
     "=COUNTIF(A:A,\">{N}\")",
     "=SUMIF(A:A,\">{N}\",B:B)",
+    "=AVERAGE(A:B)",
     // Counts over a bounded range: an insert *inside* one adds a blank, which
     // moves the answer where SUM would not notice.
     "=COUNTBLANK(A1:A{R})",
@@ -1243,6 +1249,7 @@ pub const ZOO: &[&str] = &[
     // A computed extent wide enough that the reader's per-cell walk is clipped
     // to the used range: only the recorded rectangle connects a write below it.
     "=SUM(INDIRECT(\"A:A\"))",
+    "=COUNTA(INDIRECT(\"{C}:{C}\"))",
     "=OFFSET($A$1,ROW()-1,0)",
     // Own-coordinate and formula-text reads with displacement-stable text.
     "=ROW()*10+COLUMN()",
@@ -1400,10 +1407,12 @@ pub const NAME_TARGETS: &[&str] = &[
     "LAMBDA(x,SUM(Sheet1!$A$1:$A$4)+x)",
     "LAMBDA(x,x+NCELL)",
     "Sheet1!$A$1:$A$3*2",
-    // Whole-row only. A whole-*column* name target is read by "=MAX(NDATA)",
-    // and MAX does not clip a whole-column reference to the used range -- 244ms
-    // an evaluate for $A:$A, 698ms for $A:$C, against 2.6ms for the SUM,
-    // COUNTIF and INDEX readers of the same name.
+    // Whole-column and whole-row name targets. "=MAX(NDATA)" reads these, and
+    // MAX clips a whole-column reference to the used range now -- these cost
+    // what the SUM, COUNTIF and INDEX readers of the same name cost, where
+    // $A:$A used to cost 244ms an evaluate and $A:$C 698ms.
+    "Sheet1!$A:$A",
+    "Sheet1!$A:$C",
     "Sheet1!$1:$3",
     "5",
 ];

@@ -22,7 +22,9 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     })
                 }
             },
-            CalcResult::Range { left, right } => self.values_from_range(left, right)?,
+            CalcResult::Range { left, right } => {
+                self.values_from_range_clipped(left, right, cell)?
+            }
             CalcResult::Boolean(value) => {
                 if !matches!(arg, Node::ReferenceKind { .. }) {
                     vec![Some(if value { 1.0 } else { 0.0 })]

@@ -295,11 +295,30 @@ impl Model<'_> {
         sheet: u32,
         row1: i32,
         column1: i32,
-        row2: i32,
-        column2: i32,
+        mut row2: i32,
+        mut column2: i32,
         reducer: RangeReducer,
         acc: RangeAgg,
     ) -> RangeAgg {
+        // The one clip for every fold_range caller (SUM/MIN/MAX/COUNT): an open
+        // axis walks the used range, not the sheet's full extent. Value-neutral
+        // for these reducers -- the dropped cells are blank -- and reading the
+        // dimension records `Input::SheetStructure`, so a structural edit that
+        // grows the used range re-runs the formula. Mirrors
+        // `EvalCtx::clip_range_to_used`, which serves the walks that do not
+        // fold.
+        let open_row = row1 == 1 && row2 == crate::constants::LAST_ROW;
+        let open_column = column1 == 1 && column2 == crate::constants::LAST_COLUMN;
+        if open_row || open_column {
+            if let Ok(dimension) = self.sheet_dimension(sheet) {
+                if open_row {
+                    row2 = dimension.max_row;
+                }
+                if open_column {
+                    column2 = dimension.max_column;
+                }
+            }
+        }
         if self.recalc_mode == RecalcMode::Full {
             return self.reduce_range_direct(sheet, row1, column1, row2, column2, reducer, acc);
         }

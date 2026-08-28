@@ -53,3 +53,62 @@ fn pass_cost_does_not_grow_with_workbook_size() {
         "pass cost grows with workbook size: 2k={small}us 32k={large}us"
     );
 }
+
+/// A whole-column reference spans 1,048,576 rows and a whole-row reference
+/// 16,384 columns, but everything past the sheet's used range is blank. An
+/// aggregate that ignores blanks must therefore cost what the same aggregate
+/// over the used range costs -- and nothing in the value suite can see the
+/// difference, because walking the blanks gives exactly the same answer.
+///
+/// The mutant is "walk the declared extent": drop the `clip_range_to_used` call
+/// from any of these six walks and this workbook goes from about a millisecond
+/// an evaluate to a quarter of a second. The bound is a 100x margin over the
+/// bounded-range form measured on the same machine in the same run, plus a
+/// floor, so it is nowhere near the noise and still two orders of magnitude
+/// under the unclipped cost.
+#[test]
+fn whole_column_aggregate_cost_tracks_the_used_range() {
+    let cost = |aggregates: &str| -> u128 {
+        let mut model = Model::new_empty("t", "en", "UTC", "en")
+            .unwrap()
+            .with_recalc_mode(RecalcMode::Incremental);
+        // A 40x4 used range: four orders of magnitude short of the sheet.
+        for row in 1..=40 {
+            for column in 1..=4 {
+                model
+                    .set_user_input(0, row, column, format!("{}", row * column))
+                    .unwrap();
+            }
+        }
+        model
+            .set_user_input(0, 1, 8, aggregates.to_string())
+            .unwrap();
+        model.evaluate();
+        let start = Instant::now();
+        for i in 0..60 {
+            model
+                .set_user_input(0, 1, 1, format!("{}", i % 7 + 1))
+                .unwrap();
+            model.evaluate();
+        }
+        start.elapsed().as_micros()
+    };
+    // Six walks that used to run to LAST_ROW/LAST_COLUMN, against the same six
+    // over the used range. COUNTBLANK is in both because its clip is the one
+    // that has to add a remainder back.
+    let bounded = cost(
+        "=COUNTA(A1:A40)+COUNTBLANK(B1:B40)+AVERAGE(A1:A40)\
+         +SUBTOTAL(103,A1:A40)+MAX(A1:A40)+COUNT(A1:D5)",
+    )
+    .max(1);
+    let open = cost(
+        "=COUNTA(A:A)+COUNTBLANK(B:B)+AVERAGE(A:A)\
+         +SUBTOTAL(103,A:A)+MAX(A:A)+COUNT(1:5)",
+    );
+    println!("60 passes: bounded ranges {bounded}us, whole column/row {open}us");
+    assert!(
+        open < bounded * 100 + 200_000,
+        "a whole-column aggregate costs more than its used range: \
+         bounded={bounded}us open={open}us"
+    );
+}

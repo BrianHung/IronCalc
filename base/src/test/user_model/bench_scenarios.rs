@@ -376,12 +376,10 @@ fn build_sparse_workbook(model: &mut Model, rows: i32, block: i32) {
     }
 }
 
-/// A long data column and a handful of aggregates over the whole column. Only
-/// `SUM` and `COUNTIF` are used: `MAX`, `AVERAGE`, `COUNTA`, `COUNTBLANK` and
-/// `SUBTOTAL` do not clip a whole-column reference to the used range, which
-/// costs hundreds of milliseconds per pass at the sheet's full height. That is
-/// pre-existing upstream behaviour, unrelated to this stack, and measuring it
-/// here would drown every other number in the row.
+/// A long data column and a handful of aggregates over the whole column. Every
+/// one of these clips the reference to the used range, so the row measures the
+/// cone and not the sheet's full height; `MAX`, `AVERAGE`, `COUNTA` and
+/// `SUBTOTAL` used to walk all 1,048,576 rows and had to be left out of it.
 fn build_whole_column(model: &mut Model, rows: i32, aggregates: i32) {
     for r in 1..=rows {
         model
@@ -394,6 +392,18 @@ fn build_whole_column(model: &mut Model, rows: i32, aggregates: i32) {
             .unwrap();
         model
             .set_user_input(0, i + 1, 4, format!("=COUNTIF(A:A,\">{}\")", i + 1))
+            .unwrap();
+        model
+            .set_user_input(0, i + 1, 5, format!("=MAX(A:A)+{i}"))
+            .unwrap();
+        model
+            .set_user_input(0, i + 1, 6, format!("=AVERAGE(A:A)+{i}"))
+            .unwrap();
+        model
+            .set_user_input(0, i + 1, 7, format!("=COUNTA(A:A)+{i}"))
+            .unwrap();
+        model
+            .set_user_input(0, i + 1, 8, format!("=SUBTOTAL(103,A:A)+{i}"))
             .unwrap();
     }
 }

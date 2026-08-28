@@ -57,6 +57,32 @@ pub(crate) type Position = (u32, i32, i32);
 /// `(sheet, row1, column1, row2, column2)`.
 pub(crate) type Area = (u32, i32, i32, i32, i32);
 
+/// The sheet numbering every stored [`Position`] is expressed in: the workbook's
+/// sheet ids, in workbook order.
+///
+/// A `Position`'s sheet component is an *index* into `workbook.worksheets`, so
+/// adding, deleting, duplicating or moving a sheet renumbers every position the
+/// graph holds — silently, because the old index still names a live sheet. The
+/// convention that stops that is `reset_parsed_structures` calling
+/// `invalidate_graph`, and until this type existed nothing checked it.
+///
+/// A sheet id is allocated once at creation and never reassigned
+/// (`Model::get_new_sheet_id`), so this sequence changes under exactly the edits
+/// that renumber and under no others: an insert or delete resizes it, a move
+/// permutes it, and a rename — which changes formula text, not numbering —
+/// leaves it alone. That is why the layout is *derived* rather than counted.
+/// There is no generation to bump and so no bump to forget: a new sheet-CRUD
+/// path is checked the moment it lands, without knowing this type exists.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub(crate) struct SheetLayout(Vec<u32>);
+
+impl SheetLayout {
+    /// The layout of a workbook whose sheets have these ids, in workbook order.
+    pub(crate) fn from_sheet_ids(ids: impl IntoIterator<Item = u32>) -> Self {
+        SheetLayout(ids.into_iter().collect())
+    }
+}
+
 /// Axis a structural edit inserts or deletes lines along.
 #[derive(Clone, Copy)]
 pub(crate) enum Axis {
@@ -582,13 +608,11 @@ pub(crate) struct DependencyGraph {
     /// Insert/delete can move data cells the dirty cone does not name. Cleared
     /// in [`Self::after_pass`] so it cannot leak across a Full fallback.
     structural_unknown: bool,
-    /// The pass that just ran left values another full pass would still move: a
-    /// spill or CSE footprint changed after something had already read it. Full
-    /// mode heals that on its next unconditional pass, so incremental must run
-    /// a full pass then too, or the two modes drift apart by exactly one
-    /// evaluate. Survives [`Self::after_pass`]; the next pass consumes it
-    /// through [`Self::take_convergence_debt`].
-    convergence_debt: bool,
+    /// The sheet numbering the stored positions are expressed in, as of the last
+    /// pass. Compared against the workbook's current layout at every pass entry
+    /// by [`Self::sync_sheet_layout`]; a disagreement means sheet CRUD moved the
+    /// coordinates out from under the edges.
+    sheet_layout: SheetLayout,
 }
 
 impl DependencyGraph {
@@ -722,18 +746,6 @@ impl DependencyGraph {
     /// Forces the next evaluation to be full and rebuild the graph.
     pub(crate) fn force_full(&mut self) {
         self.state = GraphState::MustRebuild;
-    }
-
-    /// Records that the pass that just ran is not a fixed point: another full
-    /// pass over the same state would still move values. See
-    /// [`Self::convergence_debt`].
-    pub(crate) fn note_convergence_debt(&mut self) {
-        self.convergence_debt = true;
-    }
-
-    /// Whether the previous pass left convergence debt, clearing the record.
-    pub(crate) fn take_convergence_debt(&mut self) -> bool {
-        std::mem::replace(&mut self.convergence_debt, false)
     }
 
     /// Whether the next evaluation must be full. True unless the graph is ready
@@ -1070,9 +1082,12 @@ impl DependencyGraph {
             referenced,
             never_served,
             blocked_array_readers,
-            // Facts about the pass that just ran. They hold no coordinates.
+            // A fact about the pass that just ran. It holds no coordinates.
             structural_unknown: _,
-            convergence_debt: _,
+            // Sheet ids, not coordinates. A row/column edit happens *within* one
+            // sheet and cannot add, remove or reorder sheets, so the numbering
+            // this names is exactly the one it named before.
+            sheet_layout: _,
         } = self;
         cell_dependents.shift(displacement);
         range_dependents.shift(displacement);
@@ -1089,6 +1104,32 @@ impl DependencyGraph {
     /// moved cell. Clears the flag.
     pub(crate) fn take_structural_unknown(&mut self) -> bool {
         std::mem::replace(&mut self.structural_unknown, false)
+    }
+
+    /// Adopts `layout` as the numbering the stored positions are in, reporting
+    /// whether that numbering had changed underneath a graph still holding
+    /// edges — a sheet added, deleted, duplicated or moved without the
+    /// `invalidate_graph` that every such edit is supposed to make.
+    ///
+    /// Detection, not repair, is the point: a `Ready` graph whose layout moved
+    /// holds positions whose sheet component now names a *different live sheet*,
+    /// so every edge, precedent, array entry and never-served cell in it is a
+    /// silently wrong answer waiting to be read. The graph is downgraded to
+    /// `MustRebuild` here so release builds degrade to a correct full pass
+    /// instead of serving that corruption, and the caller raises a
+    /// `debug_assert` so a debug or test build fails loudly at the edit that
+    /// skipped the invalidation rather than at whatever later reads it.
+    ///
+    /// A `MustRebuild` graph holds no positions, so a layout change against one
+    /// is not staleness — it is the ordinary first pass, or the pass after any
+    /// correctly-invalidated sheet edit — and reports `false`.
+    pub(crate) fn sync_sheet_layout(&mut self, layout: SheetLayout) -> bool {
+        let stale = matches!(self.state, GraphState::Ready { .. }) && self.sheet_layout != layout;
+        self.sheet_layout = layout;
+        if stale {
+            self.state = GraphState::MustRebuild;
+        }
+        stale
     }
 
     /// Marks the graph ready after a pass that left the edges valid.
@@ -1129,6 +1170,54 @@ mod tests {
         assert!(graph.should_recompute_full());
         graph.mark_dirty((0, 2, 1)); // ignored: not Ready
         assert!(graph.should_recompute_full());
+    }
+
+    /// I8.10 — a sheet renumbering under a graph that still holds edges is
+    /// detected, and only that.
+    ///
+    /// The check is two one-sided conditions and this pins both. Kills
+    /// `sync_sheet_layout` always answering `false` (the mechanism dead, and
+    /// sheet CRUD back to silently pointing every stored coordinate at the
+    /// wrong sheet); kills dropping the `Ready` guard (every first pass would
+    /// then report staleness, so the panic would fire on correct programs);
+    /// kills comparing the layouts with `==` instead of `!=`; and kills
+    /// detecting without downgrading, which is what makes release builds fall
+    /// back to a correct full pass instead of walking the stale edges.
+    #[test]
+    fn sheet_renumbering_under_a_ready_graph_is_detected() {
+        let layout = |ids: &[u32]| SheetLayout::from_sheet_ids(ids.to_vec());
+        let mut graph = DependencyGraph::default();
+
+        // MustRebuild holds no positions, so adopting any layout is not
+        // staleness — this is the ordinary first pass.
+        assert!(!graph.sync_sheet_layout(layout(&[1, 2])));
+        graph.after_pass();
+        graph.mark_dirty((0, 1, 1));
+
+        // Same layout, same numbering: the graph stays walkable.
+        assert!(!graph.sync_sheet_layout(layout(&[1, 2])));
+        assert!(!graph.should_recompute_full());
+
+        // A sheet deleted. The stored `(0, ..)` and `(1, ..)` now mean
+        // different sheets than they did, so the edges cannot be walked.
+        assert!(graph.sync_sheet_layout(layout(&[2])));
+        assert!(graph.should_recompute_full());
+        assert!(graph.full_reflects_change());
+
+        // A *move* renumbers without changing the sheet count, which is why the
+        // layout is the id sequence and not its length.
+        let mut graph = DependencyGraph::default();
+        graph.sync_sheet_layout(layout(&[1, 2]));
+        graph.after_pass();
+        assert!(graph.sync_sheet_layout(layout(&[2, 1])));
+
+        // A rename changes formula text, not numbering: the ids are untouched,
+        // so this mechanism stays silent and the reparse's own invalidation is
+        // what covers it.
+        let mut graph = DependencyGraph::default();
+        graph.sync_sheet_layout(layout(&[1, 2]));
+        graph.after_pass();
+        assert!(!graph.sync_sheet_layout(layout(&[1, 2])));
     }
 
     /// I5.5 — the remapping rule is exact at the edit boundary.
