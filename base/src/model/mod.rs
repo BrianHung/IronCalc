@@ -2031,10 +2031,9 @@ impl<'a> Model<'a> {
             range_reduce_cache: HashMap::new(),
             pass_generation: 0,
             // Nothing journaled the cells this workbook arrived with, so the
-            // count is unknown rather than zero. It used to be established as a
-            // side effect of the first full pass's `collect_array_cells`; that
-            // walk is now gated on the workbook having arrays, and the count is
-            // not about arrays. `recount_formula_cells` answers it on the first
+            // count is unknown rather than zero. It cannot ride on the full
+            // pass's `collect_array_cells` walk, which is gated on the workbook
+            // having arrays; `recount_formula_cells` answers it on the first
             // pass that reads it, which is the first selective one.
             formula_count_stale: true,
             wrote_array_cells: false,
@@ -3574,23 +3573,20 @@ impl<'a> Model<'a> {
     /// Catches a sheet added, deleted, duplicated or moved without the
     /// `invalidate_graph` that renumbering the workbook obliges.
     ///
-    /// Every `Position` the graph stores names its sheet by *index*, so sheet
-    /// CRUD shifts all of them onto the wrong sheet at once, and the old index
-    /// still names a live sheet — the corruption is silent, and reads it
-    /// poisons range edges, array anchors and the never-served set alike. The
-    /// existing defence is a convention (`reset_parsed_structures` calls
-    /// `invalidate_graph`), and this is the check that the convention held.
+    /// The defence itself is a convention (`reset_parsed_structures` calls
+    /// `invalidate_graph`); this is the check that the convention held. Why it
+    /// is needed is `base/src/recalc/README.md`, "Sheet numbering".
     ///
     /// Run at every pass entry, which is where it is both cheap and sufficient:
     /// the graph's positions are only *read* during a pass, so a numbering that
     /// still agrees here agrees everywhere it matters, and the comparison is over
     /// a handful of sheet ids rather than anything per-cell.
     ///
-    /// Debug and test builds panic, because this was silent wrongness before and
-    /// the edit that skipped the invalidation is the only place worth reporting.
-    /// Release builds fall back to a full pass — which is what the missing
-    /// `invalidate_graph` should have asked for — so a shipped workbook is
-    /// recalculated correctly rather than served stale edges.
+    /// Debug and test builds panic, because the corruption is otherwise silent
+    /// and the edit that skipped the invalidation is the only place worth
+    /// reporting. Release builds fall back to a full pass — which is what the
+    /// missing `invalidate_graph` should have asked for — so a shipped workbook
+    /// is recalculated correctly rather than served stale edges.
     fn check_sheet_layout(&mut self) {
         if self.graph.sync_sheet_layout(self.sheet_layout()) {
             debug_assert!(

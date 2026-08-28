@@ -1220,11 +1220,11 @@ pub const ZOO: &[&str] = &[
     // not change under an insert or delete, so the displacement journal never
     // rewrites them: the range half of `mark_structural_dependents` and the
     // used-range clip (`Input::SheetStructure`) are all that connect them.
-    // Every aggregate here clips to the used range now, so all of them cost
-    // about the same per evaluate; COUNTA, COUNTBLANK, COUNT, SUBTOTAL and
-    // AVERAGE used to walk all 1,048,576 rows and were dropped for it.
-    // COUNT(1:5) is the whole-*row* form: its column axis is the one that
-    // clips.
+    // Every aggregate here clips to the used range, so all of them cost about
+    // the same per evaluate; unclipped, COUNTA, COUNTBLANK, COUNT, SUBTOTAL and
+    // AVERAGE walk all 1,048,576 rows and price themselves out of the
+    // generator. COUNT(1:5) is the whole-*row* form: its column axis is the one
+    // that clips.
     "=SUM(A:A)",
     "=SUM(A:C)",
     "=COUNTA(A:A)",
@@ -1408,9 +1408,8 @@ pub const NAME_TARGETS: &[&str] = &[
     "LAMBDA(x,x+NCELL)",
     "Sheet1!$A$1:$A$3*2",
     // Whole-column and whole-row name targets. "=MAX(NDATA)" reads these, and
-    // MAX clips a whole-column reference to the used range now -- these cost
-    // what the SUM, COUNTIF and INDEX readers of the same name cost, where
-    // $A:$A used to cost 244ms an evaluate and $A:$C 698ms.
+    // MAX clips a whole-column reference to the used range, so these cost what
+    // the SUM, COUNTIF and INDEX readers of the same name cost.
     "Sheet1!$A:$A",
     "Sheet1!$A:$C",
     "Sheet1!$1:$3",

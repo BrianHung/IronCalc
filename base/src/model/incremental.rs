@@ -223,9 +223,9 @@ impl Model<'_> {
     /// model, so this pass may be selective. Anything else runs the full pass.
     ///
     /// This is the whole of the scheduling decision that is about the cone, and
-    /// it is a whitelist on purpose: the engine used to carry a blacklist of
-    /// hazards, where one nobody had thought of was a wrong value, and inverted
-    /// one nobody thought of is only a full pass.
+    /// it is a whitelist rather than a blacklist of hazards on purpose: under a
+    /// blacklist a hazard nobody thought of is a wrong value; here a case
+    /// nobody thought of is only a full pass.
     ///
     /// - **P1** no cone member is in the array index (I8.5). Spilling needs the
     ///   full pass's two-phase ordering, and a spill member's value is its
@@ -382,25 +382,6 @@ impl Model<'_> {
         self.changed_cells = ChangedCells::All;
     }
 
-    /// Runs the two-phase pass until the workbook settles, and leaves a newly
-    /// observed array anchor dirty.
-    ///
-    /// One two-phase pass is not a fixed point: `evaluate_cell` recurses, so a
-    /// phase-2 formula can be pulled in early and read a footprint position
-    /// before its anchor refills it, and only a further whole-workbook pass
-    /// repairs that reader. `evaluate` runs the further pass itself, so what it
-    /// returns is the settled state rather than the first approximation of it.
-    ///
-    /// The re-run condition is the footprint comparison alone, with no test for
-    /// whether anything read the moved position: edges exist only in the tracing
-    /// modes, so a reader test would settle `Incremental` and leave `Full` one
-    /// healing window behind, which is the one divergence this engine may not
-    /// have. An extra pass over a footprint nothing read recomputes the same
-    /// values and stops.
-    ///
-    /// Termination, the bound, and the exact extent of the divergence from
-    /// pre-engine behaviour are in `base/src/recalc/README.md`, "One `evaluate`
-    /// settles" and "Intentional divergences".
     /// The array-footprint positions a pass can be held to: every position the
     /// index names whose anchor has actually been evaluated. An anchor that
     /// never has holds no extent yet, so there is nothing to compare it against.
@@ -423,6 +404,25 @@ impl Model<'_> {
             .collect()
     }
 
+    /// Runs the two-phase pass until the workbook settles, and leaves a newly
+    /// observed array anchor dirty.
+    ///
+    /// One two-phase pass is not a fixed point: `evaluate_cell` recurses, so a
+    /// phase-2 formula can be pulled in early and read a footprint position
+    /// before its anchor refills it, and only a further whole-workbook pass
+    /// repairs that reader. `evaluate` runs the further pass itself, so what it
+    /// returns is the settled state rather than the first approximation of it.
+    ///
+    /// The re-run condition is [`Model::settled_footprint`] alone, with no test
+    /// for whether anything read the moved position: edges exist only in the
+    /// tracing modes, so a reader test would settle `Incremental` and leave
+    /// `Full` one healing window behind, which is the one divergence this engine
+    /// may not have. An extra pass over a footprint nothing read recomputes the
+    /// same values and stops.
+    ///
+    /// Termination, the bound, and the exact extent of the divergence from
+    /// pre-engine behaviour are in `base/src/recalc/README.md`, "One `evaluate`
+    /// settles" and "Intentional divergences".
     fn evaluate_full_to_fixed_point(&mut self) {
         let arrays_at_entry = self.graph.arrays.snapshot();
         let mut settled = false;
