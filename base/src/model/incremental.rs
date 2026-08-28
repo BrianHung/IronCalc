@@ -4,8 +4,9 @@
 //! Edges are the reads recorded while a formula evaluates. A pass recomputes
 //! only the cells reachable from those that changed (plus the formulas that
 //! read RAND/NOW/TODAY), stopping wherever a recomputed value turns out
-//! unchanged. Everything it cannot model is answered by falling back to full,
-//! so the fallbacks here are the list of what incremental does not handle.
+//! unchanged -- but only when `cone_is_plain` says the cone is one a selective
+//! pass can model. The default is the full pass, so what this module does not
+//! handle costs time rather than correctness.
 //!
 //! What counts as unchanged, and the delta the pass records, are
 //! [`super::changed_cells`]. The array index it consults is
@@ -34,6 +35,12 @@ const INCREMENTAL_FANOUT_FLOOR: usize = 1024;
 /// incremental bookkeeping it would save.
 const INCREMENTAL_FANOUT_RATIO: usize = 2;
 
+/// How many two-phase passes one `evaluate` may run while settling. Every shape
+/// found so far settles in two; the bound turns a workbook that does not into a
+/// loud debug assertion instead of a spin. See
+/// [`Model::evaluate_full_to_fixed_point`].
+const MAX_SETTLING_PASSES: usize = 4;
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
@@ -60,19 +67,7 @@ impl Model<'_> {
         // the array index; only footprint writes from this pass's frontier
         // matter below.
         self.wrote_array_cells = false;
-        // The previous pass was not a fixed point: a spill or CSE footprint
-        // moved after a reader had already read it, so its readers still hold
-        // the pre-spill value. Full mode heals that on its next unconditional
-        // pass; incremental would serve the stored values forever and land one
-        // pass behind, so this pass is full too. Consumed here, and set again
-        // below if the full pass leaves debt of its own.
-        let convergence_debt = self.graph.take_convergence_debt();
-        // Debt alone forces the pass full. When that pass also carries pending
-        // edits, the cell diff below cannot see them (a user write lands before
-        // evaluate, so it is already in the "before" snapshot), and a delta that
-        // silently drops the edit is worse than reporting Everything.
-        let debt_over_pending_edits = convergence_debt && !self.graph.should_recompute_full();
-        if convergence_debt || self.graph.should_recompute_full() {
+        if self.graph.should_recompute_full() {
             // A full from a shape-changing edit or the first pass may change any
             // cell, so drop the delta. A trailing delete can leave dirty empty
             // (nothing below to shift) while still emptying cells; catch that
@@ -81,8 +76,7 @@ impl Model<'_> {
             // A redundant full with nothing pending keeps the delta, unless
             // RAND/NOW/TODAY are present: a full pass re-rolls those.
             // OFFSET does not re-roll and must not wipe the delta.
-            if debt_over_pending_edits
-                || self.graph.take_structural_unknown()
+            if self.graph.take_structural_unknown()
                 || self.graph.full_reflects_change()
                 || !self.graph.always_dirty_cells().is_empty()
             {
@@ -92,7 +86,7 @@ impl Model<'_> {
                 // moved (e.g. a spill that takes two passes). Diff cells and CF.
                 let before = self.workbook_change_keys();
                 let cf_before = self.cf_cache.clone();
-                self.evaluate_full_and_follow_up_new_arrays();
+                self.evaluate_full_to_fixed_point();
                 let after = self.workbook_change_keys();
                 record_snapshot_diff(&mut self.changed_cells, &before, &after);
                 self.record_cf_changes(cf_before);
@@ -132,29 +126,9 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
-        // Array and spill cells need the full pass's two-phase ordering.
-        // Parse-time dynamic formulas (`=SEQUENCE`, `=E15#`) are ArrayFormula
-        // before the first eval, but are not in `graph.arrays` until we see
-        // them; a fresh or re-dirtied dynamic anchor is a seed, so seeds are
-        // checked for anchors directly. An already-evaluated dynamic anchor
-        // whose last result was 1x1 has no spill cells, is not in `arrays`,
-        // and behaves as a scalar (`=LET(..)`, a called LAMBDA, `=INDEX(..)`);
-        // it stays incremental. If its result grows during the pass, the
-        // post-pass arrays comparison below falls back to Full.
-        // A reader of a blocked anchor is in the same position: its value came
-        // from the live array's top-left, not from the anchor's stored
-        // `#SPILL!`, so recomputing it here would read the error instead. Only
-        // the full pass evaluates the anchor live.
-        if affected
-            .iter()
-            .any(|cell| self.graph.blocked_array_readers().contains(cell))
-        {
-            self.evaluate_full_untracked();
-            return EvalPass::Full;
-        }
-        if affected.iter().any(|cell| self.graph.arrays.contains(cell))
-            || seeds.iter().any(|cell| self.is_dynamic_array_anchor(*cell))
-        {
+        // Selectivity is earned, not assumed: this pass is selective only if
+        // every cell it would touch is one a selective pass can model.
+        if !self.cone_is_plain(&affected) {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
@@ -174,7 +148,7 @@ impl Model<'_> {
         self.saw_circular_reference = false;
         let (changed, cycle_was_known) = match self.graph.topo_order(&affected) {
             Ok(order) => (
-                self.recompute_frontier(&affected, &seeds, &always_report, &order, HashSet::new()),
+                self.recompute_frontier(&affected, &seeds, &always_report, &order),
                 false,
             ),
             Err(_) => (self.recompute_all(&affected, &always_report), true),
@@ -203,10 +177,14 @@ impl Model<'_> {
             self.evaluate_full_untracked();
             return EvalPass::Full;
         }
-        // An evaluation write changed an array footprint: a spill landed, a
-        // CSE range filled, or an anchor stored #SPILL!. Fall back to Full so
-        // spill dependents are not missed and `collect_array_cells` rebuilds
-        // the index exactly.
+        // The one hazard plainness cannot rule out in advance. It admits a
+        // dynamic anchor whose last result was a plain 1x1 scalar, because
+        // `=LET(..)`, a called `LAMBDA` and `=INDEX(..)` are stored that way and
+        // must not cost a full pass. Whether *this* pass's result is still 1x1
+        // is not a property of the stored cell: it is what the pass produces. An
+        // anchor that grows spills members, and this is where that is found out.
+        // Redo the pass as full so spill dependents are not missed and
+        // `collect_array_cells` rebuilds the index exactly.
         if self.wrote_array_cells {
             self.evaluate_full_untracked();
             return EvalPass::Full;
@@ -240,6 +218,35 @@ impl Model<'_> {
         EvalPass::Incremental
     }
 
+    /// Whether `cone` is **plain**: every cell in it is one a selective pass can
+    /// model, so this pass may be selective. Anything else runs the full pass.
+    ///
+    /// This is the whole of the scheduling decision that is about the cone, and
+    /// it is a whitelist on purpose: the engine used to carry a blacklist of
+    /// hazards, where one nobody had thought of was a wrong value, and inverted
+    /// one nobody thought of is only a full pass.
+    ///
+    /// - **P1** no cone member is in the array index (I8.5). Spilling needs the
+    ///   full pass's two-phase ordering, and a spill member's value is its
+    ///   anchor's output rather than its own.
+    /// - **P2** no cone member is a reader of a blocked spill anchor (I8.4). Its
+    ///   stored value came from the live array's top-left, not from the anchor's
+    ///   stored `#SPILL!`, and only the full pass evaluates the anchor live.
+    ///
+    /// Why P1 reads the index rather than the cells, why three further clauses
+    /// are deliberately absent, and the one hazard no pre-pass predicate can see
+    /// (the `wrote_array_cells` redo in `evaluate_selective`) are in
+    /// `base/src/recalc/README.md`, "When a pass is allowed to be selective".
+    /// The fanout budget is checked separately and before this, because it is a
+    /// performance choice rather than a statement about what can be modelled --
+    /// which is why `Verify` disables that one and not this.
+    fn cone_is_plain(&self, cone: &HashSet<Position>) -> bool {
+        cone.iter().all(|position| {
+            !self.graph.arrays.contains(position)
+                && !self.graph.blocked_array_readers().contains(position)
+        })
+    }
+
     /// Clears a cell's cached state so the next `evaluate_cell` recomputes it.
     /// Drops the dynamic link too, as a full pass would, so a cell that no longer
     /// resolves to a `HYPERLINK` does not keep a stale one.
@@ -263,12 +270,9 @@ impl Model<'_> {
         must_run: &[Position],
         always_report: &[Position],
         order: &[Position],
-        extra_scope: HashSet<Position>,
     ) -> Vec<Position> {
         let before = self.change_keys(affected.iter().copied());
-        let mut scope = affected.clone();
-        scope.extend(extra_scope);
-        self.recompute_scope = Some(scope);
+        self.recompute_scope = Some(affected.clone());
         let report: HashSet<Position> = always_report.iter().copied().collect();
         let mut stale: HashSet<Position> = must_run.iter().copied().collect();
         let mut changed = HashSet::new();
@@ -373,59 +377,82 @@ impl Model<'_> {
     /// Full recompute whose result is not expressible as a delta: it may have
     /// changed any cell, so the next `take_changed_cells` reports `Everything`.
     pub(crate) fn evaluate_full_untracked(&mut self) {
-        self.evaluate_full_and_follow_up_new_arrays();
+        self.evaluate_full_to_fixed_point();
         self.changed_cells = ChangedCells::All;
     }
 
-    /// A newly observed dynamic-array anchor may not have seen a SEQUENCE
-    /// that spilled later in the same pass (`E15#` after `=SEQUENCE(3)`).
-    /// Leave it dirty so the next evaluate takes the arrays→Full path and
-    /// matches a second Full-mode pass.
-    fn evaluate_full_and_follow_up_new_arrays(&mut self) {
-        let before = self.graph.arrays.snapshot();
-        // The array footprint's values entering the pass. Full's two phases are
-        // not a fixed point: a formula outside phase 1 can read a spill member
-        // before the anchor refills it (after a move, a delete, or a first
-        // spill), and only Full's next unconditional pass heals that reader.
-        // `change_keys` takes the snapshot eagerly, which is the point: the
-        // comparison below is against the values as they were before the pass,
-        // so this must not become a lazy view of the post-pass state.
-        let footprint_before = self.change_keys(
-            before
-                .iter()
-                .copied()
-                .filter(|&p| !self.is_unevaluated_array(p)),
+    /// Runs the two-phase pass until the workbook settles, and leaves a newly
+    /// observed array anchor dirty.
+    ///
+    /// One two-phase pass is not a fixed point: `evaluate_cell` recurses, so a
+    /// phase-2 formula can be pulled in early and read a footprint position
+    /// before its anchor refills it, and only a further whole-workbook pass
+    /// repairs that reader. `evaluate` runs the further pass itself, so what it
+    /// returns is the settled state rather than the first approximation of it.
+    ///
+    /// The re-run condition is the footprint comparison alone, with no test for
+    /// whether anything read the moved position: edges exist only in the tracing
+    /// modes, so a reader test would settle `Incremental` and leave `Full` one
+    /// healing window behind, which is the one divergence this engine may not
+    /// have. An extra pass over a footprint nothing read recomputes the same
+    /// values and stops.
+    ///
+    /// Termination, the bound, and the exact extent of the divergence from
+    /// pre-engine behaviour are in `base/src/recalc/README.md`, "One `evaluate`
+    /// settles" and "Intentional divergences".
+    /// The array-footprint positions a pass can be held to: every position the
+    /// index names whose anchor has actually been evaluated. An anchor that
+    /// never has holds no extent yet, so there is nothing to compare it against.
+    ///
+    /// Membership, not value. What strands a reader is a footprint position
+    /// changing *hands* -- appearing, vanishing, or moving to another anchor --
+    /// because reading a live spill member evaluates its anchor first
+    /// (`evaluate_cell`'s `SpillCell` arm), so a reader of a member that stayed a
+    /// member cannot have been served a pre-write value. A pure value re-roll
+    /// under stable membership therefore needs no further pass, which is just as
+    /// well: `RANDARRAY` re-rolls every pass by definition, and a value
+    /// comparison would ask it to converge to something it has no fixed point
+    /// for and spin until the bound.
+    fn settled_footprint(&self) -> HashSet<Position> {
+        self.graph
+            .arrays
+            .snapshot()
+            .into_iter()
+            .filter(|&p| !self.is_unevaluated_array(p))
+            .collect()
+    }
+
+    fn evaluate_full_to_fixed_point(&mut self) {
+        let arrays_at_entry = self.graph.arrays.snapshot();
+        let mut settled = false;
+        for _ in 0..MAX_SETTLING_PASSES {
+            // The footprint's *membership* entering this pass. Collected eagerly:
+            // the comparison below is against the positions as they were before
+            // the pass, so this must not become a view of the post-pass index.
+            let footprint_before = self.settled_footprint();
+            self.evaluate_full();
+            if self.settled_footprint() == footprint_before {
+                settled = true;
+                break;
+            }
+        }
+        debug_assert!(
+            settled,
+            "evaluate_full did not settle in {MAX_SETTLING_PASSES} passes: an array footprint \
+             is still moving under its readers. The workbook is left as the last pass wrote it."
         );
-        self.evaluate_full();
+        // A newly observed dynamic-array anchor may not have seen a SEQUENCE
+        // that spilled later in the same pass (`E15#` after `=SEQUENCE(3)`).
+        // Leave it dirty so the next evaluate takes the arrays->Full path.
         let new: Vec<Position> = self
             .graph
             .arrays
             .snapshot()
             .into_iter()
-            .filter(|p| !before.contains(p))
+            .filter(|p| !arrays_at_entry.contains(p))
             .collect();
         for p in new {
             self.graph.mark_dirty(p);
-        }
-        // A footprint cell that moved this pass and that something read this
-        // pass may have been read before it moved. The reads are exactly the
-        // edges the pass just recorded, so a dependent means a reader exists.
-        // Conservative by one pass at worst: if the reader in fact read after
-        // the write, the forced full pass moves nothing and clears the debt.
-        //
-        // A cycle running through the array used to be a second arm here, on
-        // the grounds that a member read while its anchor was still evaluating
-        // leaves no edge. It never decided anything, and could not: a cycle
-        // through a footprint puts the anchor on the cycle (reading a member is
-        // an edge on its anchor, I1.9), so the anchor lands in `never_served`,
-        // which every later pass seeds dirty -- and a cone holding an array
-        // position takes the arrays->Full fallback. The next pass was already
-        // full, which is all the debt flag could have forced.
-        let debt = footprint_before.iter().any(|(p, was)| {
-            self.change_key(*p) != *was && !self.graph.dependents_of(*p).is_empty()
-        });
-        if debt {
-            self.graph.note_convergence_debt();
         }
     }
 
