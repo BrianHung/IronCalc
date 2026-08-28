@@ -635,16 +635,11 @@ fn subtotal_sees_hidden_row_it_scans_not_own_row() {
     assert_eq!(model._get_text("A50"), "9");
 }
 
-/// A range walk asks the same question of every line and cell it passes:
-/// `SUBTOTAL` asks whether each row is hidden and whether each cell holds a
-/// nested `SUBTOTAL`. Recorded one per row, those inputs are a graph edge per
-/// row of the used range, and the linear dedup in `ReadSet` that keeps them
-/// unique is quadratic in it -- which is what made one whole-column `SUBTOTAL`
-/// over 30k rows cost 1.6 seconds an incremental pass against 11 ms in `Full`.
-/// So the edges a walk records must not grow with the height it walked.
-///
-/// Killed by dropping the widening in `ReadSet::record_input`: the input count
-/// then tracks the used range exactly.
+/// I1.11 -- the edges a walk records must not grow with the height it walked.
+/// Per-row inputs are one graph edge per row of the used range, and `ReadSet`'s
+/// linear dedup over them is quadratic in it. Killed by dropping the widening
+/// in `ReadSet::record_input`, which makes the input count track the used
+/// range exactly.
 #[test]
 fn a_range_walk_records_a_bounded_number_of_edges() {
     // One walk per cell, so no formula's rect can widen another's inputs: the
@@ -869,11 +864,8 @@ fn style_on_blank_cell_does_not_enter_the_delta() {
 /// intermediate the batch already passed through.
 ///
 /// Kills `first_was.entry(p).or_insert(..)` becoming `insert(..)` (last-wins),
-/// in both directions — a formula round-tripped through a value would count a
-/// formula that was already there, and a value round-tripped through a formula
-/// would discount one that never existed. The counter is checked against a
-/// from-scratch recount rather than a literal, so the test states the
-/// invariant and not an arithmetic coincidence.
+/// in both directions. Checked against a from-scratch recount rather than a
+/// literal, so it states the invariant and not an arithmetic coincidence.
 #[test]
 fn journal_accounts_a_batch_against_its_pre_batch_state() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -940,13 +932,11 @@ fn spill_hash_of_empty_anchor_sees_later_formula() {
     assert_eq!(inc._get_text("E16"), "8");
 }
 
-/// The column move rebuilds the moved column one cell at a time, in row order
-/// (`column_cell_references` sorts), so the anchor of a CSE array is written
-/// back before the placeholders of the rectangle it re-declares. That is an
-/// interim state of the move, not a user write: `move_column_unchecked` must
-/// suspend the CSE member guard around the rebuild (the way `move_cell` does)
-/// or the placeholder writes error and the move fails. The mode does not
-/// matter -- the rebuild happens before any recalc -- so Full alone is pinned.
+/// I7.3, the column axis. The rebuild writes a CSE anchor back before the
+/// placeholders of the rectangle it re-declares -- an interim state of the
+/// move, not a user write -- so `move_column_unchecked` must suspend the CSE
+/// member guard or the placeholder writes error. Full alone is pinned: the
+/// rebuild happens before any recalc.
 #[test]
 fn displace_rounds_numeric_constants_to_excel_precision() {
     let mut model = new_empty_model();
@@ -1016,15 +1006,11 @@ fn moving_a_row_with_a_cse_anchor_always_succeeds() {
     assert_eq!(model._get_formula("A7"), "=A1:B1");
 }
 
-/// A read of a multi-column rectangle must be recorded as a rectangle, not
-/// dropped. `SUM(B:D)` clips its per-cell walk to the used range, so the only
-/// edge that can connect a write below the last used row to the sum is the
-/// recorded rect. Dropping wide rects from the read set leaves A1 stale.
-///
-/// The span is three columns, not two, so that one shape kills both widths a
-/// dropping bug comes in: a rect wider than one column, and a rect three or
-/// more wide. `SUM(B:C)` pinned only the first — dropping rects of span three
-/// and up survived the whole suite, the verify oracle and the fuzzer.
+/// I1.3 -- a multi-column read is recorded as a rectangle. `SUM(B:D)` clips its
+/// per-cell walk to the used range, so the rect is the only edge that can
+/// connect a write below the last used row. Three columns, not two, so the one
+/// shape kills both widths a dropping bug comes in: a rect wider than one
+/// column, and a rect three or more wide.
 #[test]
 fn multi_column_range_edits_propagate() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1047,11 +1033,10 @@ fn multi_column_range_edits_propagate() {
     assert_eq!(model._get_text("A1"), "10");
 }
 
-/// A volatile cell must re-roll on every incremental pass, not only on a full
-/// one: it stays in the always-dirty set, which seeds every cone and every
-/// delta. Unrelated value edits keep the passes incremental; RANDBETWEEN has
-/// to move anyway, its dependent has to follow, and the delta has to name it
-/// on every pass. Several passes, so one unlucky equal draw cannot flake.
+/// I1.4, the Random variant: a volatile re-rolls on every incremental pass, not
+/// only on a full one, because it stays in the always-dirty set that seeds every
+/// cone and every delta. Several passes, so one unlucky equal draw cannot
+/// flake.
 #[test]
 fn volatile_rerolls_across_repeated_incremental_passes() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1157,21 +1142,14 @@ fn assert_same_workbook(full: &crate::Model, incremental: &crate::Model, label: 
     );
 }
 
-/// One `evaluate` returns the settled state (I7.6), in both modes.
+/// I7.6 -- one `evaluate` returns the settled state. Kills deleting the re-run
+/// loop from `evaluate_full_to_fixed_point`.
 ///
-/// The row move drops `E15`'s spill members, and the pass that follows reads
-/// `E19:E20` through `G12` before `E15`'s `SEQUENCE` refills them, so a single
-/// two-phase pass leaves `G12` holding 0 -- a value the same inputs never
-/// produce again. That is the whole of the healing window this engine closes:
-/// the baseline reached 5 only on a *second* `evaluate`, and the engine used to
-/// reproduce that by recording convergence debt and forcing the next pass full.
-/// `evaluate_full_to_fixed_point` runs the second pass in-pass instead, so 5 is
-/// what one `evaluate` returns.
-///
-/// This test documents an intentional divergence from pre-engine behaviour --
-/// see "Intentional divergences" in `base/src/recalc/README.md`. Both modes are
-/// asserted, because settling in only one of them would be an `Incremental` !=
-/// `Full` divergence, which is the one thing the engine may not do.
+/// The row move drops `E15`'s spill members, and `G12` reads `E19:E20` before
+/// `E15`'s `SEQUENCE` refills them, so one two-phase pass leaves `G12` at 0.
+/// Both modes are asserted: settling in only one would be an `Incremental` !=
+/// `Full` divergence. Intentionally divergent from pre-engine behaviour -- see
+/// "Intentional divergences" in `base/src/recalc/README.md`.
 #[test]
 fn one_evaluate_settles_a_footprint_moved_under_a_reader() {
     let build = |mode| {
@@ -1203,9 +1181,9 @@ fn one_evaluate_settles_a_footprint_moved_under_a_reader() {
 }
 
 /// (b) An error-absorbing function makes the divergence a value, not just a
-/// placement: the frontier evaluated `B1` once through `A1`'s recursion (the
-/// mid-cycle value full keeps) and then a second time at `B1`'s own topological
-/// slot, against the settled `A1`. Full evaluates each cell once per pass.
+/// placement: evaluating `B1` twice -- once through `A1`'s recursion, once at
+/// its own slot against the settled `A1` -- changes what it holds. Full
+/// evaluates each cell once per pass.
 #[test]
 fn incremental_does_not_re_evaluate_a_mid_cycle_cell() {
     let build = |mode| {
@@ -1226,14 +1204,11 @@ fn incremental_does_not_re_evaluate_a_mid_cycle_cell() {
     assert_same_workbook(&full, &inc, "the IFERROR cycle pass");
 }
 
-/// A blocked anchor stores `#SPILL!`, but a reader that reaches it while it is
-/// still evaluating gets the live array's top-left instead -- here `B1`, an
-/// anchor of full's phase 1, pulls `A7` in ahead of `E15`, so full's `A7` holds
-/// `1 + D1` and not `-1 + D1`. That value is not a function of the store: a
-/// later cone that names `A7` without naming `E15` would recompute it against
-/// the stored error and land on `-1 + D1` for ever. Only the full pass
-/// evaluates the anchor live, so a cone reaching a blocked anchor's reader has
-/// to fall back to one.
+/// I3.3/I3.4/I8.4 -- a blocked anchor's reader holds the live array's top-left,
+/// not the stored `#SPILL!`, so recomputing it selectively lands on the error
+/// for ever. Here `B1`, an anchor of full's phase 1, pulls `A7` in ahead of
+/// `E15`. Kills dropping a blocked anchor from the array index, and kills not
+/// rebuilding the blocked-reader set.
 #[test]
 fn a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass() {
     let build = |mode| {
@@ -1265,12 +1240,9 @@ fn a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass() {
     assert_same_workbook(&full, &inc, "an edit reaching a blocked anchor's reader");
 }
 
-/// The audit of the acyclic path: `recompute_frontier` orders by edges, not by
-/// position, so a scalar anchor's readers are already ordered after it and the
-/// phase-1 gap cannot bite -- there is no cycle for a walk order to break, and
-/// a dependency-respecting order is unique in what it produces. Here the anchor
-/// sits *below* its reader in row-major order, so a one-phase positional walk
-/// would be wrong and the topological one is right.
+/// I4.2 -- `recompute_frontier` orders by edges, not position, so the phase-1
+/// gap cannot bite on an acyclic cone. The anchor sits *below* its reader in
+/// row-major order, so a positional walk gets it wrong.
 #[test]
 fn acyclic_cone_orders_a_scalar_anchor_by_edges_not_position() {
     let build = |mode| {
@@ -1297,12 +1269,11 @@ fn acyclic_cone_orders_a_scalar_anchor_by_edges_not_position() {
     assert_eq!(full._get_text("A1"), "31");
 }
 
-/// Verify's liveness check asserts against the always-dirty set as it stood at
-/// pass start, because that is the set `evaluate_selective` seeds
+/// I6.2 -- Verify's liveness check asserts against the always-dirty set as it
+/// stood at pass start, which is the set `evaluate_selective` seeds
 /// `always_report` from. A cell whose branch flips *into* `RAND()` records the
-/// input only while it evaluates, so it was never seeded; with `RAND()*0` its
-/// value does not move either, and the delta rightly leaves it out. Asserting
-/// against the post-pass set panicked on exactly this.
+/// input only as it evaluates, so it was never seeded, and with `RAND()*0` its
+/// value does not move either. Kills asserting against the post-pass set.
 #[cfg(feature = "recalc_verify")]
 #[test]
 fn verify_liveness_allows_a_cell_that_becomes_volatile_mid_pass() {
@@ -1324,11 +1295,10 @@ fn verify_liveness_allows_a_cell_that_becomes_volatile_mid_pass() {
     }
 }
 
-/// The reverse transition keeps the assertion strong. `A1` is volatile entering
-/// the pass, so it is in the pre-pass set, seeds `always_report`, and has to be
-/// in the delta -- even though `RAND()*0` means its value never moved and the
-/// post-pass set no longer contains it. Asserting against the post-pass set
-/// would let a pass drop a volatile cell from its delta unnoticed.
+/// I6.2, the reverse transition. `A1` is volatile entering the pass, so it
+/// seeds `always_report` and has to be in the delta even though its value never
+/// moved and the post-pass set does not contain it. Kills asserting against the
+/// post-pass set, which would let a pass drop a volatile from its delta.
 #[cfg(feature = "recalc_verify")]
 #[test]
 fn verify_liveness_still_binds_when_a_cell_leaves_volatility() {
@@ -1387,10 +1357,10 @@ fn cell_link_write_is_reported_in_the_delta() {
     assert!(delta_names(&mut model, (1, 1)), "delete_cell_link");
 }
 
-/// A link can sit at a position with no cell -- a structural edit strands them
-/// there. Clearing a range that covers it removes the link, and that removal
-/// must reach the delta the same way (fuzz seed 18 at 200 steps). Killed by the
-/// same mutant, through the other caller.
+/// I2.8, the range-clear producer: a link stranded by a structural edit at a
+/// position with no cell is still removed by a clear over it, and that removal
+/// must reach the delta. Killed by the same mutant as the cell-write producer,
+/// through the other caller.
 #[test]
 fn range_clear_reports_a_stranded_link_removal() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1438,15 +1408,11 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
     }
 }
 
-/// The evaluated half of the array-index gate. A workbook that arrives whole --
-/// `from_workbook`, and so `from_bytes` and the xlsx reader -- has arrays in its
-/// cells and nothing in its index, because nothing journaled them. Gating the
-/// rebuild on the index alone leaves it empty through the very pass that has to
-/// build it, and the settling comparison reads that index: with it empty there
-/// is no footprint to compare, so the pass reports itself settled when it is
-/// not. The reader here holds 0 instead of 5, which is the same divergence
-/// `one_evaluate_settles_a_footprint_moved_under_a_reader` pins, reached through
-/// a workbook nobody edited into existence.
+/// I7.7, the *evaluated* half of the array-index gate. A workbook that arrives
+/// whole (`from_workbook`, and so `from_bytes` and the xlsx reader) has arrays
+/// in its cells and nothing in its index, because nothing journaled them.
+/// Kills gating the index rebuild on a non-empty index alone: the settling
+/// comparison then has no footprint to compare and calls itself settled.
 #[test]
 fn a_loaded_workbook_settles_on_its_first_evaluate() {
     let mut source = new_empty_model();
@@ -1473,15 +1439,12 @@ fn a_loaded_workbook_settles_on_its_first_evaluate() {
     }
 }
 
-/// The index half of the array-index gate. The rebuild is skipped for a pass
-/// that evaluated no array cell, which is what makes a workbook with no arrays
-/// pay nothing for the settling machinery -- but the journal drain only ever
-/// *adds* to the index, so the pass after the last array is deleted is the only
-/// thing that can clear the entries it left behind. Gating on "an array
-/// evaluated this pass" alone keeps them for ever, and P1 then sends every cone
-/// touching those positions to a full pass: a permanent, silent loss of
-/// selectivity, with no wrong value to notice it by. Being handed a non-empty
-/// index buys exactly the one final walk that clears them.
+/// I7.7, the *index* half of the array-index gate. The journal drain only ever
+/// adds to the index, so the pass after the last array is deleted is the one
+/// walk that can clear what it left. Kills gating the rebuild on "an array
+/// evaluated this pass" alone, which keeps the stale entries for ever and
+/// sends every cone touching them to a full pass -- a silent loss of
+/// selectivity with no wrong value to notice it by.
 #[test]
 fn deleting_the_last_array_clears_the_index() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1505,14 +1468,11 @@ fn deleting_the_last_array_clears_the_index() {
     );
 }
 
-/// The boundary of P1, from the other side: a dynamic anchor whose last result
-/// was 1x1 is plain, so the cone above is selective -- and then the anchor
-/// grows and spills members the selective pass has no ordering for. Whether
-/// this pass's result is still 1x1 is not a property of the stored cell, so no
-/// pre-pass predicate can see it; the post-pass `wrote_array_cells` redo is the
-/// only thing that can, and this is what dies when it is deleted. Left to
-/// itself the pass reports a delta with the new spill members missing from it,
-/// which the differential fuzzer finds on four of its first sixty seeds.
+/// I8.7 -- P1 from the other side. A dynamic anchor whose last result was 1x1
+/// is plain, and then this pass's result is not; no pre-pass predicate can see
+/// that, because it is not a property of the stored cell. Kills deleting the
+/// post-pass `wrote_array_cells` redo, without which the delta is missing the
+/// new spill members.
 #[test]
 fn a_scalar_anchor_that_grows_is_redone_as_full() {
     let build = |mode| {
@@ -1539,11 +1499,10 @@ fn a_scalar_anchor_that_grows_is_redone_as_full() {
     assert_eq!(inc.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
-/// A dynamic anchor whose last result was 1x1 has no spill cells and is not in
-/// the array index, so it behaves as a scalar and must stay on the incremental
-/// path. `=LET`, a called `LAMBDA`, `=INDEX` and `=IF` are everyday formulas:
-/// falling back to a full pass for them removes the feature silently, with no
-/// wrong value to notice.
+/// I8.5, the negative direction: a dynamic anchor whose last result was 1x1 is
+/// not in the array index and must stay on the incremental path. `=LET`, a
+/// called `LAMBDA`, `=INDEX` and `=IF` are everyday formulas, so falling back
+/// for them removes the feature silently, with no wrong value to notice.
 #[test]
 fn scalar_result_dynamic_anchors_stay_incremental() {
     for (formula, expected) in [
@@ -1578,15 +1537,9 @@ fn scalar_result_dynamic_anchors_stay_incremental() {
 /// I1.8 — a reference-returning function records its resolved target at the
 /// extent it resolved to, not the extent its reader's walk visited.
 ///
-/// This is I1.3's clipping rule at a *computed* extent. `SUM` clips a
-/// whole-column reference to the used range, so the per-cell reads stop at the
-/// last populated row; a later write below that row is connected to the
-/// formula by the recorded rectangle and by nothing else. The two calls are
-/// separate sites, so there is one witness each.
-///
-/// Kills deleting `trace_rect` from `INDIRECT`'s range branch. Without it the
-/// formula's only edges are the clipped per-cell reads, and the write to A500
-/// never reaches it.
+/// I1.3's clipping rule at a *computed* extent: `SUM` stops its per-cell reads
+/// at the used range, so only the recorded rectangle connects the write to
+/// A500. Kills deleting `trace_rect` from `INDIRECT`'s range branch.
 #[test]
 fn indirect_records_its_resolved_extent_not_the_walk() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1601,11 +1554,9 @@ fn indirect_records_its_resolved_extent_not_the_walk() {
     assert_eq!(model._get_text("B1"), "6");
 }
 
-/// I1.8, the `OFFSET` site. Kills deleting `trace_rect` from `fn_offset`.
-///
-/// The height is spelled out rather than written `A:A` because `OFFSET` over a
-/// whole-column argument resolves through a different path; this is the one
-/// that reaches `fn_offset`'s own rect.
+/// I1.8, the `OFFSET` site. Kills deleting `trace_rect` from `fn_offset`. The
+/// height is spelled out rather than written `A:A` because a whole-column
+/// argument resolves through a different path than `fn_offset`'s own rect.
 #[test]
 fn offset_records_its_resolved_extent_not_the_walk() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());

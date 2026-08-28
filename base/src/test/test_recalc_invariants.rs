@@ -135,12 +135,12 @@ fn fn_items(src: &str) -> Vec<(String, String)> {
 /// re-declared, so it must suspend the guard — through the scoped
 /// `with_cse_guard_suspended`, which restores the flag on every exit path.
 ///
-/// That a rebuild path cannot suspend the guard any *other* way is no longer
-/// checked here: the flag is a private field of `model::cse_guard`, so a
-/// hand-rolled set-then-reset pair — the one that leaks the suspension on an
-/// early `?` between its halves — does not compile. What privacy cannot say
-/// is that a future `*_unchecked` rebuild path must reach for the scope at
-/// all. That positive obligation is what is left of this gate.
+/// That a rebuild path cannot suspend the guard any *other* way is not checked
+/// here: the flag is a private field of `model::cse_guard`, so a hand-rolled
+/// set-then-reset pair — the one that leaks the suspension on an early `?`
+/// between its halves — does not compile. What privacy cannot say is that a
+/// future `*_unchecked` rebuild path must reach for the scope at all. That
+/// positive obligation is this gate.
 #[test]
 fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
     let actions = include_str!("../actions.rs");
@@ -177,8 +177,8 @@ fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
     assert!(
         rebuild_writers >= 3,
         "expected at least move_cell, move_column_unchecked and \
-         move_row_unchecked to be checked; the gate no longer sees the \
-         rebuild paths and must be updated"
+         move_row_unchecked to be checked; the gate cannot see the rebuild \
+         paths and must be updated"
     );
 }
 
@@ -189,8 +189,8 @@ fn unchecked_rebuild_paths_suspend_the_cse_member_guard() {
 /// style-preserving `cell_clear_contents` (it materializes `EmptyCell { s }`;
 /// `remove_cell` drops the style).
 ///
-/// The "do not reach for `remove_cell`" half of that rule is no longer a
-/// grep-gate: `clippy.toml` bans `Worksheet::remove_cell` workspace-wide, so a
+/// The "do not reach for `remove_cell`" half of that rule is not a grep-gate:
+/// `clippy.toml` bans `Worksheet::remove_cell` workspace-wide, so a
 /// new call anywhere fails the build until someone writes an explicit
 /// `#[allow(clippy::disallowed_methods)]` with a justification. What clippy
 /// cannot say is "this function must call that helper", or "only

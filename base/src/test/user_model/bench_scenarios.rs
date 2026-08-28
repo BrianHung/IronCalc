@@ -4,9 +4,9 @@
 //! This is measurement, not a test: nothing here asserts a wall-clock budget.
 //! The one cost *invariant* -- that a pass costs the size of the cone and not
 //! the size of the workbook -- is asserted in `base/tests/recalc_cost.rs`. What
-//! this file produces is the evidence a reviewer needs to judge the trade: for
-//! each shape, what a whole-workbook pass costs, what one edit costs in default
-//! `Full` mode, and what the same edit costs in `Incremental`.
+//! this file produces is the evidence for judging the trade: for each shape,
+//! what a whole-workbook pass costs, what one edit costs in default `Full`
+//! mode, and what the same edit costs in `Incremental`.
 //!
 //! The scenarios deliberately include the shapes incremental does *not* win on
 //! -- a wide-fanout dashboard edit, a spill that forces the array fallback, a
@@ -20,10 +20,10 @@
 //! cargo test -p ironcalc_base bench_scenarios --release -- --ignored --nocapture
 //! ```
 //!
-//! The builders below use only pre-incremental APIs (`add_sheet`,
-//! `set_user_input`, `insert_rows`, `move_rows_action`, `evaluate`) so the same
-//! shapes can be built on a pre-stack tree to measure `Full` there and check
-//! that the default mode did not regress.
+//! The builders below use only APIs that predate this engine (`add_sheet`,
+//! `set_user_input`, `insert_rows`, `move_rows_action`, `evaluate`), so the
+//! same shapes can be built on a tree without it to measure `Full` there and
+//! check that the default mode has not regressed.
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::print_stdout)]
 
@@ -32,7 +32,7 @@ use crate::model::incremental::EvalPass;
 use crate::{ChangedSinceRead, Model, RecalcMode};
 use std::time::{Duration, Instant};
 
-/// Untimed rounds before every measured series, so the first pass after a build
+/// Untimed passes before every measured series, so the first pass after a build
 /// -- which warms allocators and the parse cache -- is not in the sample.
 const WARMUP: usize = 5;
 
@@ -194,8 +194,8 @@ fn classify(model: &mut Model, edit: impl Fn(&mut Model, usize), i: usize) -> &'
 
 /// Builds the shape in both modes, times the three columns, and reads the
 /// delta of one incremental edit. `edit` receives an iteration counter so it
-/// can write a different value each round (writing the same value again would
-/// let the change check stop the pass at the seed).
+/// can write a different value each iteration (writing the same value again
+/// would let the change check stop the pass at the seed).
 fn measure(
     scenario: &'static str,
     shape: String,
@@ -378,8 +378,8 @@ fn build_sparse_workbook(model: &mut Model, rows: i32, block: i32) {
 
 /// A long data column and a handful of aggregates over the whole column. Every
 /// one of these clips the reference to the used range, so the row measures the
-/// cone and not the sheet's full height; `MAX`, `AVERAGE`, `COUNTA` and
-/// `SUBTOTAL` used to walk all 1,048,576 rows and had to be left out of it.
+/// cone and not the sheet's full height. Unclipped, `MAX`, `AVERAGE`, `COUNTA`
+/// and `SUBTOTAL` walk all 1,048,576 rows and cannot be in it.
 fn build_whole_column(model: &mut Model, rows: i32, aggregates: i32) {
     for r in 1..=rows {
         model

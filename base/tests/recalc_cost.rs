@@ -1,20 +1,17 @@
 //! The one cost invariant of the incremental engine that no value assertion can
 //! express, and the reason it is not in the lib suite: it builds a 32k-cell
 //! workbook and runs 600 passes over it, which the nightly mutation job would
-//! pay for once per mutant.
-//!
-//! Everything else that used to live in `base/tests/` outside the fuzz harness
-//! is now a lib test; see `base/src/recalc/README.md` "Test discipline".
+//! pay for once per mutant. What else earns a place outside the lib suite is
+//! `base/src/recalc/README.md`, "Test discipline".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ironcalc_base::{Model, RecalcMode};
 use std::time::Instant;
 
 /// The cost of an incremental pass must depend on the size of the cone, not on
-/// the number of cells in the workbook. Any whole-workbook walk per pass -- the
-/// old post-pass `collect_array_cells` was one -- makes this ratio grow with
-/// size while every value in the workbook stays correct, so nothing else in the
-/// suite can see it. Killed by calling `collect_array_cells` from
+/// the number of cells in the workbook. Any whole-workbook walk per pass makes
+/// this ratio grow with size while every value stays correct, so nothing else
+/// in the suite can see it. Killed by calling `collect_array_cells` from
 /// `evaluate_selective`.
 #[test]
 fn pass_cost_does_not_grow_with_workbook_size() {
@@ -153,9 +150,9 @@ fn whole_column_aggregate_cost_tracks_the_used_range() {
         }
         start.elapsed().as_micros()
     };
-    // Six walks that used to run to LAST_ROW/LAST_COLUMN, against the same six
-    // over the used range. COUNTBLANK is in both because its clip is the one
-    // that has to add a remainder back.
+    // Six walks that would run to LAST_ROW/LAST_COLUMN unclipped, against the
+    // same six over the used range. COUNTBLANK is in both because its clip is
+    // the one that has to add a remainder back.
     let bounded = cost(
         "=COUNTA(A1:A40)+COUNTBLANK(B1:B40)+AVERAGE(A1:A40)\
          +SUBTOTAL(103,A1:A40)+MAX(A1:A40)+COUNT(A1:D5)",

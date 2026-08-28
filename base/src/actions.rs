@@ -651,8 +651,8 @@ impl<'a> Model<'a> {
     ///
     /// Both the discarded positions and the re-attached ones are journaled. A
     /// link is part of a cell's observable state, so readers of either end must
-    /// re-run -- and that is exactly the rule two near-identical copies of this
-    /// block made easy to apply to one axis and forget on the other.
+    /// re-run. One body for both axes, so the rule cannot be applied to one and
+    /// forgotten on the other.
     fn reattach_moved_links(
         &mut self,
         sheet: u32,

@@ -28,14 +28,10 @@ use crate::types::{ArrayKind, Cell};
 /// both index by the same rules.
 ///
 /// A member is indexed as the spill cell it is, not from its anchor's declared
-/// rectangle. The two only differ for a *ghost* member -- a declared position
-/// holding no spill cell -- and a ghost exists only between the write that
-/// created it (`set_user_array_formula`, or a structural edit that drops a
-/// member and resets the anchor to `Unevaluated`) and the anchor's next
-/// evaluation. That write dirties the anchor, the anchor is in this index, and
-/// a cone holding it goes to Full, which is the pass that refills the
-/// rectangle. So no gate ever reads a ghost's membership: indexing the
-/// rectangle only restated what the anchor's own entry already said.
+/// rectangle. The two differ only for a *ghost* member -- a declared position
+/// holding no spill cell -- whose membership no gate ever reads, because the
+/// write that creates one dirties the anchor and the anchor is in this index.
+/// See `base/src/recalc/README.md`, "Array footprints are edges".
 pub(super) fn array_footprint(
     cell: &Cell,
     sheet: u32,
