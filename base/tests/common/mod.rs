@@ -167,6 +167,17 @@ pub enum Op {
     ClearAll {
         area: AreaTuple,
     },
+    /// Serialize every model with `to_bytes` and replace it by `from_bytes` of
+    /// its own bytes, keeping its recalc mode. The sequence continues on the
+    /// reloaded models.
+    ///
+    /// This is the only op that reaches the deserialization path. Every other op
+    /// builds state through the journaled API, so without this the harness could
+    /// not construct the model a loaded workbook *is*: cells with no journal
+    /// behind them, a `MustRebuild` graph, an unknown formula count, an array
+    /// index that has never been walked, and no `never_served` set. What that
+    /// state settles into on the first post-load pass is only reachable here.
+    SaveLoad,
     Evaluate,
 }
 
@@ -195,11 +206,16 @@ impl Op {
             Op::RenameSheet { .. } => "RenameSheet",
             Op::ClearContents { .. } => "ClearContents",
             Op::ClearAll { .. } => "ClearAll",
+            Op::SaveLoad => "SaveLoad",
             Op::Evaluate => "Evaluate",
         }
     }
 
     /// Cells this op writes as a plain value (incremental "seeds").
+    ///
+    /// `SaveLoad` writes no cell, so it seeds nothing: it is neither a value
+    /// edit nor a visibility edit. What it does relax is stated once, at the
+    /// delta check in `Harness::step`.
     pub fn value_seed(&self) -> Option<(u32, i32, i32)> {
         match self {
             // A quote-prefixed write ('7) is a user edit like any other, and
@@ -344,6 +360,7 @@ impl Op {
             }
             Op::ClearContents { area } => format!("Op::ClearContents {{ area: {area:?} }}"),
             Op::ClearAll { area } => format!("Op::ClearAll {{ area: {area:?} }}"),
+            Op::SaveLoad => "Op::SaveLoad".to_string(),
             Op::Evaluate => "Op::Evaluate".to_string(),
         }
     }
@@ -371,7 +388,15 @@ fn area(t: AreaTuple) -> Area {
 }
 
 /// Applies one op to a model. `Evaluate` calls `evaluate()`.
-pub fn apply(model: &mut Model<'static>, op: &Op) -> Result<(), String> {
+///
+/// `mode` is the model's own recalc mode, needed only by `Op::SaveLoad`: the
+/// mode lives on the model, not in the workbook, so a reload has to be told
+/// which one to come back as. `Model::with_recalc_mode` composes with
+/// `from_bytes` exactly as it does with `new_empty` — it sets the mode and
+/// forces the graph full, and a freshly decoded workbook is already
+/// `MustRebuild`, so the reloaded model is in the same state a caller who
+/// opened the file in that mode would get.
+pub fn apply(model: &mut Model<'static>, mode: RecalcMode, op: &Op) -> Result<(), String> {
     match op {
         Op::Set {
             sheet,
@@ -456,6 +481,11 @@ pub fn apply(model: &mut Model<'static>, op: &Op) -> Result<(), String> {
         Op::RenameSheet { index, name } => model.rename_sheet_by_index(*index, name),
         Op::ClearContents { area: a } => model.range_clear_contents(&area(*a)),
         Op::ClearAll { area: a } => model.range_clear_all(&area(*a)),
+        Op::SaveLoad => {
+            let bytes = model.to_bytes();
+            *model = Model::from_bytes(&bytes, "en")?.with_recalc_mode(mode);
+            Ok(())
+        }
         Op::Evaluate => {
             model.evaluate();
             Ok(())
@@ -717,6 +747,9 @@ pub struct Stats {
     pub everything_deltas: usize,
     pub ops_applied: usize,
     pub ops_rejected: usize,
+    /// `Op::SaveLoad` steps. Reported so a run can be read for whether it
+    /// searched the deserialization path at all, rather than assumed to have.
+    pub reloads: usize,
 }
 
 pub struct Harness {
@@ -728,6 +761,8 @@ pub struct Harness {
     pub check_verify: bool,
     seeds: BTreeSet<Pos>,
     visibility_edit: bool,
+    /// A `SaveLoad` has happened and its first `Evaluate` has not been read yet.
+    reloaded: bool,
     last: Snapshot,
     pub stats: Stats,
 }
@@ -755,6 +790,7 @@ impl Harness {
             check_verify,
             seeds: BTreeSet::new(),
             visibility_edit: false,
+            reloaded: false,
             last,
             stats: Stats::default(),
         }
@@ -762,8 +798,8 @@ impl Harness {
 
     /// Applies `op` to every model and, on `Evaluate`, compares them.
     pub fn step(&mut self, index: usize, op: &Op) -> Result<(), Failure> {
-        let r_full = apply(&mut self.full, op);
-        let r_incr = apply(&mut self.incr, op);
+        let r_full = apply(&mut self.full, RecalcMode::Full, op);
+        let r_incr = apply(&mut self.incr, RecalcMode::Incremental, op);
         if r_full.is_ok() != r_incr.is_ok() {
             return Err(Failure {
                 step: index,
@@ -773,7 +809,7 @@ impl Harness {
         }
         #[cfg(feature = "recalc_verify")]
         if let Some(v) = self.verify.as_mut() {
-            let r_verify = apply(v, op);
+            let r_verify = apply(v, RecalcMode::Verify, op);
             if r_verify.is_ok() != r_full.is_ok() {
                 return Err(Failure {
                     step: index,
@@ -792,6 +828,36 @@ impl Harness {
         }
         if matches!(op, Op::HideRow { .. } | Op::HideCol { .. }) {
             self.visibility_edit = true;
+        }
+        if matches!(op, Op::SaveLoad) {
+            self.reloaded = true;
+            self.stats.reloads += 1;
+            // The reload contract, first half: a read taken *at the load*,
+            // before any pass has run, is `Everything`. This is the order a
+            // consumer that opens a file and asks what changed before drawing
+            // it takes, and only `from_workbook` starting the record at
+            // `ChangedCells::All` answers it -- there is no pass yet to have
+            // said anything. Nothing else in the suite does: changing that
+            // initializer to an empty `Delta` leaves the lib suite green in all
+            // three modes and every other check in this harness silent, because
+            // the second half below is answered by the full pass instead.
+            //
+            // Reading here also separates the two halves, which is the point of
+            // doing it: it takes `from_workbook`'s answer off the table, so the
+            // read after the first pass is left testing that pass alone.
+            if self.check_delta {
+                use ironcalc_base::ChangedSinceRead;
+                if let ChangedSinceRead::Cells(cells) = self.incr.take_changed_cells() {
+                    return Err(Failure {
+                        step: index,
+                        kind: "reload-delta-not-everything".into(),
+                        detail: format!(
+                            "read taken at the load, before any pass, reported {} cells instead of Everything: {cells:?}",
+                            cells.len()
+                        ),
+                    });
+                }
+            }
         }
         if !matches!(op, Op::Evaluate) {
             return Ok(());
@@ -823,6 +889,36 @@ impl Harness {
             match self.incr.take_changed_cells() {
                 ChangedSinceRead::Everything => self.stats.everything_deltas += 1,
                 ChangedSinceRead::Cells(cells) => {
+                    // The reload contract, second half: the first read after the
+                    // first post-load pass is `Everything` too. The load-point
+                    // read in `step` already took `from_workbook`'s `All`, so
+                    // this one is answered by the pass alone: the decoded graph
+                    // is `MustRebuild`, so that pass is full, and a full pass
+                    // records `All`.
+                    //
+                    // Why both halves say `Everything` is the same reason. A
+                    // delta states what moved *since the consumer last looked*,
+                    // and a consumer who has just opened a file has never
+                    // looked -- every cell in it is new to them, so there is no
+                    // list to give.
+                    //
+                    // This is the one thing a reload relaxes, and it relaxes it
+                    // for exactly one read: the delta's completeness and
+                    // soundness clauses below cannot be checked against a `last`
+                    // snapshot taken before the load, so they are not -- but
+                    // only because the stronger answer is asserted in their
+                    // place. From the next read the ordinary rules apply again,
+                    // against a `last` that is now post-load.
+                    if self.reloaded {
+                        return Err(Failure {
+                            step: index,
+                            kind: "reload-delta-not-everything".into(),
+                            detail: format!(
+                                "first read after the first post-load pass reported {} cells instead of Everything: {cells:?}",
+                                cells.len()
+                            ),
+                        });
+                    }
                     self.stats.cells_deltas += 1;
                     let delta: BTreeSet<Pos> =
                         cells.iter().map(|c| (c.sheet, c.row, c.column)).collect();
@@ -904,6 +1000,7 @@ impl Harness {
         // END-DELTA
         self.seeds.clear();
         self.visibility_edit = false;
+        self.reloaded = false;
         self.last = incr;
         Ok(())
     }
@@ -1530,7 +1627,9 @@ impl Generator {
             return;
         }
         set_quiet(true);
-        let r = catch_unwind(AssertUnwindSafe(|| apply(&mut self.shadow, &op)));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            apply(&mut self.shadow, RecalcMode::Full, &op)
+        }));
         set_quiet(false);
         if r.is_err() {
             // The engine panicked applying this op to a plain Full model. Stop
@@ -1952,6 +2051,14 @@ impl Generator {
                 height: self.rng.range(1, 3),
                 formula: f.to_string(),
             }
+        } else if roll < 885 {
+            // A save/load round-trip: the only way into the deserialization
+            // path. Deliberately rare -- a reload rebuilds three graphs from
+            // scratch and forces the next pass full on all of them, so a common
+            // one would both cost wall time and wash out the delta coverage the
+            // rest of the run measures. 1.5% is about one and a half per 100
+            // steps, enough that a 200-seed run plants a few hundred of them.
+            Op::SaveLoad
         } else {
             // redundant evaluate
             Op::Evaluate
