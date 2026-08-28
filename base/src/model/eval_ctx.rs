@@ -171,7 +171,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         row: i32,
         column: i32,
     ) -> Result<Option<String>, String> {
-        self.0.trace_input(Input::FormulaText((sheet, row, column)));
+        self.0
+            .trace_input(Input::FormulaText((sheet, row, column, row, column)));
         self.0.get_cell_formula(sheet, row, column)
     }
 
@@ -183,7 +184,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         row: i32,
         column: i32,
     ) -> Result<Option<String>, String> {
-        self.0.trace_input(Input::FormulaText((sheet, row, column)));
+        self.0
+            .trace_input(Input::FormulaText((sheet, row, column, row, column)));
         self.0.get_english_cell_formula(sheet, row, column)
     }
 

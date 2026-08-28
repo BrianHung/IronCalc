@@ -635,6 +635,58 @@ fn subtotal_sees_hidden_row_it_scans_not_own_row() {
     assert_eq!(model._get_text("A50"), "9");
 }
 
+/// A range walk asks the same question of every line and cell it passes:
+/// `SUBTOTAL` asks whether each row is hidden and whether each cell holds a
+/// nested `SUBTOTAL`. Recorded one per row, those inputs are a graph edge per
+/// row of the used range, and the linear dedup in `ReadSet` that keeps them
+/// unique is quadratic in it -- which is what made one whole-column `SUBTOTAL`
+/// over 30k rows cost 1.6 seconds an incremental pass against 11 ms in `Full`.
+/// So the edges a walk records must not grow with the height it walked.
+///
+/// Killed by dropping the widening in `ReadSet::record_input`: the input count
+/// then tracks the used range exactly.
+#[test]
+fn a_range_walk_records_a_bounded_number_of_edges() {
+    // One walk per cell, so no formula's rect can widen another's inputs: the
+    // fold, the clipped value walks, the criteria walk, and SUBTOTAL's
+    // hidden-row walk, which is the one that recorded per row.
+    let walks = [
+        "=SUM(A:A)",
+        "=MAX(A:A)",
+        "=COUNTA(A:A)",
+        "=COUNTIF(A:A,\">0\")",
+        "=SUBTOTAL(103,A:A)",
+    ];
+    let counts = |rows: i32| -> Vec<(usize, usize, usize)> {
+        let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+        for row in 1..=rows {
+            model._set(&format!("A{row}"), "1");
+        }
+        for (i, formula) in walks.iter().enumerate() {
+            model._set(&format!("C{}", i + 1), formula);
+        }
+        model.evaluate();
+        assert_eq!(model._get_text("C1"), format!("{rows}"));
+        (0..walks.len())
+            .map(|i| model.graph.edge_counts((0, i as i32 + 1, 3)))
+            .collect()
+    };
+    let short = counts(10);
+    let tall = counts(400);
+    for ((formula, short), tall) in walks.iter().zip(&short).zip(&tall) {
+        assert_eq!(
+            short, tall,
+            "{formula} recorded more edges over a taller range: \
+             10 rows {short:?}, 400 rows {tall:?}"
+        );
+        let (cells, rects, inputs) = *tall;
+        assert!(
+            cells + rects + inputs < 10,
+            "{formula} recorded {cells} cell, {rects} rect and {inputs} input edges"
+        );
+    }
+}
+
 #[test]
 fn name_reader_redirty_on_insert() {
     let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
