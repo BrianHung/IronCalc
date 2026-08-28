@@ -454,7 +454,8 @@ const CHAIN: i32 = 20_000;
 const SPARSE_ROWS: i32 = 10_000;
 const SPARSE_BLOCK: i32 = 20;
 const WHOLE_COL_ROWS: i32 = 30_000;
-const WHOLE_COL_AGGS: i32 = 10; // x2 formulas (SUM and COUNTIF) = 20
+/// x6 formulas: SUM, COUNTIF, MAX, AVERAGE, COUNTA, SUBTOTAL = 60.
+const WHOLE_COL_AGGS: i32 = 10;
 const SPILLS: i32 = 200;
 
 // ---------------------------------------------------------------------------
@@ -540,13 +541,13 @@ fn bench_scenarios() {
         (0, 5_020, 5),
     ));
 
-    // whole-column aggregates: the cone is 20 formulas, but each of them
+    // whole-column aggregates: the cone is 60 formulas, but each of them
     // rescans 30k rows, so the scan is the cost in either mode.
     rows.push(measure(
         "whole-column aggregates",
         format!(
-            "{WHOLE_COL_ROWS}-row column, {} SUM/COUNTIF(A:A)",
-            WHOLE_COL_AGGS * 2
+            "{WHOLE_COL_ROWS}-row column, {} aggregates over A:A",
+            WHOLE_COL_AGGS * 6
         ),
         20,
         |m| build_whole_column(m, WHOLE_COL_ROWS, WHOLE_COL_AGGS),

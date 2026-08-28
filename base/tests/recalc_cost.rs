@@ -54,6 +54,66 @@ fn pass_cost_does_not_grow_with_workbook_size() {
     );
 }
 
+/// An incremental pass may cost less than a full one, or the same; it may never
+/// cost dramatically *more*. Both modes walk the same clipped range for these
+/// aggregates, so the only thing incremental adds is the bookkeeping -- and the
+/// bookkeeping must be charged per range read, not per cell of the range.
+///
+/// The mutant is dropping the widening in `ReadSet::record_input`, which makes
+/// `SUBTOTAL`'s per-row hidden test and per-cell subtotal test an input each:
+/// the linear dedup that keeps the read set unique turns quadratic in the used
+/// range, and this ratio goes from about 1x to two orders of magnitude. The
+/// bound is a 10x margin over `Full` measured on the same machine in the same
+/// run, plus a floor, so it is nowhere near the noise and still far under what
+/// the per-cell form costs.
+#[test]
+fn incremental_costs_no_more_than_full_over_whole_column_aggregates() {
+    let cost = |mode: RecalcMode| -> u128 {
+        let mut model = Model::new_empty("t", "en", "UTC", "en")
+            .unwrap()
+            .with_recalc_mode(mode);
+        for row in 1..=2_000 {
+            model
+                .set_user_input(0, row, 1, format!("{}", row % 89 + 1))
+                .unwrap();
+        }
+        // One of each walk: the fold, the criteria walk, the clipped value
+        // walks, and SUBTOTAL's hidden-row walk.
+        for (i, formula) in [
+            "=SUM(A:A)",
+            "=COUNTIF(A:A,\">3\")",
+            "=MAX(A:A)",
+            "=AVERAGE(A:A)",
+            "=COUNTA(A:A)",
+            "=SUBTOTAL(103,A:A)",
+        ]
+        .iter()
+        .enumerate()
+        {
+            model
+                .set_user_input(0, 1, 3 + i as i32, (*formula).to_string())
+                .unwrap();
+        }
+        model.evaluate();
+        let start = Instant::now();
+        for i in 0..20 {
+            model
+                .set_user_input(0, 1_000, 1, format!("{}", i % 89 + 1))
+                .unwrap();
+            model.evaluate();
+        }
+        start.elapsed().as_micros()
+    };
+    let full = cost(RecalcMode::Full).max(1);
+    let incremental = cost(RecalcMode::Incremental);
+    println!("20 passes over whole-column aggregates: full {full}us, incremental {incremental}us");
+    assert!(
+        incremental < full * 10 + 200_000,
+        "an incremental pass costs more than the full pass it replaces: \
+         full={full}us incremental={incremental}us"
+    );
+}
+
 /// A whole-column reference spans 1,048,576 rows and a whole-row reference
 /// 16,384 columns, but everything past the sheet's used range is blank. An
 /// aggregate that ignores blanks must therefore cost what the same aggregate

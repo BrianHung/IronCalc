@@ -14,4 +14,4 @@ pub(crate) mod trace;
 
 pub(crate) use journal::Write;
 pub use journal::WriteLog;
-pub(crate) use trace::{Input, ReadSet};
+pub(crate) use trace::{area_contains, Input, ReadSet};
