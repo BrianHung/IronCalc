@@ -184,6 +184,7 @@ Four things can enforce a clause, and only two of them owe a test:
 | I1.8 A reference-returning function's resolved target becomes an edge, at the extent it resolved to | test; the extent is one per call site | `offset_target_change_without_static_edge`; the extent is `offset_records_its_resolved_extent_not_the_walk` and `indirect_records_its_resolved_extent_not_the_walk` (I1.3's clipping rule, reached through a computed extent) |
 | I1.9 Reading an array-footprint position records an edge on its anchor, taken from the array index and recorded ahead of the scope gate | test | `cse_footprint_cycle_stored_value_diverges_from_a_live_reeval` (dies only under `recalc_verify`) |
 | I1.10 A formula commits its reads on both exits | construction | — |
+| I1.11 A range read is one recorded edge whatever its height: the per-cell reads under a recorded rect are suppressed, and the per-line and per-cell *inputs* under it widen to it. The economy is I1.3's, applied to every walk and not only the folds | construction (`ReadSet::record_cell` / `record_input` are the only ways in, and both consult `rects`) | `a_range_walk_records_a_bounded_number_of_edges` (edge counts equal at 10 and 400 rows, per walk); the cost it buys is `incremental_costs_no_more_than_full_over_whole_column_aggregates` in `base/tests/recalc_cost.rs` |
 
 Two reads in `functions/` used to bypass the recording accessors — the
 financial whole-column clip and `SHEET(a_defined_name)`. Both now go through

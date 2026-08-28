@@ -691,6 +691,17 @@ impl DependencyGraph {
             .is_some_and(|reads| reads.inputs.iter().any(pred))
     }
 
+    /// How many cell, rect and input edges `cell`'s last evaluation recorded.
+    /// Test-only, and for one thing: a range walk must record a bounded number
+    /// of edges whatever the height of the range it walked.
+    #[cfg(test)]
+    pub(crate) fn edge_counts(&self, cell: Position) -> (usize, usize, usize) {
+        self.precedents
+            .get(&cell)
+            .map(|reads| (reads.cells.len(), reads.rects.len(), reads.inputs.len()))
+            .unwrap_or((0, 0, 0))
+    }
+
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
     /// incremental; `MustRebuild` stays full.
     pub(crate) fn mark_dirty(&mut self, cell: Position) {
