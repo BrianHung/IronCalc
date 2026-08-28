@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::vec::Vec;
 
-use crate::dependency_graph::{Axis, DependencyGraph, Position, RecalcMode};
+use crate::dependency_graph::{Axis, DependencyGraph, Position, RecalcMode, SheetLayout};
 
 use crate::expressions::parser::static_analysis::run_static_analysis_on_node;
 use crate::{
@@ -278,6 +278,15 @@ pub struct Model<'a> {
     /// incremental pass that observes it falls back to Full, whose
     /// `collect_array_cells` rebuilds the array index exactly.
     pub(crate) wrote_array_cells: bool,
+    /// Set while a pass evaluates a `Cell::ArrayFormula` or a `Cell::SpillCell`.
+    /// Reset at the top of every [`Model::evaluate_full`], so it is a fact about
+    /// the pass that just ran.
+    ///
+    /// Deliberately a fact about what the *evaluator* did, not about tracing or
+    /// about the graph: the settling loop it gates must reach the same fixed
+    /// point in `Full` as in `Incremental`, so nothing mode-dependent may
+    /// decide it.
+    pub(crate) evaluated_array_cells: bool,
     /// Set whenever an evaluation re-enters a cell that is already evaluating,
     /// i.e. reports `#CIRC!`. Read (and reset) by the incremental scheduler.
     pub(crate) saw_circular_reference: bool,
@@ -1673,6 +1682,8 @@ impl<'a> Model<'a> {
         };
 
         if let Cell::SpillCell { a, .. } = original_cell {
+            // An array cell evaluated on this pass. See `evaluated_array_cells`.
+            self.evaluated_array_cells = true;
             // If it is part of an array or dynamic formula we need to evaluate the anchor cell
             // strictly speaking we don't need to evaluate the anchor cell of a dynamic array formula
             // but it is most likely a good guess anyway
@@ -1717,6 +1728,12 @@ impl<'a> Model<'a> {
                             return self.get_cell_value(&original_cell, cell_reference);
                         }
                     }
+                }
+                // An array cell evaluated on this pass -- both kinds, and only
+                // where the memo did not already answer. See
+                // `evaluated_array_cells`.
+                if matches!(original_cell, Cell::ArrayFormula { .. }) {
+                    self.evaluated_array_cells = true;
                 }
                 // Clear the pre-existing spill area of a dynamic formula before re-evaluating.
                 // This must happen after the CellState check so that a recursive call from a
@@ -1998,8 +2015,15 @@ impl<'a> Model<'a> {
             recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
-            formula_count_stale: false,
+            // Nothing journaled the cells this workbook arrived with, so the
+            // count is unknown rather than zero. It used to be established as a
+            // side effect of the first full pass's `collect_array_cells`; that
+            // walk is now gated on the workbook having arrays, and the count is
+            // not about arrays. `recount_formula_cells` answers it on the first
+            // pass that reads it, which is the first selective one.
+            formula_count_stale: true,
             wrote_array_cells: false,
+            evaluated_array_cells: false,
             saw_circular_reference: false,
             cse_rects: None,
             cse_member_guard: cse_guard::CseMemberGuard::default(),
@@ -3386,6 +3410,7 @@ impl<'a> Model<'a> {
     /// Recomputes the workbook using the configured [`RecalcMode`] (`Full` by
     /// default).
     pub fn evaluate(&mut self) {
+        self.check_sheet_layout();
         self.drain_write_journal();
         let mode = self.recalc_mode;
         // Storing a formula result is not a user edit, so the journal stays
@@ -3524,6 +3549,44 @@ impl<'a> Model<'a> {
         self.cse_rects = None;
     }
 
+    /// The sheet numbering the workbook is currently in. See [`SheetLayout`].
+    fn sheet_layout(&self) -> SheetLayout {
+        SheetLayout::from_sheet_ids(self.workbook.worksheets.iter().map(|w| w.sheet_id))
+    }
+
+    /// Catches a sheet added, deleted, duplicated or moved without the
+    /// `invalidate_graph` that renumbering the workbook obliges.
+    ///
+    /// Every `Position` the graph stores names its sheet by *index*, so sheet
+    /// CRUD shifts all of them onto the wrong sheet at once, and the old index
+    /// still names a live sheet — the corruption is silent, and reads it
+    /// poisons range edges, array anchors and the never-served set alike. The
+    /// existing defence is a convention (`reset_parsed_structures` calls
+    /// `invalidate_graph`), and this is the check that the convention held.
+    ///
+    /// Run at every pass entry, which is where it is both cheap and sufficient:
+    /// the graph's positions are only *read* during a pass, so a numbering that
+    /// still agrees here agrees everywhere it matters, and the comparison is over
+    /// a handful of sheet ids rather than anything per-cell.
+    ///
+    /// Debug and test builds panic, because this was silent wrongness before and
+    /// the edit that skipped the invalidation is the only place worth reporting.
+    /// Release builds fall back to a full pass — which is what the missing
+    /// `invalidate_graph` should have asked for — so a shipped workbook is
+    /// recalculated correctly rather than served stale edges.
+    fn check_sheet_layout(&mut self) {
+        if self.graph.sync_sheet_layout(self.sheet_layout()) {
+            debug_assert!(
+                false,
+                "sheet structure changed without invalidate_graph: the dependency graph still \
+                 holds positions numbered against the previous sheet order, so every stored \
+                 coordinate now names the wrong sheet. Sheet add/delete/duplicate/move must go \
+                 through reset_parsed_structures (or call invalidate_graph directly)."
+            );
+            self.cse_rects = None;
+        }
+    }
+
     /// Whether `(row, column)` lies inside some CSE array's declared rectangle
     /// on `sheet`, excluding the anchor itself. Builds the rectangle list on
     /// demand; anchors are few, so the covering test is a short linear scan.
@@ -3592,6 +3655,11 @@ impl<'a> Model<'a> {
         if self.tracing() {
             self.graph.clear_edges();
         }
+        // Two facts the array-index gate at the end of this pass reads. The
+        // index one is taken here rather than there because the gate's question
+        // is about the index as this pass was *handed* it.
+        self.evaluated_array_cells = false;
+        let arrays_were_indexed = !self.graph.arrays.is_empty();
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3646,9 +3714,35 @@ impl<'a> Model<'a> {
             });
         }
         self.evaluate_conditional_formatting();
+        // The array index is not part of the graph's edge machinery. It is the
+        // footprint that `Model::evaluate_full_to_fixed_point` compares across a
+        // pass to decide whether the workbook settled, and both modes have to
+        // reach the same fixed point or they diverge by exactly one healing
+        // window. So it is rebuilt whatever the mode; only the edge-derived sets
+        // below belong to the modes that record edges.
+        //
+        // A pass that evaluated no array cell and was handed an empty index
+        // skips the rebuild, which is the only whole-workbook walk either the
+        // settling loop or the index costs a workbook that has none. It is
+        // sound because this pass walked *every* stored cell: if none of them
+        // was a `Cell::ArrayFormula` or a `Cell::SpillCell` the correct index is
+        // empty, which is what it already is. And the settling comparison is
+        // then trivially satisfied rather than skipped -- it reads this index,
+        // so with it empty there is no footprint to have moved, and the loop
+        // stops after one pass on its own.
+        //
+        // Both halves are needed. Without the evaluated flag, the first pass
+        // over a workbook loaded from bytes -- arrays in the cells, nothing in
+        // the index yet -- would never index them. Without the index check, a
+        // workbook whose last array was just deleted would keep the deleted
+        // entries for ever, because the journal drain only ever adds to the
+        // index; the non-empty index buys exactly the one final walk that
+        // clears them, and the pass after that is gated off again.
+        if self.evaluated_array_cells || arrays_were_indexed {
+            self.collect_array_cells();
+        }
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
-            self.collect_array_cells();
             // This pass rebuilt every edge, so the never-served set is rebuilt
             // over the whole graph: a cycle anywhere in the workbook has to be
             // known here, because later incremental passes only look at the

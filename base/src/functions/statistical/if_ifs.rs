@@ -262,36 +262,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
     where
         F: FnMut(f64),
     {
-        let left_row = sum_range.left.row;
-        let left_column = sum_range.left.column;
-        let mut right_row = sum_range.right.row;
-        let mut right_column = sum_range.right.column;
-
-        if left_row == 1 && right_row == LAST_ROW {
-            right_row = match self.sheet_dimension(sum_range.left.sheet) {
-                Ok(s) => s.max_row,
-                Err(_) => {
-                    return Err(CalcResult::new_error(
-                        Error::ERROR,
-                        cell,
-                        format!("Invalid worksheet index: '{}'", sum_range.left.sheet),
-                    ));
-                }
-            };
-        }
-        if left_column == 1 && right_column == LAST_COLUMN {
-            right_column = match self.sheet_dimension(sum_range.left.sheet) {
-                Ok(s) => s.max_column,
-                Err(_) => {
-                    return Err(CalcResult::new_error(
-                        Error::ERROR,
-                        cell,
-                        format!("Invalid worksheet index: '{}'", sum_range.left.sheet),
-                    ));
-                }
-            };
-        }
-
+        let (left_row, right_row, left_column, right_column) =
+            self.clip_range_to_used(&sum_range.left, &sum_range.right, cell)?;
         for row in left_row..right_row + 1 {
             for column in left_column..right_column + 1 {
                 let mut is_true = true;

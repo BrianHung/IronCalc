@@ -3,11 +3,82 @@ use regex_lite as regex;
 
 use crate::{
     calc_result::CalcResult,
+    constants::{LAST_COLUMN, LAST_ROW},
     expressions::token::{is_english_error_string, Error},
+    expressions::types::CellReferenceIndex,
     formatter::format::parse_date,
     locale::Locale,
+    model::eval_ctx::EvalCtx,
     number_format::to_excel_precision,
 };
+
+impl<'a, 'm> EvalCtx<'a, 'm> {
+    /// The bounds of `left..=right` clipped to the sheet's used dimension,
+    /// as `(row1, row2, column1, column2)`.
+    ///
+    /// A whole-column reference (`A:A`) spans all `LAST_ROW` rows and a
+    /// whole-row reference (`1:1`) spans all `LAST_COLUMN` columns, but every
+    /// cell past the used range is blank. A function that ignores blanks may
+    /// therefore walk only the clipped rectangle and reach the same answer for
+    /// a fraction of the cost. A function that *counts* blanks must add the
+    /// clipped-away cells back arithmetically; see [`clipped_away_cells`].
+    ///
+    /// The dimension is read only when an axis is open, so an ordinary range
+    /// keeps the dependency footprint it has today. On an open axis this
+    /// records `Input::SheetStructure`, which is what makes a structural edit
+    /// re-run the formula.
+    pub(crate) fn clip_range_to_used(
+        &mut self,
+        left: &CellReferenceIndex,
+        right: &CellReferenceIndex,
+        cell: CellReferenceIndex,
+    ) -> Result<(i32, i32, i32, i32), CalcResult> {
+        let row1 = left.row;
+        let mut row2 = right.row;
+        let column1 = left.column;
+        let mut column2 = right.column;
+        let open_row = row1 == 1 && row2 == LAST_ROW;
+        let open_column = column1 == 1 && column2 == LAST_COLUMN;
+        if open_row || open_column {
+            let dimension = self.sheet_dimension(left.sheet).map_err(|_| {
+                CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                )
+            })?;
+            if open_row {
+                row2 = dimension.max_row;
+            }
+            if open_column {
+                column2 = dimension.max_column;
+            }
+        }
+        Ok((row1, row2, column1, column2))
+    }
+}
+
+/// How many cells [`EvalCtx::clip_range_to_used`] dropped from `left..=right`.
+///
+/// Every dropped cell lies past the sheet's used range and so is blank by
+/// definition. `COUNTBLANK` adds this count back so that the clipped walk
+/// returns exactly what the full walk returned. Both axes can be clipped in
+/// the same call, so this is the area of the requested rectangle minus the
+/// area of the walked one rather than a per-axis count; the arithmetic is in
+/// `i64` because a whole sheet is 1,048,576 x 16,384 cells, well past `i32`.
+pub(crate) fn clipped_away_cells(
+    left: &CellReferenceIndex,
+    right: &CellReferenceIndex,
+    row2: i32,
+    column2: i32,
+) -> f64 {
+    let area = |last_row: i32, last_column: i32| -> i64 {
+        let rows = (last_row as i64 - left.row as i64 + 1).max(0);
+        let columns = (last_column as i64 - left.column as i64 + 1).max(0);
+        rows * columns
+    };
+    (area(right.row, right.column) - area(row2, column2)) as f64
+}
 
 /// If `s` looks like a date literal in the given locale, return its Excel
 /// serial number as `f64`. Pure numeric strings are rejected here because the

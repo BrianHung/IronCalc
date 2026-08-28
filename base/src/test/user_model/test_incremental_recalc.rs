@@ -1105,12 +1105,23 @@ fn assert_same_workbook(full: &crate::Model, incremental: &crate::Model, label: 
     );
 }
 
-/// (a) A row move forces a full pass, but that pass leaves spill debt: `G12`
-/// read `E16:E17` before `E15`'s `SEQUENCE` refilled them. Full heals on its
-/// next unconditional pass; incremental used to serve `G12` its stored 0 for
-/// ever, because no later cone ever named it.
+/// One `evaluate` returns the settled state (I7.6), in both modes.
+///
+/// The row move drops `E15`'s spill members, and the pass that follows reads
+/// `E19:E20` through `G12` before `E15`'s `SEQUENCE` refills them, so a single
+/// two-phase pass leaves `G12` holding 0 -- a value the same inputs never
+/// produce again. That is the whole of the healing window this engine closes:
+/// the baseline reached 5 only on a *second* `evaluate`, and the engine used to
+/// reproduce that by recording convergence debt and forcing the next pass full.
+/// `evaluate_full_to_fixed_point` runs the second pass in-pass instead, so 5 is
+/// what one `evaluate` returns.
+///
+/// This test documents an intentional divergence from pre-engine behaviour --
+/// see "Intentional divergences" in `base/src/recalc/README.md`. Both modes are
+/// asserted, because settling in only one of them would be an `Incremental` !=
+/// `Full` divergence, which is the one thing the engine may not do.
 #[test]
-fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
+fn one_evaluate_settles_a_footprint_moved_under_a_reader() {
     let build = |mode| {
         let mut m = new_empty_model().with_recalc_mode(mode);
         m._set("E15", "=SEQUENCE(3)");
@@ -1125,15 +1136,18 @@ fn incremental_heals_spill_debt_left_by_a_forced_full_pass() {
         m.move_rows_action(0, 19, 2, -3).unwrap();
         m.evaluate();
     }
-    assert_same_workbook(&full, &inc, "the move's own full pass");
-    // The healing pass. The edit is deliberately unrelated to the spill: the
-    // dirty cone cannot reach G12, so only the debt signal brings it back.
+    // Settled after one evaluate. The baseline answered 0 here.
+    assert_eq!(full._get_text("G12"), "5");
+    assert_eq!(inc._get_text("G12"), "5");
+    assert_same_workbook(&full, &inc, "the move's own settled pass");
+    // A later unrelated edit moves nothing: the state is already a fixed point,
+    // so there is no healing pass left for either mode to run.
     for m in [&mut full, &mut inc] {
         m._set("B5", "1");
         m.evaluate();
     }
     assert_eq!(full._get_text("G12"), "5");
-    assert_same_workbook(&full, &inc, "the healing pass");
+    assert_same_workbook(&full, &inc, "an edit outside the settled cone");
 }
 
 /// (b) An error-absorbing function makes the divergence a value, not just a
@@ -1370,6 +1384,107 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
             .iter()
             .any(|c| (c.sheet, c.row, c.column) == (0, row, column)),
     }
+}
+
+/// The evaluated half of the array-index gate. A workbook that arrives whole --
+/// `from_workbook`, and so `from_bytes` and the xlsx reader -- has arrays in its
+/// cells and nothing in its index, because nothing journaled them. Gating the
+/// rebuild on the index alone leaves it empty through the very pass that has to
+/// build it, and the settling comparison reads that index: with it empty there
+/// is no footprint to compare, so the pass reports itself settled when it is
+/// not. The reader here holds 0 instead of 5, which is the same divergence
+/// `one_evaluate_settles_a_footprint_moved_under_a_reader` pins, reached through
+/// a workbook nobody edited into existence.
+#[test]
+fn a_loaded_workbook_settles_on_its_first_evaluate() {
+    let mut source = new_empty_model();
+    source._set("E15", "=SEQUENCE(3)");
+    source._set("G12", "=SUM(E19:E20)");
+    source._set("F14", "=SEQUENCE(3)+G12");
+    source.evaluate();
+    source.move_rows_action(0, 19, 2, -3).unwrap();
+    // Through the bytes, which is what makes this the loaded case: `write_log`
+    // is `#[bitcode(skip)]`, so the model on the other side has the arrays in
+    // its cells, nothing in its journal, and nothing in its array index. Cloning
+    // the workbook instead carries the journal across and hides the bug.
+    let bytes = source.to_bytes();
+    for mode in [crate::RecalcMode::Full, incremental_mode()] {
+        let mut loaded = crate::Model::from_bytes(&bytes, "en")
+            .unwrap()
+            .with_recalc_mode(mode);
+        loaded.evaluate();
+        assert_eq!(
+            loaded._get_text("G12"),
+            "5",
+            "a loaded workbook did not settle in {mode:?}"
+        );
+    }
+}
+
+/// The index half of the array-index gate. The rebuild is skipped for a pass
+/// that evaluated no array cell, which is what makes a workbook with no arrays
+/// pay nothing for the settling machinery -- but the journal drain only ever
+/// *adds* to the index, so the pass after the last array is deleted is the only
+/// thing that can clear the entries it left behind. Gating on "an array
+/// evaluated this pass" alone keeps them for ever, and P1 then sends every cone
+/// touching those positions to a full pass: a permanent, silent loss of
+/// selectivity, with no wrong value to notice it by. Being handed a non-empty
+/// index buys exactly the one final walk that clears them.
+#[test]
+fn deleting_the_last_array_clears_the_index() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "3");
+    model._set("B1", "=SEQUENCE(A1)");
+    model._set("D1", "=B2+1");
+    model.evaluate();
+    assert_eq!(model._get_text("D1"), "3");
+    // Delete the anchor; its spill members go with it.
+    model._set("B1", "");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    // B2 was a spill member and is now an ordinary cell. A cone that names it
+    // must be selective: nothing in the workbook is an array any more.
+    model._set("B2", "10");
+    model.evaluate();
+    assert_eq!(model._get_text("D1"), "11");
+    assert!(
+        matches!(model.take_changed_cells(), ChangedSinceRead::Cells(_)),
+        "the deleted array's index entries still force a full pass"
+    );
+}
+
+/// The boundary of P1, from the other side: a dynamic anchor whose last result
+/// was 1x1 is plain, so the cone above is selective -- and then the anchor
+/// grows and spills members the selective pass has no ordering for. Whether
+/// this pass's result is still 1x1 is not a property of the stored cell, so no
+/// pre-pass predicate can see it; the post-pass `wrote_array_cells` redo is the
+/// only thing that can, and this is what dies when it is deleted. Left to
+/// itself the pass reports a delta with the new spill members missing from it,
+/// which the differential fuzzer finds on four of its first sixty seeds.
+#[test]
+fn a_scalar_anchor_that_grows_is_redone_as_full() {
+    let build = |mode| {
+        let mut m = new_empty_model().with_recalc_mode(mode);
+        m._set("A1", "1");
+        m._set("B1", "=SEQUENCE(A1)");
+        m._set("D1", "=SUM(B1:B3)");
+        m
+    };
+    let mut full = build(crate::RecalcMode::Full);
+    let mut inc = build(incremental_mode());
+    for m in [&mut full, &mut inc] {
+        m.evaluate();
+        let _ = m.take_changed_cells();
+        // B1 is now a 1x1 dynamic anchor: plain, so the cone stays selective.
+        m._set("A1", "3");
+        m.evaluate();
+    }
+    assert_eq!(full._get_text("B3"), "3");
+    assert_eq!(full._get_text("D1"), "6");
+    assert_same_workbook(&full, &inc, "the pass a scalar anchor grew on");
+    // The spill members B2:B3 appeared. A delta that does not name them is a
+    // consumer left rendering stale cells, so the redone pass says Everything.
+    assert_eq!(inc.take_changed_cells(), ChangedSinceRead::Everything);
 }
 
 /// A dynamic anchor whose last result was 1x1 has no spill cells and is not in

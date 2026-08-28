@@ -143,16 +143,4 @@ impl Model<'_> {
             })
         )
     }
-
-    /// Parse-time dynamic-array anchors (`ArrayKind::Dynamic`) need the Full
-    /// two-phase spill order even before they appear in `graph.arrays`.
-    pub(super) fn is_dynamic_array_anchor(&self, position: Position) -> bool {
-        matches!(
-            self.cell_at(position),
-            Some(Cell::ArrayFormula {
-                kind: ArrayKind::Dynamic,
-                ..
-            })
-        )
-    }
 }

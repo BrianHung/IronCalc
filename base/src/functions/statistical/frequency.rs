@@ -12,10 +12,12 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         cell: CellReferenceIndex,
     ) -> Result<Vec<f64>, CalcResult> {
         match self.evaluate_node_in_context(arg, cell) {
-            CalcResult::Range { left, right } => match self.values_from_range(left, right) {
-                Ok(v) => Ok(v.into_iter().flatten().collect()),
-                Err(e) => Err(e),
-            },
+            CalcResult::Range { left, right } => {
+                match self.values_from_range_clipped(left, right, cell) {
+                    Ok(v) => Ok(v.into_iter().flatten().collect()),
+                    Err(e) => Err(e),
+                }
+            }
             CalcResult::Array(arr) => match self.values_from_array(arr) {
                 Ok(v) => Ok(v.into_iter().flatten().collect()),
                 Err(e) => Err(CalcResult::new_error(

@@ -1,5 +1,5 @@
 use crate::cast::NumberOrArray;
-use crate::constants::{EXCEL_PRECISION, LAST_COLUMN, LAST_ROW};
+use crate::constants::EXCEL_PRECISION;
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::number_format::{to_excel_precision, to_precision};
@@ -24,8 +24,13 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -84,8 +89,13 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -298,34 +308,11 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     // TODO: We should do this for all functions that run through ranges
                     // Running cargo test for the ironcalc takes around .8 seconds with this speedup
                     // and ~ 3.5 seconds without it. Note that once properly in place sheet.dimension should be almost a noop
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
                     for row in row1..row2 + 1 {
                         for column in column1..(column2 + 1) {
                             match self.evaluate_cell(CellReferenceIndex {
@@ -398,34 +385,11 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                     // TODO: We should do this for all functions that run through ranges
                     // Running cargo test for the ironcalc takes around .8 seconds with this speedup
                     // and ~ 3.5 seconds without it. Note that once properly in place sheet.dimension should be almost a noop
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
                     for row in row1..row2 + 1 {
                         for column in column1..(column2 + 1) {
                             match self.evaluate_cell(CellReferenceIndex {
@@ -530,34 +494,11 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                         );
                     }
                     // TODO: We should do this for all functions that run through ranges. See fn_sum for more details
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.sheet_dimension(left.sheet) {
-                            Ok(s) => s.max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
                     for row in row1..row2 + 1 {
                         for column in column1..(column2 + 1) {
                             let cell_value = self.evaluate_cell(CellReferenceIndex {
