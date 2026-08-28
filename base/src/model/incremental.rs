@@ -400,26 +400,38 @@ impl Model<'_> {
     /// Termination, the bound, and the exact extent of the divergence from
     /// pre-engine behaviour are in `base/src/recalc/README.md`, "One `evaluate`
     /// settles" and "Intentional divergences".
+    /// The array-footprint positions a pass can be held to: every position the
+    /// index names whose anchor has actually been evaluated. An anchor that
+    /// never has holds no extent yet, so there is nothing to compare it against.
+    ///
+    /// Membership, not value. What strands a reader is a footprint position
+    /// changing *hands* -- appearing, vanishing, or moving to another anchor --
+    /// because reading a live spill member evaluates its anchor first
+    /// (`evaluate_cell`'s `SpillCell` arm), so a reader of a member that stayed a
+    /// member cannot have been served a pre-write value. A pure value re-roll
+    /// under stable membership therefore needs no further pass, which is just as
+    /// well: `RANDARRAY` re-rolls every pass by definition, and a value
+    /// comparison would ask it to converge to something it has no fixed point
+    /// for and spin until the bound.
+    fn settled_footprint(&self) -> HashSet<Position> {
+        self.graph
+            .arrays
+            .snapshot()
+            .into_iter()
+            .filter(|&p| !self.is_unevaluated_array(p))
+            .collect()
+    }
+
     fn evaluate_full_to_fixed_point(&mut self) {
         let arrays_at_entry = self.graph.arrays.snapshot();
         let mut settled = false;
         for _ in 0..MAX_SETTLING_PASSES {
-            // The array footprint's values entering this pass. `change_keys`
-            // takes the snapshot eagerly, which is the point: the comparison
-            // below is against the values as they were before the pass, so this
-            // must not become a lazy view of the post-pass state.
-            let before = self.graph.arrays.snapshot();
-            let footprint_before = self.change_keys(
-                before
-                    .iter()
-                    .copied()
-                    .filter(|&p| !self.is_unevaluated_array(p)),
-            );
+            // The footprint's *membership* entering this pass. Collected eagerly:
+            // the comparison below is against the positions as they were before
+            // the pass, so this must not become a view of the post-pass index.
+            let footprint_before = self.settled_footprint();
             self.evaluate_full();
-            if footprint_before
-                .iter()
-                .all(|(p, was)| self.change_key(*p) == *was)
-            {
+            if self.settled_footprint() == footprint_before {
                 settled = true;
                 break;
             }

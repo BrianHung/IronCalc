@@ -1342,6 +1342,73 @@ fn delta_names(model: &mut crate::Model, (row, column): (i32, i32)) -> bool {
     }
 }
 
+/// The evaluated half of the array-index gate. A workbook that arrives whole --
+/// `from_workbook`, and so `from_bytes` and the xlsx reader -- has arrays in its
+/// cells and nothing in its index, because nothing journaled them. Gating the
+/// rebuild on the index alone leaves it empty through the very pass that has to
+/// build it, and the settling comparison reads that index: with it empty there
+/// is no footprint to compare, so the pass reports itself settled when it is
+/// not. The reader here holds 0 instead of 5, which is the same divergence
+/// `one_evaluate_settles_a_footprint_moved_under_a_reader` pins, reached through
+/// a workbook nobody edited into existence.
+#[test]
+fn a_loaded_workbook_settles_on_its_first_evaluate() {
+    let mut source = new_empty_model();
+    source._set("E15", "=SEQUENCE(3)");
+    source._set("G12", "=SUM(E19:E20)");
+    source._set("F14", "=SEQUENCE(3)+G12");
+    source.evaluate();
+    source.move_rows_action(0, 19, 2, -3).unwrap();
+    // Through the bytes, which is what makes this the loaded case: `write_log`
+    // is `#[bitcode(skip)]`, so the model on the other side has the arrays in
+    // its cells, nothing in its journal, and nothing in its array index. Cloning
+    // the workbook instead carries the journal across and hides the bug.
+    let bytes = source.to_bytes();
+    for mode in [crate::RecalcMode::Full, incremental_mode()] {
+        let mut loaded = crate::Model::from_bytes(&bytes, "en")
+            .unwrap()
+            .with_recalc_mode(mode);
+        loaded.evaluate();
+        assert_eq!(
+            loaded._get_text("G12"),
+            "5",
+            "a loaded workbook did not settle in {mode:?}"
+        );
+    }
+}
+
+/// The index half of the array-index gate. The rebuild is skipped for a pass
+/// that evaluated no array cell, which is what makes a workbook with no arrays
+/// pay nothing for the settling machinery -- but the journal drain only ever
+/// *adds* to the index, so the pass after the last array is deleted is the only
+/// thing that can clear the entries it left behind. Gating on "an array
+/// evaluated this pass" alone keeps them for ever, and P1 then sends every cone
+/// touching those positions to a full pass: a permanent, silent loss of
+/// selectivity, with no wrong value to notice it by. Being handed a non-empty
+/// index buys exactly the one final walk that clears them.
+#[test]
+fn deleting_the_last_array_clears_the_index() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "3");
+    model._set("B1", "=SEQUENCE(A1)");
+    model._set("D1", "=B2+1");
+    model.evaluate();
+    assert_eq!(model._get_text("D1"), "3");
+    // Delete the anchor; its spill members go with it.
+    model._set("B1", "");
+    model.evaluate();
+    let _ = model.take_changed_cells();
+    // B2 was a spill member and is now an ordinary cell. A cone that names it
+    // must be selective: nothing in the workbook is an array any more.
+    model._set("B2", "10");
+    model.evaluate();
+    assert_eq!(model._get_text("D1"), "11");
+    assert!(
+        matches!(model.take_changed_cells(), ChangedSinceRead::Cells(_)),
+        "the deleted array's index entries still force a full pass"
+    );
+}
+
 /// The boundary of P1, from the other side: a dynamic anchor whose last result
 /// was 1x1 is plain, so the cone above is selective -- and then the anchor
 /// grows and spills members the selective pass has no ordering for. Whether
