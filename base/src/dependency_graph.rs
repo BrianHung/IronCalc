@@ -180,12 +180,12 @@ impl Displacement {
     fn input(self, input: Input) -> Option<Input> {
         match input {
             Input::OwnCoord(p) => Some(Input::OwnCoord(self.position(p)?)),
-            Input::FormulaText(p) => Some(Input::FormulaText(self.position(p)?)),
-            Input::RowHidden(s, r) if s == self.sheet && matches!(self.axis, Axis::Row) => {
-                Some(Input::RowHidden(s, self.coord(r)?))
+            Input::FormulaText(a) => Some(Input::FormulaText(self.area(a)?)),
+            Input::RowHidden(s, r1, r2) if s == self.sheet && matches!(self.axis, Axis::Row) => {
+                Some(Input::RowHidden(s, self.coord(r1)?, self.coord(r2)?))
             }
-            Input::ColHidden(s, c) if s == self.sheet && matches!(self.axis, Axis::Column) => {
-                Some(Input::ColHidden(s, self.coord(c)?))
+            Input::ColHidden(s, c1, c2) if s == self.sheet && matches!(self.axis, Axis::Column) => {
+                Some(Input::ColHidden(s, self.coord(c1)?, self.coord(c2)?))
             }
             other => Some(other),
         }

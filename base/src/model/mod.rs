@@ -36,7 +36,7 @@ use crate::{
     utils as common,
 };
 
-use crate::recalc::{Input, ReadSet, Write};
+use crate::recalc::{area_contains, Input, ReadSet, Write};
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 mod array_index;
@@ -1585,7 +1585,7 @@ impl<'a> Model<'a> {
 
     /// Whether `row` is hidden. Records `RowHidden`.
     pub(crate) fn row_hidden(&mut self, sheet: u32, row: i32) -> Result<bool, String> {
-        self.trace_input(Input::RowHidden(sheet, row));
+        self.trace_input(Input::RowHidden(sheet, row, row));
         self.workbook.worksheet(sheet)?.is_row_hidden(row)
     }
 
@@ -1616,7 +1616,7 @@ impl<'a> Model<'a> {
 
     /// Formula index of a cell, if any. Records `FormulaText`.
     pub(crate) fn formula_index_at(&mut self, sheet: u32, row: i32, column: i32) -> Option<i32> {
-        self.trace_input(Input::FormulaText((sheet, row, column)));
+        self.trace_input(Input::FormulaText((sheet, row, column, row, column)));
         self.workbook
             .worksheets
             .get(sheet as usize)?
@@ -3461,7 +3461,7 @@ impl<'a> Model<'a> {
                     // A number-to-number write does not change that.
                     if was_formula || is_formula {
                         let text_readers = self.graph.dependents_of_inputs(
-                            |i| matches!(i, Input::FormulaText(q) if *q == p),
+                            |i| matches!(i, Input::FormulaText(q) if area_contains(*q, p)),
                         );
                         for r in text_readers {
                             self.graph.mark_dirty(r);
@@ -3474,13 +3474,15 @@ impl<'a> Model<'a> {
                 }
                 Write::Hidden { row, column } => {
                     let deps = if let Some(r) = row {
-                        self.graph.dependents_of_inputs(
-                            |i| matches!(i, Input::RowHidden(s, rr) if *s == sheet && *rr == r),
-                        )
+                        self.graph.dependents_of_inputs(|i| {
+                            matches!(i, Input::RowHidden(s, r1, r2)
+                                if *s == sheet && *r1 <= r && r <= *r2)
+                        })
                     } else if let Some(c) = column {
-                        self.graph.dependents_of_inputs(
-                            |i| matches!(i, Input::ColHidden(s, cc) if *s == sheet && *cc == c),
-                        )
+                        self.graph.dependents_of_inputs(|i| {
+                            matches!(i, Input::ColHidden(s, c1, c2)
+                                if *s == sheet && *c1 <= c && c <= *c2)
+                        })
                     } else {
                         std::collections::HashSet::new()
                     };
