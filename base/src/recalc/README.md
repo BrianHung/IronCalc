@@ -167,7 +167,7 @@ Four things can enforce a clause, and only two of them owe a test:
 | **test** | Nothing but a test sees it. | Yes: one witness, named below. |
 | **oracle** | `RecalcMode::Verify` and the differential fuzzer find it over shapes nobody enumerated. | Only a deterministic fast gate, and only where it kills something no kept test kills. |
 
-`base/tests/common/` — the generator, the lockstep harness, the minimizer — is the mechanism behind the **oracle** column. It is the largest file in the suite and it is tooling, not tests. It plants SUMIFS, OFFSET/INDIRECT and SUBTOTAL shapes and a volatile zoo on every run, which is why one deterministic witness per clause is enough here and a second shape of the same clause is not.
+`base/tests/common/` — the generator, the lockstep harness, the minimizer — is the mechanism behind the **oracle** column. It is the largest file in the suite and it is tooling, not tests. It plants SUMIFS, OFFSET/INDIRECT and SUBTOTAL shapes and a volatile zoo on every run, which is why one deterministic witness per clause is enough here and a second shape of the same clause is not. Its op space is not only edits: a rare `SaveLoad` step replaces every model in the lockstep set by `from_bytes` of its own `to_bytes`, so the deserialization path — cells with no journal behind them, a `MustRebuild` graph, an unknown formula count — is searched by the same sequences rather than only by hand-written witnesses, and the delta read across one — at the load, and again after the pass that follows it — is required to be `Everything` both times.
 
 ### I1 — every evaluation read records an edge or an Input
 

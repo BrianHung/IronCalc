@@ -69,6 +69,7 @@ fn differential_full_vs_incremental() {
                 total.everything_deltas += stats.everything_deltas;
                 total.ops_applied += stats.ops_applied;
                 total.ops_rejected += stats.ops_rejected;
+                total.reloads += stats.reloads;
                 if !seed_plants_volatiles(seed) {
                     floor.evaluates += stats.evaluates;
                     floor.cells_deltas += stats.cells_deltas;
@@ -101,7 +102,7 @@ fn differential_full_vs_incremental() {
         }
     }
     let summary = format!(
-        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} cells_deltas={} everything_deltas={} ops_applied={} ops_rejected={} non_volatile_evaluates={} non_volatile_cells_deltas={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?} verify={check_verify}",
+        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} cells_deltas={} everything_deltas={} ops_applied={} ops_rejected={} reloads={} non_volatile_evaluates={} non_volatile_cells_deltas={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?} verify={check_verify}",
         start,
         start + seeds - 1,
         total.evaluates,
@@ -109,6 +110,7 @@ fn differential_full_vs_incremental() {
         total.everything_deltas,
         total.ops_applied,
         total.ops_rejected,
+        total.reloads,
         floor.evaluates,
         floor.cells_deltas,
         failing_seeds
