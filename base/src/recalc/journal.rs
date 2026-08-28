@@ -14,9 +14,7 @@ use crate::model::Model;
 ///   they name a position *within their sheet* and nothing more;
 ///   [`Model::drain_write_journal`] supplies the sheet from the enumeration it
 ///   is already walking. Neither variant can carry a sheet that disagrees with
-///   the log it sits in, because neither can carry a sheet at all. (Both used
-///   to: `Cell` filled the slot with a `0` placeholder the drain then threw
-///   away, and `Hidden` carried a `sheet` that was always `0` and never read.)
+///   the log it sits in, because neither can carry a sheet at all.
 /// - [`Write::Link`] is pushed from `Model` and `actions.rs`, which hold the
 ///   sheet index, so it carries a whole [`Position`] and the drain uses it as
 ///   given.
@@ -102,13 +100,12 @@ impl WriteLog {
 /// pauses around the raw write and then pushes its own entry, because a
 /// displacement must be journaled as a value write rather than a formula one.
 ///
-/// Both used to be a `set_recording(false)` ... `set_recording(true)` pair,
-/// which an early `?` between the two would leak: from then on the workbook
-/// would silently stop journaling and the incremental pass would miss every
-/// later edit. The guard makes that unrepresentable. It *is* the mutable
-/// handle to the model — the paused work has to run through it — and `Drop`
-/// restores the previous state on every exit path, including `?`, `return`
-/// and unwinding.
+/// A hand-rolled `set_recording(false)` ... `set_recording(true)` pair would
+/// leak on an early `?` between the two halves: from then on the workbook
+/// silently stops journaling and the incremental pass misses every later edit.
+/// The guard makes that unrepresentable. It *is* the mutable handle to the
+/// model — the paused work has to run through it — and `Drop` restores the
+/// previous state on every exit path, including `?`, `return` and unwinding.
 ///
 /// The previous state is saved rather than assumed, so pauses may nest.
 #[must_use = "the journal is paused only while this guard is alive"]

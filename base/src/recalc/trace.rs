@@ -40,8 +40,8 @@ impl Input {
     /// Whether every read `other` stands for is already stood for by `self`.
     ///
     /// Only the extent-carrying variants have anything to compare; for the rest
-    /// this is equality, which is what the deduplication in
-    /// [`ReadSet::record_input`] used to be for all of them.
+    /// this is plain equality, which is all [`ReadSet::record_input`] needs to
+    /// deduplicate them.
     fn covers(&self, other: &Input) -> bool {
         match (self, other) {
             (Input::RowHidden(s, a1, a2), Input::RowHidden(t, b1, b2))

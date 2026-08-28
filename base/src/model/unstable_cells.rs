@@ -7,13 +7,12 @@
 //! - Cells on a dependency cycle, or downstream of one. A cycle has no fixed
 //!   point, so what they hold is an artifact of where the walk entered. A full
 //!   pass re-derives all of it every time, so incremental seeds them dirty on
-//!   every pass. This set is derived from recorded edges alone -- every read
-//!   that can close a cycle leaves an edge, so a stored-`#CIRC!` witness added
-//!   nothing (and kept self-cycles permanently dirty); it was removed. Needing
-//!   no cell state, it needs nothing from this module: the graph computes it
-//!   itself in `DependencyGraph::cycle_cone`, and each scheduler installs the
-//!   result after its own pass -- over the whole graph after a full one, over
-//!   the cone after a selective one.
+//!   every pass. This set is derived from recorded edges alone, and exactly:
+//!   every read that can close a cycle leaves an edge. Needing no cell state,
+//!   it needs nothing from this module either -- the graph computes it itself
+//!   in `DependencyGraph::cycle_cone`, and each scheduler installs the result
+//!   after its own pass, over the whole graph after a full one and over the
+//!   cone after a selective one.
 //! - Readers of a blocked spill anchor. The anchor stores `#SPILL!` but hands a
 //!   same-pass reader the live array's top-left value, so only the full pass
 //!   reproduces what such a reader holds. Finding them means asking what an

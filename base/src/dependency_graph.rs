@@ -61,19 +61,16 @@ pub(crate) type Area = (u32, i32, i32, i32, i32);
 /// The sheet numbering every stored [`Position`] is expressed in: the workbook's
 /// sheet ids, in workbook order.
 ///
-/// A `Position`'s sheet component is an *index* into `workbook.worksheets`, so
-/// adding, deleting, duplicating or moving a sheet renumbers every position the
-/// graph holds — silently, because the old index still names a live sheet. The
-/// convention that stops that is `reset_parsed_structures` calling
-/// `invalidate_graph`, and until this type existed nothing checked it.
-///
 /// A sheet id is allocated once at creation and never reassigned
 /// (`Model::get_new_sheet_id`), so this sequence changes under exactly the edits
-/// that renumber and under no others: an insert or delete resizes it, a move
-/// permutes it, and a rename — which changes formula text, not numbering —
-/// leaves it alone. That is why the layout is *derived* rather than counted.
-/// There is no generation to bump and so no bump to forget: a new sheet-CRUD
-/// path is checked the moment it lands, without knowing this type exists.
+/// that renumber every stored `Position` and under no others: an insert or
+/// delete resizes it, a move permutes it, and a rename — which changes formula
+/// text, not numbering — leaves it alone. That is why the layout is *derived*
+/// rather than counted. There is no generation to bump and so no bump to
+/// forget: a new sheet-CRUD path is checked the moment it lands, without its
+/// author knowing this type exists.
+///
+/// What the check is for is `base/src/recalc/README.md`, "Sheet numbering".
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct SheetLayout(Vec<u32>);
 
@@ -217,10 +214,10 @@ pub(crate) fn shift_position(
 /// A stored index whose coordinates move with a structural edit.
 ///
 /// Every positional field of [`DependencyGraph`] implements this, and
-/// [`DependencyGraph::shift`] applies it to each one by name. Adding an index
-/// and forgetting to shift it has already been a bug here (the banded range
-/// index shifted its areas but not its bands); the destructuring in `shift`
-/// turns the next occurrence into a compile error.
+/// [`DependencyGraph::shift`] applies it to each one by name. An index that
+/// silently keeps pre-edit coordinates is a wrong answer with no failure to
+/// notice it by; the destructuring in `shift` makes adding one without
+/// deciding how it moves a compile error instead.
 trait Shift {
     /// Rewrites every coordinate this index stores, dropping entries whose
     /// coordinates were deleted.
@@ -891,8 +888,8 @@ impl DependencyGraph {
     ) -> Result<Vec<Position>, HashSet<Position>> {
         // Dense ids assigned in `Position` order, so the walk is index
         // arithmetic and ascending id *is* ascending position: the order this
-        // produces is the one a sorted walk over `Position` keys produces, and
-        // a full pass no longer hashes a 12-byte tuple per edge, twice.
+        // produces is the one a sorted walk over `Position` keys produces,
+        // without hashing a 12-byte tuple per edge, twice.
         let mut nodes: Vec<Position> = affected.iter().copied().collect();
         nodes.sort_unstable();
         let ids: HashMap<Position, u32> = nodes
@@ -941,10 +938,8 @@ impl DependencyGraph {
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
-    /// not touch the dirty set. Verify uses it on the RAND/NOW/TODAY cone only.
-    /// `OFFSET` is not stripped (compared when Incremental). A top-level
-    /// `INDIRECT` is a 1×1 dynamic array (Full, not compared). Wrapped
-    /// `INDIRECT` (`SUM`/`PRODUCT`) stays Incremental.
+    /// not touch the dirty set. Verify's only caller passes the RAND/NOW/TODAY
+    /// seeds, to strip that cone from its value comparison.
     pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
         let mut affected = HashSet::new();
         let mut stack = seeds;

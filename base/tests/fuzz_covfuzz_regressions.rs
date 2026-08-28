@@ -5,13 +5,11 @@
 //! contract. They live here rather than in the lib suite because that harness
 //! does.
 //!
-//! One shape per kill class. The minimized artifacts came in families -- six of
-//! them died to exactly the same mutant as another and asserted the same
-//! observable, which is what redundancy means here (see
-//! `base/src/recalc/README.md` "Test discipline"); one of each family is kept
-//! and the others are in the history. Each doc comment below names the mutant
-//! that kills the shape. Before deleting or merging one of these, re-apply
-//! those mutants and check that nothing which used to die now survives.
+//! One shape per kill class: minimized artifacts arrive in families, and two
+//! that die to the same mutant and assert the same observable are one test (see
+//! `base/src/recalc/README.md`, "Test discipline"). Each doc comment below names
+//! the mutant that kills its shape. Before deleting or merging one of these,
+//! re-apply those mutants and check that nothing which died still survives.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
@@ -99,12 +97,11 @@ fn covfuzz_count_offset_cycle_lost_after_number_overwrite() {
 
 /// Seeded fuzz (seed 251), minimized. A CSE anchor's member is read by a
 /// formula the anchor's own range covers, so the cycle closes through the
-/// array footprint -- a path no read edge used to record, because the anchor
-/// writes its members as evaluation writes and the reader saw an empty cell.
-/// Nothing then told the scheduler that the reader's stored value was an
-/// artifact of where the cycle was entered, and it diverged from a live
-/// re-evaluation. The only test in the suite that dies when the
-/// footprint-to-anchor read edge in `evaluate_cell` is removed.
+/// array footprint. The anchor writes its members as evaluation writes and the
+/// reader sees an empty cell, so without the footprint-to-anchor read edge
+/// nothing tells the scheduler the reader's stored value is an artifact of
+/// where the cycle was entered. The only test in the suite that dies when that
+/// edge is removed from `evaluate_cell`.
 #[test]
 fn cse_footprint_cycle_stored_value_diverges_from_a_live_reeval() {
     assert_clean(&[
