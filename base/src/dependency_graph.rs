@@ -953,14 +953,28 @@ impl DependencyGraph {
         !matches!(self.state, GraphState::Ready { .. })
     }
 
-    /// Dirty cells and the cells reachable from them.
-    pub(crate) fn take_seeds_and_affected(&mut self) -> (Vec<Position>, HashSet<Position>) {
+    /// Dirty cells and the cells reachable from them, or `None` once that set
+    /// reaches `limit`.
+    ///
+    /// `limit` is the cone size at which the caller has *already* decided to
+    /// run a full pass. A walk that reaches it therefore stops: what it would
+    /// go on to build is a cone nobody reads, and on the shapes where every
+    /// edit reaches every formula that unread cone is the largest single cost
+    /// left in the pass.
+    ///
+    /// The dirty set is drained either way. The full pass that follows
+    /// recomputes every cell those seeds could have reached and more, so
+    /// dropping them is not losing them.
+    pub(crate) fn take_seeds_and_affected(
+        &mut self,
+        limit: usize,
+    ) -> Option<(Vec<Position>, HashSet<Position>)> {
         let GraphState::Ready { dirty } = &mut self.state else {
-            return (Vec::new(), HashSet::new());
+            return Some((Vec::new(), HashSet::new()));
         };
         let seeds: Vec<Position> = std::mem::take(dirty).into_iter().collect();
-        let affected = self.reachable(seeds.clone());
-        (seeds, affected)
+        let affected = self.reachable_within(seeds.clone(), limit)?;
+        Some((seeds, affected))
     }
 
     /// Replaces the whole array index. Only a full pass may call this: it is
@@ -1170,10 +1184,36 @@ impl DependencyGraph {
         self.cycle_scans
     }
 
-    /// Every cell transitively reachable from `seeds`, including the seeds. Does
-    /// not touch the dirty set. Verify's only caller passes the RAND/NOW/TODAY
-    /// seeds, to strip that cone from its value comparison.
+    /// Every cell transitively reachable from `seeds`, including the seeds, with
+    /// no limit on how many that is. Does not touch the dirty set.
+    ///
+    /// The scheduler does not want this — it always has a size past which it
+    /// stops caring, and takes [`Self::take_seeds_and_affected`]. `Verify` is
+    /// the one caller that wants the whole cone: it passes the RAND/NOW/TODAY
+    /// seeds and strips what they reach from its value comparison, and a cone
+    /// cut short there would be a comparison made against cells it should have
+    /// skipped.
+    ///
+    /// The walk stops early only at `limit`, and a set of `usize::MAX`
+    /// positions does not fit in a machine, so the `None` this defaults away is
+    /// unreachable. Defaulting rather than unwrapping is still the right way to
+    /// be wrong here: `Verify` subtracts this set from what it compares, so an
+    /// empty one makes it compare cells it meant to skip and fail loudly, where
+    /// a wrong non-empty one would make it skip cells it meant to compare and
+    /// say nothing.
+    #[cfg(feature = "recalc_verify")]
     pub(crate) fn reachable(&self, seeds: Vec<Position>) -> HashSet<Position> {
+        self.reachable_within(seeds, usize::MAX).unwrap_or_default()
+    }
+
+    /// [`Self::reachable`], abandoned the moment the set reaches `limit`.
+    ///
+    /// The check is on the set rather than on the stack, so it counts cells and
+    /// not the edges that led to them: a walk over a wide fanout pushes each
+    /// cell once per precedent, and stopping on that count would stop at a
+    /// number that depends on the shape of the graph rather than on the size of
+    /// the cone the caller asked about.
+    fn reachable_within(&self, seeds: Vec<Position>, limit: usize) -> Option<HashSet<Position>> {
         let mut affected = HashSet::new();
         let mut stack = seeds;
         // A range's dependents all become affected the moment any one of its
@@ -1182,6 +1222,9 @@ impl DependencyGraph {
         while let Some(cell) = stack.pop() {
             if !affected.insert(cell) {
                 continue;
+            }
+            if affected.len() >= limit {
+                return None;
             }
             if let Some(dependents) = self.cell_dependents.get(&cell) {
                 stack.extend(dependents.iter().copied());
@@ -1197,7 +1240,7 @@ impl DependencyGraph {
                 }
             }
         }
-        affected
+        Some(affected)
     }
 
     /// Applies a row/column insert (`delta > 0`) or delete (`delta < 0`): marks
@@ -1392,7 +1435,9 @@ mod tests {
 
         graph.mark_dirty((0, 1, 1));
         assert!(!graph.should_recompute_full());
-        let (_seeds, affected) = graph.take_seeds_and_affected();
+        let Some((_seeds, affected)) = graph.take_seeds_and_affected(usize::MAX) else {
+            panic!("an unlimited walk cannot abandon the cone");
+        };
         assert!(affected.contains(&(0, 1, 1)));
         assert!(graph.should_recompute_full()); // dirty consumed
 

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
+use crate::model::incremental::EvalPass;
 use crate::recalc::Input;
 use crate::test::util::{incremental_mode, new_empty_model};
 use crate::{ChangedSinceRead, RecalcMode, UserModel};
@@ -1692,5 +1693,76 @@ fn an_acyclic_full_pass_runs_no_cycle_machinery() {
         model.graph.cycle_scans(),
         scans_with_the_cycle,
         "a rebuild pass inherited the previous pass's cycle witness"
+    );
+}
+
+/// R13.2 — the cone walk's limit *is* the fanout guard, at the boundary.
+///
+/// The walk stops at the first cone size the guard would reject, so a limit
+/// that disagrees with the guard by one is a scheduling decision quietly made
+/// on the wrong side: a pass that goes full where it should have stayed
+/// selective (a lost win) or one that stays selective where full is cheaper (a
+/// slow pass). Both are invisible to every value assertion in the suite, and
+/// both sides of the boundary are asserted here, on workbooks that differ by
+/// one formula.
+///
+/// Kills a `>` for `>=` in the walk's stop test and a floor-for-ceiling slip in
+/// `fanout_limit`.
+#[test]
+fn the_cone_limit_is_the_fanout_guard() {
+    // `INCREMENTAL_FANOUT_FLOOR` is 1024 and `INCREMENTAL_FANOUT_RATIO` is 2, so
+    // the guard is `cone * 2 >= formulas` and the limit is `formulas` halved,
+    // rounded *up*. The cone of an `A1` edit is `A1` itself plus the chain
+    // hanging off it; the filler formulas in column C are never in it and are
+    // there to fix the count. A odd count is one of the three cases, because it
+    // is the only one that separates rounding up from rounding down.
+    // Pinned to `Incremental` rather than taking the suite's mode, because
+    // `Verify` has no fanout guard to be at the boundary of: it disables the
+    // guard outright so the oracle keeps comparing a selective pass against a
+    // shadow full one, and under it every cone here stays selective.
+    let build = |chain: i32, formulas: i32| {
+        let mut m = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+        m._set("A1", "1");
+        for row in 2..=chain + 1 {
+            m._set(&format!("A{row}"), &format!("=A{}+1", row - 1));
+        }
+        for row in 1..=formulas - chain {
+            m._set(&format!("C{row}"), "=1+0");
+        }
+        m.evaluate();
+        assert_eq!(
+            m.formula_cell_count, formulas as usize,
+            "the shape is what sets the limit"
+        );
+        m
+    };
+    let pass_of = |m: &mut crate::Model| {
+        m._set("A1", "2");
+        m.drain_write_journal();
+        let mut evaluating = m.pause_journal();
+        evaluating.evaluate_selective()
+    };
+
+    // 2048 formulas, limit 1024. 1022 chain cells plus the seed is a cone of
+    // 1023, one under it.
+    let mut under = build(1022, 2048);
+    assert!(
+        matches!(pass_of(&mut under), EvalPass::Incremental),
+        "a cone one cell under the limit was handed to a full pass"
+    );
+    // One more, and the cone reaches 1024: the walk stops there, and stopping is
+    // the fallback.
+    let mut at = build(1023, 2048);
+    assert!(
+        matches!(pass_of(&mut at), EvalPass::Full),
+        "a cone at the limit stayed selective"
+    );
+    // 2049 formulas: `1025 * 2 >= 2049` and `1024 * 2` does not, so the limit is
+    // 1025 and the same 1024-cell cone is now under it. Rounding the halving
+    // down would put the limit at 1024 and send this pass to full.
+    let mut odd = build(1023, 2049);
+    assert!(
+        matches!(pass_of(&mut odd), EvalPass::Incremental),
+        "the limit halved the formula count downwards"
     );
 }
