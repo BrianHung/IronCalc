@@ -284,30 +284,47 @@ impl Shift for HashMap<Input, HashSet<Position>> {
     }
 }
 
-impl Shift for HashMap<Position, ReadSet> {
+/// What one formula read when it last evaluated, and the whole-graph rebuild
+/// that last confirmed it.
+///
+/// The stamp is what makes a full pass a *sweep* rather than a clear: see
+/// [`DependencyGraph::begin_rebuild`].
+#[derive(Clone, Debug)]
+struct Precedents {
+    reads: ReadSet,
+    /// The [`DependencyGraph::rebuild`] generation this entry was last written
+    /// or re-confirmed in.
+    seen: u64,
+}
+
+impl Shift for HashMap<Position, Precedents> {
     fn shift(&mut self, displacement: Displacement) {
         *self = self
             .drain()
-            .filter_map(|(dependent, reads)| {
+            .filter_map(|(dependent, precedents)| {
                 let dependent = displacement.position(dependent)?;
+                let Precedents { reads, seen } = precedents;
                 Some((
                     dependent,
-                    ReadSet {
-                        cells: reads
-                            .cells
-                            .into_iter()
-                            .filter_map(|p| displacement.position(p))
-                            .collect(),
-                        rects: reads
-                            .rects
-                            .into_iter()
-                            .filter_map(|area| displacement.area(area))
-                            .collect(),
-                        inputs: reads
-                            .inputs
-                            .into_iter()
-                            .filter_map(|input| displacement.input(input))
-                            .collect(),
+                    Precedents {
+                        reads: ReadSet {
+                            cells: reads
+                                .cells
+                                .into_iter()
+                                .filter_map(|p| displacement.position(p))
+                                .collect(),
+                            rects: reads
+                                .rects
+                                .into_iter()
+                                .filter_map(|area| displacement.area(area))
+                                .collect(),
+                            inputs: reads
+                                .inputs
+                                .into_iter()
+                                .filter_map(|input| displacement.input(input))
+                                .collect(),
+                        },
+                        seen,
                     },
                 ))
             })
@@ -546,7 +563,11 @@ pub(crate) struct DependencyGraph {
     input_dependents: HashMap<Input, HashSet<Position>>,
     /// What each formula read last time it evaluated; the reverse of the edge
     /// maps, so a formula's edges can be dropped in O(degree) before re-record.
-    precedents: HashMap<Position, ReadSet>,
+    precedents: HashMap<Position, Precedents>,
+    /// Which whole-graph rebuild is running, or last ran. Bumped by
+    /// [`Self::begin_rebuild`], stamped onto every entry [`Self::replace_reads`]
+    /// writes or confirms, and read by [`Self::end_rebuild`] to sweep the rest.
+    rebuild: u64,
     state: GraphState,
     /// The array/spill footprint index. Public to the crate because the
     /// scheduler tests membership directly to decide the arrays->Full fallback;
@@ -582,15 +603,47 @@ pub(crate) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    /// Drops all edges; a full pass rebuilds them. The never-served and
-    /// blocked-reader sets are derived from those edges, so they go too.
-    pub(crate) fn clear_edges(&mut self) {
-        self.cell_dependents.clear();
-        self.range_dependents.clear();
-        self.input_dependents.clear();
-        self.precedents.clear();
+    /// Opens a whole-graph rebuild: the full pass that follows re-records every
+    /// live formula, and [`Self::end_rebuild`] drops whatever it did not.
+    ///
+    /// This is a mark and a sweep where the older shape was "clear every edge,
+    /// then add them all back". The graph it leaves is the same one — what the
+    /// pass recorded, entry for entry, because a full pass evaluates every cell
+    /// in the workbook, so a position that is still a formula re-records and a
+    /// position that is not cannot. What it no longer does is throw the read
+    /// sets away first, and *that* is the point: clearing made every entry
+    /// unrecognizable, so [`Self::replace_reads`] had to rebuild a whole
+    /// workbook's edges from nothing on every full pass, even when nothing any
+    /// formula reads had moved. With the sets still there, the formulas that
+    /// read what they read last time — nearly all of them — cost a comparison
+    /// instead.
+    pub(crate) fn begin_rebuild(&mut self) {
+        self.rebuild += 1;
+        // Derived from edges the pass is about to replace, and both are rebuilt
+        // by its tail. Cleared here so a pass that dies mid-way leaves no set
+        // claiming to describe edges that are gone.
         self.never_served.replace(HashSet::new());
         self.blocked_array_readers.replace(HashSet::new());
+    }
+
+    /// Closes the rebuild [`Self::begin_rebuild`] opened. An entry the pass
+    /// neither rewrote nor confirmed belongs to a position that is no longer a
+    /// formula, so its edges go with it.
+    ///
+    /// Must run before anything reads the edges — the cycle cone and the
+    /// blocked-reader walk both do — because until it has, the graph is the
+    /// union of this pass's edges and the leftovers of the last one.
+    pub(crate) fn end_rebuild(&mut self) {
+        let rebuild = self.rebuild;
+        let stale: Vec<Position> = self
+            .precedents
+            .iter()
+            .filter(|(_, precedents)| precedents.seen != rebuild)
+            .map(|(&position, _)| position)
+            .collect();
+        for position in stale {
+            self.remove_dependent(position);
+        }
     }
 
     /// Records that `dependent` reads `precedent`. Idempotent.
@@ -634,7 +687,37 @@ impl DependencyGraph {
     }
 
     /// Replaces `dependent`'s outgoing edges with the reads just observed.
-    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: ReadSet) {
+    ///
+    /// A formula that read exactly what it read last time is the common case —
+    /// on a full pass it is nearly every formula in the workbook — and for it
+    /// the work below is a graph's worth of churn that ends where it began.
+    /// [`Self::remove_dependent`] deletes every edge, dropping the dependents
+    /// set of each precedent this was the last reader of, and the loops then
+    /// allocate them all back. So compare first: one hash lookup and a scan
+    /// linear in the degree, against a rebuild that is linear in the degree
+    /// *and* allocates.
+    ///
+    /// Equivalence is the invariant, and it is exact rather than approximate.
+    /// A remove followed by an identical add is the identity on all four maps:
+    /// each edge is removed from the same set it is then inserted into, an
+    /// entry pruned for becoming empty is recreated by the insert that follows,
+    /// and `precedents` ends holding the value it started with. The one place
+    /// the two loops differ — `remove_dependent` walks a self-read that
+    /// `add_cell_edge` refuses to record — cancels too: nothing ever inserts
+    /// `dependent` into its own dependents set, so removing it finds nothing
+    /// and prunes nothing.
+    ///
+    /// The skip still stamps. A rebuild sweeps every entry it did not see, so
+    /// an unchanged formula that returned here without saying so would have its
+    /// edges collected as if the cell had stopped being a formula.
+    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: &ReadSet) {
+        let rebuild = self.rebuild;
+        if let Some(precedents) = self.precedents.get_mut(&dependent) {
+            if precedents.reads == *reads {
+                precedents.seen = rebuild;
+                return;
+            }
+        }
         self.remove_dependent(dependent);
         for &p in &reads.cells {
             if p != dependent {
@@ -647,12 +730,18 @@ impl DependencyGraph {
         for input in &reads.inputs {
             self.add_input_edge(input.clone(), dependent);
         }
-        self.precedents.insert(dependent, reads);
+        self.precedents.insert(
+            dependent,
+            Precedents {
+                reads: reads.clone(),
+                seen: rebuild,
+            },
+        );
     }
 
     /// Drops outgoing edges from a cell in O(degree) via the reverse index.
     pub(crate) fn remove_dependent(&mut self, dependent: Position) {
-        let Some(reads) = self.precedents.remove(&dependent) else {
+        let Some(Precedents { reads, .. }) = self.precedents.remove(&dependent) else {
             return;
         };
         for p in reads.cells {
@@ -685,7 +774,7 @@ impl DependencyGraph {
     pub(crate) fn cell_reads(&self, cell: Position, pred: impl Fn(&Input) -> bool) -> bool {
         self.precedents
             .get(&cell)
-            .is_some_and(|reads| reads.inputs.iter().any(pred))
+            .is_some_and(|precedents| precedents.reads.inputs.iter().any(pred))
     }
 
     /// How many cell, rect and input edges `cell`'s last evaluation recorded.
@@ -695,8 +784,23 @@ impl DependencyGraph {
     pub(crate) fn edge_counts(&self, cell: Position) -> (usize, usize, usize) {
         self.precedents
             .get(&cell)
-            .map(|reads| (reads.cells.len(), reads.rects.len(), reads.inputs.len()))
+            .map(|p| {
+                (
+                    p.reads.cells.len(),
+                    p.reads.rects.len(),
+                    p.reads.inputs.len(),
+                )
+            })
             .unwrap_or((0, 0, 0))
+    }
+
+    /// How many formulas the graph holds recorded reads for. Test-only, and for
+    /// one thing: a full pass must leave an entry for the formulas it evaluated
+    /// and for nothing else, which is a fact about the map's size that no value
+    /// assertion can reach.
+    #[cfg(test)]
+    pub(crate) fn recorded_formula_count(&self) -> usize {
+        self.precedents.len()
     }
 
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
@@ -1054,6 +1158,10 @@ impl DependencyGraph {
             blocked_array_readers,
             // A fact about the pass that just ran. It holds no coordinates.
             structural_unknown: _,
+            // A counter of rebuilds. `precedents` carries the stamp with the
+            // entry it belongs to, so the entries a shift moves keep the one
+            // they had and the entries it drops take theirs with them.
+            rebuild: _,
             // Sheet ids, not coordinates. A row/column edit happens *within* one
             // sheet and cannot add, remove or reorder sheets, so the numbering
             // this names is exactly the one it named before.

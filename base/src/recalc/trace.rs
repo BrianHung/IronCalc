@@ -57,7 +57,16 @@ impl Input {
 /// Cells, rectangles, and non-cell inputs observed while evaluating one formula.
 /// A covering rect suppresses per-cell edges for the same read (SUM(A:A) stays
 /// one range vertex, not a million cell edges).
-#[derive(Clone, Debug, Default)]
+///
+/// `PartialEq` is what lets [`DependencyGraph::replace_reads`] recognise a
+/// formula that read exactly what it read last time and leave the graph
+/// untouched. Order counts, and that is the point: this is the reads in the
+/// order the formula made them, so two sets that compare equal came from a walk
+/// that took the same path. A walk that reordered its reads compares unequal
+/// and is re-recorded, which is the harmless direction to be wrong in.
+///
+/// [`DependencyGraph::replace_reads`]: crate::dependency_graph::DependencyGraph::replace_reads
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ReadSet {
     /// Single cells read, none of them covered by a rect in `rects`.
     pub cells: Vec<Position>,
@@ -69,6 +78,14 @@ pub(crate) struct ReadSet {
 }
 
 impl ReadSet {
+    /// Empties the set but keeps its buffers, so the frame can be handed to the
+    /// next formula without allocating three vectors for it.
+    pub(crate) fn clear(&mut self) {
+        self.cells.clear();
+        self.rects.clear();
+        self.inputs.clear();
+    }
+
     /// Records a read of one cell, unless a rect already recorded covers it.
     /// Idempotent.
     pub(crate) fn record_cell(&mut self, cell: Position) {

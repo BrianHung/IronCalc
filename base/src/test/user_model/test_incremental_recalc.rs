@@ -1525,3 +1525,42 @@ fn offset_records_its_resolved_extent_not_the_walk() {
     model.evaluate();
     assert_eq!(model._get_text("B1"), "6");
 }
+
+/// I1.12. A full pass leaves an entry for the formulas it evaluated and for
+/// nothing else. The pass records every live formula's reads, so what makes
+/// this a *mechanism* rather than a tautology is the other half: an entry whose
+/// position stopped being a formula without a journal write to say so. Deleting
+/// a sheet is the sharpest case — it renumbers every position after it, so the
+/// entries of the deleted sheet's formulas now name live cells on a sheet that
+/// never had them.
+///
+/// Nothing in the value suite sees this. A leftover entry only ever *adds*
+/// edges, so the cone it widens is a superset and every value stays right; what
+/// it costs is a graph that grows without bound and cones that never shrink.
+/// Kills deleting the sweep in `evaluate_full`'s tail
+/// (`DependencyGraph::end_rebuild`), which is what makes a full pass a rebuild
+/// rather than an accumulation.
+#[test]
+fn a_full_pass_keeps_only_the_formulas_it_evaluated() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model.add_sheet("Second").unwrap();
+    // One formula per sheet, at positions that do not collide once the first
+    // sheet goes: (0,1,1) and (1,5,2).
+    model._set("A1", "=1+1");
+    model.set_user_input(1, 5, 2, "=2+2".to_string()).unwrap();
+    model.evaluate();
+    assert_eq!(model.graph.recorded_formula_count(), 2);
+
+    // "Second" becomes sheet 0, and its formula moves to (0,5,2). Both stored
+    // entries are now stale, and neither is overwritten by the pass that
+    // follows: nothing is a formula at (0,1,1), and (1,5,2) is not a position
+    // any more.
+    model.delete_sheet(0).unwrap();
+    model.evaluate();
+    assert_eq!(
+        model.graph.recorded_formula_count(),
+        1,
+        "a full pass kept edges for positions that are no longer formulas"
+    );
+    assert_eq!(model._get_text_at(0, 5, 2), "4");
+}
