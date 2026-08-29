@@ -684,9 +684,28 @@ pub(crate) struct DependencyGraph {
     /// point, so what they hold is an artifact of where the cycle was entered.
     /// Their stored value is never served: every pass seeds them dirty, so they
     /// and their readers recompute, exactly as a full pass re-derives them from
-    /// scratch. Rebuilt after every pass from [`Self::cycle_cone`], over the
-    /// whole graph after a full pass and over the cone after a selective one.
+    /// scratch. Derived from [`Self::cycle_cone`], over the whole graph after a
+    /// full pass and over the cone after a selective one — and, because it is a
+    /// function of the edges, only when they have moved. See
+    /// [`Self::never_served_stale`].
     never_served: Positions,
+    /// Whether [`Self::never_served`] may no longer be the whole-graph cycle
+    /// cone of the edges now in hand.
+    ///
+    /// The cone is a function of the edges and of nothing else, so it only has
+    /// to be re-derived when they move. Every mutator that moves one sets this;
+    /// [`Self::refresh_never_served`] is the only thing that clears it, because
+    /// it is the only thing that does the whole-graph derivation. A cone-shaped
+    /// answer installed by a selective pass leaves it *set*, so the next full
+    /// pass still does the whole-graph walk that "a cycle no cone would seed is
+    /// still known" depends on.
+    ///
+    /// Sticky-true is the safe way for this to be wrong: an extra walk that
+    /// finds what the last one found. Sticky-false would leave a cycle's
+    /// members serving values that are artifacts of where the walk entered
+    /// them, which is why it is set by the mutators rather than inferred at the
+    /// point of use.
+    never_served_stale: bool,
     /// Readers of a blocked spill anchor: the other cells whose last result was
     /// not a function of the store. The anchor holds `#SPILL!` but hands a
     /// same-pass reader the live array's top-left value instead, so a reader
@@ -707,10 +726,10 @@ pub(crate) struct DependencyGraph {
     /// coordinates out from under the edges.
     sheet_layout: SheetLayout,
     /// How many times [`Self::cycle_cone`] has been asked to order a node set.
-    /// Test-only, and for one thing: "an acyclic workbook pays nothing for
-    /// cycles" is a statement about work *not done*, which no assertion over
-    /// values or over [`Self::never_served`] can reach — both are empty whether
-    /// the scan ran or not.
+    /// Test-only, and for one thing: "a pass whose edges did not move did not
+    /// order the graph again" is a statement about work *not done*, and no
+    /// assertion over values or over [`Self::never_served`] can reach it — both
+    /// are the same whether the walk ran or not.
     #[cfg(test)]
     cycle_scans: u64,
 }
@@ -732,10 +751,15 @@ impl DependencyGraph {
     /// instead.
     pub(crate) fn begin_rebuild(&mut self) {
         self.rebuild += 1;
-        // Derived from edges the pass is about to replace, and both are rebuilt
-        // by its tail. Cleared here so a pass that dies mid-way leaves no set
-        // claiming to describe edges that are gone.
-        self.never_served.replace(HashSet::new());
+        // `never_served` is *not* cleared here. It is derived from the edges,
+        // and this pass mostly re-records the edges it already had; throwing it
+        // away would mean deriving it again from an answer this graph already
+        // holds. What stands in for the clear is `never_served_stale`, which
+        // every mutator that actually moves an edge sets, so a pass that dies
+        // mid-way leaves a set that is either still right or is marked as not.
+        // That is strictly stronger than the clear was: an empty set over a
+        // graph with a cycle in it is the dangerous direction, and the clear
+        // produced exactly that until the tail ran.
         self.blocked_array_readers.replace(HashSet::new());
     }
 
@@ -831,6 +855,9 @@ impl DependencyGraph {
                 return;
             }
         }
+        // Past here the edges move, and the cycle cone was derived from where
+        // they were.
+        self.never_served_stale = true;
         self.remove_dependent(dependent);
         for &p in &reads.cells {
             if p != dependent {
@@ -857,6 +884,7 @@ impl DependencyGraph {
         let Some(Precedents { reads, .. }) = self.precedents.remove(&dependent) else {
             return;
         };
+        self.never_served_stale = true;
         for p in reads.cells {
             if let Some(set) = self.cell_dependents.get_mut(&p) {
                 set.remove(&dependent);
@@ -981,6 +1009,15 @@ impl DependencyGraph {
     /// the only pass whose walk sees every anchor, so it is the only one that
     /// can drop entries rather than just add them.
     pub(crate) fn replace_arrays(&mut self, cells: HashMap<Position, Position>) {
+        // Footprint positions are nodes of the cycle graph -- a member relays
+        // its anchor's output -- so a different index is a different node set.
+        // Compared rather than assumed changed: a workbook with arrays in it
+        // rebuilds this index on every full pass and almost always rebuilds it
+        // to what it already was, and paying a whole-graph walk for that would
+        // be exactly the cost this fact exists to avoid.
+        if self.arrays.0 != cells {
+            self.never_served_stale = true;
+        }
         self.arrays.replace(cells);
     }
 
@@ -1014,10 +1051,33 @@ impl DependencyGraph {
         nodes
     }
 
-    /// Replaces the set of cells whose stored value may not be served. See
-    /// [`Self::never_served`].
+    /// Installs a *cone-shaped* answer: what a selective pass found by ordering
+    /// its own cone. See [`Self::never_served`].
+    ///
+    /// Leaves [`Self::never_served_stale`] set, deliberately. A cone is not the
+    /// whole graph, and the reason the whole-graph walk exists is that a cycle
+    /// no cone would seed still has to be known; so this answer stands until
+    /// the next full pass, and does not excuse that pass from its walk.
     pub(crate) fn set_never_served(&mut self, cells: HashSet<Position>) {
         self.never_served.replace(cells);
+        self.never_served_stale = true;
+    }
+
+    /// Re-derives [`Self::never_served`] over the whole graph -- unless the
+    /// edges have not moved since the last time it was derived that way, in
+    /// which case the set already in hand *is* that answer.
+    ///
+    /// This is the one place the whole-graph walk happens, so it is the one
+    /// place that may clear the staleness fact. Everything else that touches
+    /// edges, footprints or the set itself only ever sets it.
+    pub(crate) fn refresh_never_served(&mut self) {
+        if !self.never_served_stale {
+            return;
+        }
+        let nodes = self.nodes();
+        let cone = self.cycle_cone(&nodes);
+        self.never_served.replace(cone);
+        self.never_served_stale = false;
     }
 
     /// Cells whose last result was not a genuine function value. Seeded dirty
@@ -1352,6 +1412,10 @@ impl DependencyGraph {
             blocked_array_readers,
             // A fact about the pass that just ran. It holds no coordinates.
             structural_unknown: _,
+            // A fact about whether the cycle cone still describes these edges.
+            // It holds no coordinates, and it is set unconditionally at the end
+            // of this function — see the note there.
+            never_served_stale: _,
             // A counter of rebuilds. `precedents` carries the stamp with the
             // entry it belongs to, so the entries a shift moves keep the one
             // they had and the entries it drops take theirs with them.
@@ -1372,6 +1436,22 @@ impl DependencyGraph {
         arrays.shift(displacement);
         never_served.shift(displacement);
         blocked_array_readers.shift(displacement);
+        // The cone is derived again after this rather than shifted into place.
+        //
+        // Every other setter of this fact is reached by a mutator; this one is
+        // not, because a displacement drops the entries whose positions fell in
+        // a deleted band by rewriting the map, never through
+        // `remove_dependent`. There is an argument that it is redundant anyway
+        // -- removing a cell that a cycle ran through breaks a reference some
+        // survivor held, and that survivor re-records different reads on the
+        // next pass, which sets the fact through `replace_reads`. No test kills
+        // this line, and that argument is why.
+        //
+        // It stays because the argument leans on the shift model being exact,
+        // and this fact is what stands between a wrong shift and a cycle whose
+        // members quietly stop being seeded. One bool on the rarest path is a
+        // cheaper thing to keep than that argument is to rely on.
+        self.never_served_stale = true;
     }
 
     /// Whether this pass follows an insert/delete whose delta cannot name every

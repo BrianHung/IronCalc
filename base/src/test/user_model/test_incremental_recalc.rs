@@ -1604,95 +1604,88 @@ fn a_full_pass_keeps_only_the_formulas_it_evaluated() {
     assert_eq!(model._get_text_at(0, 5, 2), "4");
 }
 
-/// R13.1 — an acyclic workbook runs no cycle machinery at all, and the fact
-/// that gates it is a fact about the pass that just ran rather than a sticky
-/// one.
+/// R13.1 — the cycle cone is a function of the edges, so a pass whose edges did
+/// not move does not derive it again.
 ///
-/// "Pays nothing for cycles" is a statement about work *not* done, and no
-/// assertion over values or over `never_served` can reach it: both are the same
-/// whether the whole-graph ordering ran or not. `cycle_scans` is what makes it
-/// checkable.
+/// "The walk did not run" is a statement about work *not* done, and no assertion
+/// over values or over `never_served` can reach it: both are the same whether
+/// the whole-graph ordering ran or not. `cycle_scans` is what makes it checkable.
 ///
-/// Both directions are asserted, because they fail differently. A witness stuck
-/// *true* is safe and slow — the cone is rebuilt over a graph that has no cycle
-/// in it. A witness stuck *false* is wrong: the members of a cycle would go on
-/// serving a value that is an artifact of where the walk entered them. The
-/// closing and the breaking of the same cycle are both here, so a witness that
-/// only ever latches one way fails one of them.
+/// The shape is a wide fanout on purpose. The claim is about the *full* pass's
+/// tail, and on a workbook small enough to stay selective no pass ever reaches
+/// it — a version of this test on three cells passes with the caching deleted,
+/// with the staleness fact never set, and with both.
 ///
-/// Kills gating the whole-graph rebuild on nothing (the scan comes back on the
-/// acyclic passes), and kills dropping the reset at the top of `evaluate_full`
-/// (the broken cycle's cone is never released).
+/// The direction that must not slip is the cached one: a cone left standing over
+/// edges that moved would leave a cycle's members serving values that are
+/// artifacts of where the walk entered them. So the fact is set by the mutators
+/// that move edges rather than inferred where it is read, and the edges are
+/// moved here in the two ways that reach different mutators — a cell becoming a
+/// formula (`replace_reads`) and a cell ceasing to be one (`remove_dependent`).
+///
+/// Kills caching the cone unconditionally (the closed cycle is never found),
+/// never caching it (the value-only passes walk again), and dropping the fact
+/// from `remove_dependent` (the broken cycle's cone is never released).
 #[test]
-fn an_acyclic_full_pass_runs_no_cycle_machinery() {
-    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+fn the_cycle_cone_is_re_derived_only_when_the_edges_move() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
     model._set("A1", "1");
-    model._set("B1", "=A1+1");
-    model._set("C1", "=SUM(A1:B1)");
+    // Past `INCREMENTAL_FANOUT_FLOOR`, and every one of them reads `A1`, so an
+    // `A1` edit reaches the whole workbook and every pass is a full pass.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=$A$1*2");
+    }
     model.evaluate();
-    model._set("A1", "2");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "5");
-    assert_eq!(
-        model.graph.cycle_scans(),
-        0,
-        "an acyclic workbook ordered its whole graph looking for a cycle"
+    let after_the_first_pass = model.graph.cycle_scans();
+    assert!(
+        after_the_first_pass > 0,
+        "the first pass never derived the cone at all"
     );
 
-    // A cycle closes: A1 -> C1 -> (A1:B1) -> A1. The pass that closes it has to
-    // find it, whatever that costs.
+    // A value edit moves no edge: every formula reads what it read last time, so
+    // the cone in hand is still the cone of this graph.
+    model._set("A1", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "10");
+    assert_eq!(
+        model.graph.cycle_scans(),
+        after_the_first_pass,
+        "a pass that moved no edge ordered the whole graph again"
+    );
+
+    // A cycle closes: `A1` reads `C1`, and all 1100 of them read `A1`. `A1`
+    // becoming a formula moves its edges, so the cone is derived again.
     model._set("A1", "=C1");
     model.evaluate();
     assert!(
-        model.graph.cycle_scans() > 0,
-        "a cycle closed and nothing went looking for its cone"
+        model.graph.cycle_scans() > after_the_first_pass,
+        "a formula edit moved the edges and nothing re-derived the cone"
     );
     assert!(
-        !model.graph.never_served().is_empty(),
+        model.graph.never_served().contains(&(0, 1, 1)),
         "a cycle closed and its cone was not seeded dirty"
     );
 
-    // ...and breaks again. The witness is derived from the pass that just ran,
-    // so it clears itself. A sticky one would keep re-deriving a cone over an
-    // acyclic graph for the lifetime of the model.
-    model._set("A1", "3");
+    // ...and breaks. Nothing that stayed a formula reads anything new, so the
+    // only edge that moves is the one `A1` had; a fact that only `replace_reads`
+    // set would miss it and leave the cone standing.
+    model._set("A1", "7");
     model.evaluate();
-    assert_eq!(model._get_text("C1"), "7");
-    let scans_after_the_break = model.graph.cycle_scans();
-    model._set("A1", "4");
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "9");
+    assert_eq!(model._get_text("C1"), "14");
     assert!(
         model.graph.never_served().is_empty(),
         "the cone of a cycle that is gone is still being seeded dirty"
     );
-    assert_eq!(
-        model.graph.cycle_scans(),
-        scans_after_the_break,
-        "an acyclic pass went looking for a cycle the last pass had already lost"
-    );
 
-    // The reset lives at the top of the pass rather than at the top of the
-    // scheduler, and this last phase is why. A pass whose graph is not ready is
-    // dispatched to full before `evaluate_selective` reaches its own reset, so
-    // `evaluate_full`'s is the only thing between it and a witness left
-    // standing by an earlier pass. Close the cycle, then break it in the same
-    // breath as an edit that invalidates the graph.
-    model._set("A1", "=C1");
+    // And the settled state stops paying again.
+    let after_the_break = model.graph.cycle_scans();
+    model._set("A1", "9");
     model.evaluate();
-    let scans_with_the_cycle = model.graph.cycle_scans();
-    model._set("A1", "5");
-    model.add_sheet("Elsewhere").unwrap();
-    assert!(
-        model.graph.should_recompute_full(),
-        "this phase needs a pass that never reaches the scheduler's own reset"
-    );
-    model.evaluate();
-    assert_eq!(model._get_text("C1"), "11");
+    assert_eq!(model._get_text("C1"), "18");
     assert_eq!(
         model.graph.cycle_scans(),
-        scans_with_the_cycle,
-        "a rebuild pass inherited the previous pass's cycle witness"
+        after_the_break,
+        "a settled pass ordered the whole graph again"
     );
 }
 
