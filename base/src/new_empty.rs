@@ -711,8 +711,10 @@ impl<'a> Model<'a> {
             cse_rects: None,
             cse_member_guard: crate::model::cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
+            read_pool: Vec::new(),
             changed_cells: crate::model::ChangedCells::All,
             write_seeds: HashSet::new(),
+            full_pass_run: crate::model::incremental::FullPassRun::default(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

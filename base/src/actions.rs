@@ -532,14 +532,14 @@ impl<'a> Model<'a> {
     /// placeholders of the rectangle the anchor has just re-declared.
     ///
     /// Deliberately NOT unified with [`Model::move_cell_write`], which it
-    /// resembles. That path writes a plain formula graph-neutrally (through
-    /// `write_displaced_formula`) because it runs under a row or column
-    /// insert or delete, whose edge shift keeps the dependency graph usable
-    /// for an incremental next pass. This rebuild runs only under a row or
-    /// column *move*, which always forces a full graph rebuild
-    /// (`record_structural_edit` on `RowMove`/`ColumnMove`), so a formula
-    /// goes through the ordinary `set_user_input` path — and each lifted
-    /// cell's style is restored inline, which `move_cell` leaves to its
+    /// resembles. That path writes a plain formula through
+    /// `write_displaced_formula`, which journals `is_formula: false` because
+    /// what it performs is a *rewrite* of text a displacement changed. This
+    /// rebuild re-creates a whole line's cells at positions it lifted them
+    /// away from, so `set_user_input` is the honest entry: the journal sees a
+    /// formula appearing where one may not have been, and the spill and
+    /// quote-prefix preparation that a fresh write needs runs. Each lifted
+    /// cell's style is restored inline too, which `move_cell` leaves to its
     /// caller.
     fn rebuild_moved_cells(&mut self, sheet: u32, cells: Vec<MovedCell>) -> Result<(), String> {
         for (row, column, value, style_index, array) in cells {
@@ -690,46 +690,69 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
-    /// Keeps the dependency graph in step with a structural edit. A row or column
-    /// insert or delete shifts stored positions and formula `HYPERLINK` results.
-    /// A move or cell displacement, which the shift does not model, forces a full
-    /// recompute. The match is exhaustive so a new `DisplaceData` variant cannot
-    /// silently skip graph maintenance.
+    /// Keeps the dependency graph in step with a structural edit. A row or
+    /// column insert, delete or move shifts stored positions and formula
+    /// `HYPERLINK` results. A cell displacement, which the shift does not model,
+    /// forces a full recompute. The match is exhaustive so a new `DisplaceData`
+    /// variant cannot silently skip graph maintenance.
     fn record_structural_edit(&mut self, disp: &DisplaceData) {
         // Inserted or deleted rows and columns add or remove formula cells
         // without cell writes; recount before the next fanout decision. CSE
         // rectangles move with their anchors, so the memo is stale too.
         self.formula_count_stale = true;
         self.cse_rects = None;
-        let (sheet, axis, boundary, delta) = match *disp {
-            DisplaceData::Row { sheet, row, delta } => (sheet, Axis::Row, row, delta),
+        match *disp {
+            DisplaceData::Row { sheet, row, delta } => {
+                self.record_band_edit(sheet, Axis::Row, row, delta)
+            }
             DisplaceData::Column {
                 sheet,
                 column,
                 delta,
-            } => (sheet, Axis::Column, column, delta),
-            DisplaceData::RowMove { .. }
-            | DisplaceData::ColumnMove { .. }
-            | DisplaceData::CellHorizontal { .. }
-            | DisplaceData::CellVertical { .. } => {
-                self.graph.force_full();
-                return;
+            } => self.record_band_edit(sheet, Axis::Column, column, delta),
+            // One line at a time: `move_rows_action` decomposes a K-row move
+            // into K of these, so `row + delta` is the whole destination.
+            DisplaceData::RowMove { sheet, row, delta } => {
+                self.record_line_move(sheet, Axis::Row, row, row + delta)
             }
-            DisplaceData::None => return,
-        };
-        self.shift_dynamic_links(sheet, axis, boundary, delta);
+            DisplaceData::ColumnMove {
+                sheet,
+                column,
+                delta,
+            } => self.record_line_move(sheet, Axis::Column, column, column + delta),
+            DisplaceData::CellHorizontal { .. } | DisplaceData::CellVertical { .. } => {
+                self.graph.force_full();
+            }
+            DisplaceData::None => {}
+        }
+    }
+
+    /// A row/column insert or delete: shift the dynamic links, then the graph.
+    fn record_band_edit(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        self.shift_dynamic_links(|pos| {
+            crate::dependency_graph::shift_position(sheet, axis, boundary, delta, pos)
+        });
         self.graph.structural_edit(sheet, axis, boundary, delta);
     }
 
-    /// Moves formula `HYPERLINK` results with their cells. Worksheet links are
-    /// displaced separately; this map is not on the graph.
-    fn shift_dynamic_links(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+    /// A row/column move: shift the dynamic links, then the graph.
+    fn record_line_move(&mut self, sheet: u32, axis: Axis, from: i32, to: i32) {
+        self.shift_dynamic_links(|pos| {
+            crate::dependency_graph::move_position(sheet, axis, from, to, pos)
+        });
+        self.graph.structural_move(sheet, axis, from, to);
+    }
+
+    /// Moves formula `HYPERLINK` results with their cells, by the same rule the
+    /// graph shifts itself by. Worksheet links are displaced separately; this
+    /// map is not on the graph.
+    fn shift_dynamic_links(
+        &mut self,
+        remap: impl Fn(crate::dependency_graph::Position) -> Option<crate::dependency_graph::Position>,
+    ) {
         self.links = std::mem::take(&mut self.links)
             .into_iter()
-            .filter_map(|(pos, link)| {
-                crate::dependency_graph::shift_position(sheet, axis, boundary, delta, pos)
-                    .map(|pos| (pos, link))
-            })
+            .filter_map(|(pos, link)| remap(pos).map(|pos| (pos, link)))
             .collect();
     }
 

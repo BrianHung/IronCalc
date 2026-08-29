@@ -31,7 +31,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 2. Add every cell that reads the clock or a random source, and every cell whose last result was not a function value (see below). Those are always dirty.
 3. Collect every cell reachable from the dirty set through cell, range, and input edges.
 4. If the pass cannot be modeled (see fallbacks below), run a full pass instead.
-5. Evaluate the affected cells in topological order. While each formula runs, a tracer records what it reads; when it finishes, those reads replace its edges in the graph.
+5. Evaluate the affected cells in topological order. While each formula runs, a tracer records what it reads; when it finishes, those reads replace its edges in the graph — or, when they are the reads it made last time, confirm the ones already there.
 6. If a recomputed cell's value, type, and link are unchanged, nothing downstream of it is recomputed.
 7. Cells outside the affected set are served their stored values. A formula whose live result is an empty cell coerces to `Number(0.0)` at the result boundary, before the value is stored — `FormulaValue` has no blank variant. So the stored value is exactly what a live read of that cell returns. That coercion is what makes the full pass itself order-independent (a same-pass reader sees the stored `0` whether it ran before or after the cell it reads), and it is the same reason serving a stored value never changes a result here — for every cell whose stored value is a function value.
 8. Changes are accumulated for `Model::take_changed_cells`.
@@ -42,16 +42,16 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 |---|---|
 | `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges and widens the per-line and per-cell inputs read beneath it, so a walk's edge count is a property of its shape rather than of the height of the range it walked. |
-| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
+| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `begin_rebuild`/`end_rebuild` (a full pass is a mark and a sweep, not a clear), `reachable`, `topo_order`, `structural_edit`/`structural_move`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. The two edits differ only in the `Remap` the shared `Displacement` carries — see "A move is a shift too" below. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
 | `model/eval_ctx.rs` | `EvalCtx`, the receiver `functions/` evaluates on. A newtype over `&mut Model` whose inner reference is private, so the only cell state a function can reach is the accessors re-exposed there, and every one of them records. |
-| `model/incremental.rs` | The scheduler: `evaluate_selective`, `cone_is_plain` (the one predicate that decides whether a pass may be selective), `evaluate_full_to_fixed_point` (the settling loop every full pass runs through, in every mode), and the frontier and whole-cone recomputes. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
+| `model/incremental.rs` | The scheduler: `evaluate_selective`, `cone_is_plain` (the one predicate that decides whether a pass may be selective), `evaluate_full_to_fixed_point` (the settling loop every full pass runs through, in every mode), the frontier and whole-cone recomputes, and `FullPassRun`, which is the whole of "The cost contract" below. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
 | `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
 | `model/array_index.rs` | `array_footprint` and the walks that maintain the array/spill index and the formula count between full passes. |
 | `model/unstable_cells.rs` | Rebuilds one of the two sets of cells whose stored value may not be served (below): the readers of blocked spill anchors, which is the set that needs stored cell state the graph cannot see. The other set, the cycle cone, is derived from edges alone, so the graph computes it itself (`cycle_cone`) and each scheduler installs it after its pass. |
 | `model/cse_guard.rs` | The CSE member guard flag and the only scope that may suspend it. |
 | `model/verify.rs` | The `RecalcMode::Verify` oracle. Compiled only under the `recalc_verify` feature. |
 | `worksheet.rs` | The only producer of journal entries. `sheet_data` is written through mutators that push a `Write`. |
-| `model/mod.rs` | `evaluate_cell` pushes a `ReadSet` frame, the `trace_cell`/`trace_rect`/`trace_input` helpers record into it, and a finished formula commits its reads to the graph. Tracing runs only in incremental mode. Also `evaluate_full`, whose two-phase order the incremental path must reproduce: `is_phase_one_cell` and `cells_in_order` are that order's one definition. |
+| `model/mod.rs` | `evaluate_cell` pushes a `ReadSet` frame, the `trace_cell`/`trace_rect`/`trace_input` helpers record into it, and a finished formula commits its reads to the graph. Tracing is gated on the recalc mode alone (`tracing()`), which is what lets a fallback borrow `Full`'s mode to run at `Full`'s cost — see "The cost contract". Also `evaluate_full`, whose two-phase order the incremental path must reproduce: `is_phase_one_cell` and `cells_in_order` are that order's one definition. |
 
 ## Cells that never serve a stored value
 
@@ -88,15 +88,77 @@ A whitelist, not a blacklist of hazards, on purpose: under a blacklist a hazard 
 Three clauses the predicate deliberately does **not** have, each because it would cost a case incremental wins today and buys no correctness:
 
 - *No cone member in `never_served`.* A known cycle is seeded dirty on every pass, so it is in every cone, so this clause would send every workbook containing one cycle to a full pass forever — the `pathological-cycle` bench row is a large multiple over full today and would drop to parity. A cone with a cycle in it is handled by walking it in Full's own two phases instead — see the `#CIRC!` bullet below.
-- *No structural op this drain.* Row and column *moves* already force the graph to rebuild, which the readiness gate catches. Inserts and deletes shift the indices in place and stay selective by design; the clause would throw that away (`structural: insert_rows` is one of the rows that wins).
+- *No structural op this drain.* Every row and column edit — insert, delete and move alike — shifts the indices in place and stays selective by design, so the clause would throw away the two rows that win on it (`structural: insert_rows` and `structural: move_rows`). See "A move is a shift too" below for the one of the three whose map is not monotone.
 - *No volatile beyond the seeded always-dirty.* There is nothing to exclude: volatility is a recorded `Input`, every reader of one is in `always_dirty_cells`, and the pass seeds all of them before taking the cone.
 
 Four things outside the cone predicate also send a pass to full:
 
-- The graph is not ready: the first evaluation, or after sheet add/delete/rename, defined-name changes, locale, or timezone. Row or column moves land here too; inserts and deletes do not. For the sheet edits the convention is checked rather than assumed — see "Sheet numbering" below.
+- The graph is not ready: the first evaluation, or after sheet add/delete/rename, defined-name changes, locale, or timezone. No row or column edit lands here — an insert, a delete and a move all shift. For the sheet edits the convention is checked rather than assumed — see "Sheet numbering" below.
 - The cone reaches more than half the workbook's formulas (with a floor of 1024, so small workbooks never fall back). This one is a performance choice, not a correctness one — which is why it is checked separately from plainness and why Verify disables it and not plainness.
 - The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is walked by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, and the cone contains every cell full could reach a cycle member through, because such a cell reads one transitively and so is a reader of an always-dirty cell. Since a known cycle is in every cone, this is also the walk a cycle *closing* on this pass gets when another cycle is already open — which is why phase 1 stays: the pass an anchor first falls inside a cycle, the anchor is not yet a seed, and only phase 1 makes full enter the cycle where it does.
 - The pass itself wrote into an array footprint: a spill landed, a CSE range filled, or an anchor stored `#SPILL!`. This is the one hazard no pre-pass predicate can rule out. P1 admits a dynamic anchor whose last result was a plain 1×1 scalar; whether *this* pass's result is still 1×1 is not a property of any stored state, it is what the pass produces. An anchor that grows spills members the selective pass has no ordering for, so the pass is redone as full and `collect_array_cells` rebuilds the index exactly rather than patching it.
+
+## The cost contract
+
+Falling back is correct by construction — a full pass is what every mode runs — so what a fallback can get wrong is only the bill. And it did: a traced full pass pays for `Full`'s whole-workbook recompute **and** for recording what every formula read and rebuilding the graph from those reads. Measured on `bench_scenarios`, that investment was between 0.25 and 1.2 of a pass, so a mode whose reason to exist is to beat `Full` was, on its fallback rows, between a fifth and half again slower than it.
+
+The investment buys exactly one thing: the next pass's selectivity. So it is worth paying when the next pass can spend it, and worth nothing when the next pass falls back too. Two mechanisms follow from that, and they are independent: make the investment smaller, and stop paying it on a run of passes that cannot spend it.
+
+### Making the investment smaller
+
+Where the cost lived was measured, not assumed. On a traced full pass over the `dashboard` and `long-chain` shapes it split roughly: **60% edge churn** in `replace_reads`, **20% the whole-graph cycle-cone rebuild** at the pass's tail, **20% the read-set allocation** — one `Vec` per formula per pass.
+
+The churn was the whole graph being rebuilt from nothing every pass, and it was self-inflicted. `evaluate_full` used to clear every edge before it began, which made every stored read set unrecognizable, so `replace_reads` removed and re-added a workbook's worth of edges — freeing the dependents set of every precedent it emptied and allocating it back a moment later — even when nothing any formula read had moved. A full pass is now a **mark and a sweep**: `begin_rebuild` bumps a generation, `replace_reads` stamps every entry it writes *or re-confirms*, and `end_rebuild` drops what the pass never saw. The graph it leaves is the same graph, entry for entry, because a full pass evaluates every cell in the workbook — so a position that is still a formula re-records, and a position that is not cannot. What it no longer does is throw away the comparison that recognises the formulas which read exactly what they read last time, and on a workbook whose shape did not change that is nearly all of them.
+
+That comparison is `ReadSet: PartialEq`, and its equivalence is exact rather than approximate: a remove followed by an identical add is the identity on all four edge maps, so the no-op path leaves precisely what the rebuild would have. It is order-sensitive on purpose — a walk that reordered its reads compares unequal and is re-recorded, which is the harmless direction to be wrong in.
+
+Read frames are pooled (`Model::read_pool`) for the same reason: a formula's read set is built and then either compared away or cloned into the graph, so dropping it means allocating three vectors again for the next formula. That one matters most on the *selective* path, where it is an allocation saved per recomputed cell.
+
+Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What is left is dominated by the tail — `nodes()`, `cycle_cone` over the whole graph, `refresh_blocked_array_readers` — which is not tracing at all: it is the whole-graph cycle rebuild that "Cells that never serve a stored value" requires after every full pass. Making *that* cheaper (its `successors_within` allocates a vector per node) is the next thing worth doing and is a follow-up, not a fallback problem.
+
+### Not paying it on a run
+
+`FullPassRun` in `model/incremental.rs` is the scheduler's memory of what the previous passes did, and the whole of the decision. Untraced means literally what `RecalcMode::Full` means: the pass runs through `Model::as_full_mode`, a `Drop` guard that borrows the mode for the duration, so every recording site — `tracing()`, the array-anchor edge in `evaluate_cell`, `commit_reads`, and the tail of `evaluate_full` that chooses between marking the graph ready and forcing a rebuild — is the *same* gate `Full` mode goes through rather than a second set someone has to keep in step. "At exactly `Full`'s cost" is true by construction. The delta an untraced fallback reports is `Everything`, which is what every fallback already reports.
+
+**The bet is not symmetric, and that shapes everything else.** Untracing a pass saves the investment — a fraction of a pass. It costs a *whole* pass when the guess is wrong, because an untraced pass leaves the graph unready and the pass after it has no graph to be selective with. On a workbook where a selective pass is a hundredth of a full one, guessing wrong once undoes a dozen right guesses. So:
+
+- **The run is watched before it is acted on.** Twelve full passes the scheduler *chose* — the graph was ready, the cone was there to be walked, and it went full anyway — before the first untraced one. A rebuild does not count: full was the only pass on offer, which says nothing about whether tracing pays, and the pass after a rebuild is commonly the pass that spends what it recorded. This is also what keeps a workbook that falls back once and goes on being selective (an array deleted, one wide edit among narrow ones) selective on the very next pass.
+- **The run is acted on gently, and then less gently.** The first untraced stretch is one pass; every stretch the run survives doubles the next, up to sixteen. A run that ends early costs one wasted pass. A run that goes on pays the investment a logarithmic number of times, so its per-pass cost keeps falling.
+- **`Verify` disables all of it**, exactly as it disables the fanout guard and for the same reason: both are performance choices, and the oracle exists to compare a *selective* pass against a shadow full one.
+
+The untraced pass leaves the edges where they are rather than dropping them. A `MustRebuild` graph is never walked, so they can serve nothing, and the next pass that does trace re-records and sweeps — so keeping them is exactly as sound as clearing them, and it is what makes the traced pass at the end of a stretch cheap rather than a rebuild from an empty map.
+
+### What it actually costs
+
+The contract, priced, on a 4,000-cell chain whose every edit reaches the whole workbook:
+
+| run of consecutive fallbacks | 40 edits | 80 | 160 | 320 |
+|---|---|---|---|---|
+| Incremental / Full | 1.24x | 1.15x | 1.07x | 1.06x |
+
+With the hysteresis deleted, every one of those is about 1.6x. So:
+
+> A selective pass is cheaper. A traced full pass costs `Full` plus a one-time investment, paid only while the passes before it leave any prospect of spending it. A *run* of full passes pays that investment a logarithmic number of times, so the longer the run the closer it costs to `Full`'s price — and a run that turns out not to be one costs a single wasted pass to find out.
+
+Short runs are the case this deliberately loses. The engine is still watching at forty edits, and it is watching because guessing early is how you spend a hundred selective passes to save a dozen tracing ones.
+
+That price is paid somewhere else too, and it is worth naming. The differential fuzzer holds itself to a floor — at least half its non-volatile evaluates must stay selective, or the oracle is comparing `Full` against `Full` — and untraced passes spend exactly that. Over 60 seeds x 200 steps the engine without this mechanism reaches 55%, and with it 54%; at `CHOSEN_BEFORE_ACTING = 6` it reaches 52% and misses the floor outright on the 30 x 150 `Verify` configuration. Both constants were chosen against that number, not against the bench alone, and the bench barely notices the difference — the arming passes are a shrinking share of a long run.
+
+And on the `bench_scenarios` shapes, which is where the problem was named. Speedup is `Full` over `Incremental`, so 1.00x is parity and the fallback rows are the ones that were below it:
+
+| fallback row | before | after |
+|---|---|---|
+| `dashboard (wide fanout)` | 0.34x | 0.48x |
+| `long-chain, edit head` | 0.47x | 0.64x |
+| `spill-heavy` | 0.79x | 0.94x |
+| `whole-column aggregates` | 0.91x | 0.98x |
+| `structural: move_rows` | 0.39x | 0.63x |
+
+None of those reach parity, and the reason is in the two mechanisms rather than in the measurement. `bench_scenarios` medians twenty samples of a twenty-five-pass series, and twelve of those passes are the ones the run spends proving itself, so the median still lands among them; `bench_amortized_runs`, over eighty edits, reads 0.73x, 0.74x and 0.92x for the first three. `structural: move_rows` moves at all only because of the smaller investment — its passes are rebuilds, so its run never arms, on purpose.
+
+### What measures it
+
+`bench_scenarios` reports a median over twenty-five passes, which is what one edit costs in a settled series and cannot see an amortization at all. `bench_amortized_runs` in the same file is the contract's own instrument: forty consecutive edits on a freshly built workbook, timed end to end in both modes, with the investment inside the number. The wall-clock assertion is `consecutive_fallbacks_cost_what_full_costs` in `base/tests/recalc_cost.rs`.
 
 ## One `evaluate` settles
 
@@ -124,6 +186,27 @@ This detects staleness; it does not make it unrepresentable. The stronger move �
 
 **Kill-proof.** The mutant is `delete_sheet` reparsing but not invalidating: the sheet arm of I8.1 with the convention removed and nothing else touched. It survives the entire lib suite in every mode; the only thing that catches it without this mechanism is the differential fuzzer, which finds it on seed 1 and minimizes to six operations (two `AddSheet`s, a write to the third sheet, evaluate, `DeleteSheet`, evaluate), surfacing as a missing delta entry for a cell on a sheet that no longer exists. With the mechanism it dies deterministically across the sheet-CRUD tests (`test_sheets`, `test_add_delete_sheets`, `test_move_sheet`, `test_defined_names`, `test_duplicate_sheet`, `test_sheets_undo_redo`), each reporting the edit that skipped the invalidation rather than a divergence at whatever cell happened to read the stale edge first. That is what puts the clause outside the **oracle** column: not a new witness, a mechanism that makes hunting for one unnecessary.
 
+## A move is a shift too
+
+An insert or a delete moves everything at or after a boundary by a constant. A row or column *move* is the third member of that family and not a different kind of edit: the line at `from` lands on `to`, the lines it passes close up behind it by one, and everything outside `[min, max]` stays. `Displacement` carries which of the two maps applies (`Remap::Band`, `Remap::Move`) and every stored coordinate goes through the same `shift`, so the move gets the destructuring safety net for free — a new index cannot be added without deciding how it moves under *both*.
+
+The move never sees a K-line band. `move_rows_action` decomposes a K-row move into K single-row moves and records a `RowMove` for each, so the graph is only ever asked to model one line changing places.
+
+**The move map is a permutation**, and everything else follows from that. It creates and destroys no line, so no stored entry is dropped and none can collide, and a move needs no counterpart to the insert/delete shrink guard (`range_overlaps_band`, I5.3): a delete can take rows out of the middle of a tracked range, which two shifted corners cannot express, but nothing is taken out here.
+
+**A range is the one thing it cannot always name.** The map is not monotone — the moved line jumps its band — so the image of a range with one end inside the band and the other outside is an interval with a hole in it. `Displacement::span` returns the hull. The two failure modes are not symmetric: a widened range costs a redundant recompute, a narrowed one stops dirtying a reader that a later write still reaches. Widening is also strictly available, because a permutation's image of *n* lines is *n* lines, so the hull can never come back narrower than the span it was given. Rebuilding instead — I5.3's answer for the delete — would be the end of incremental moves in practice: a workbook of windowed aggregates (`=SUM(B4:B13)`) straddles the band ten times over on every move.
+
+**Who the shifted edges serve, and who serves them instead.** Everything the move touches is journaled. Every position inside the band that held a cell or receives one is written — filled by `move_cell` and `rebuild_moved_cells`, vacated by the `remove_cell` that lifts a cell out — and a position that was empty and stays empty is one no content passed through. Every formula whose *text* the move changed is rewritten through `write_displaced_formula`, which is every literal reference with an endpoint inside the band (`move_coord(x) == x` exactly when `x` is outside it, and the stringifier displaces each endpoint by that same map). Links move and journal too. So every cell holding a stored edge with an endpoint inside the band is a seed of this pass and re-records its reads from scratch, and an edge wholly outside the band is one the move did not touch. There is nothing left for the shift to repair.
+
+That is a *structural* subsumption argument and it is confirmed by measurement rather than assumed: collapsing `move_coord` to the identity survives the whole lib suite in all three modes and the differential fuzzer, and so does skipping the shift and the dependent marking for a move entirely (~15k fuzzed operations in each case). The move's shift is therefore a **redundant second path**, of the same kind as I5.4's four extra halves, and it is kept for two reasons that are not about this pass's answer:
+
+- The destructuring `shift` obliges every index to say how it moves, and "not at all" is not an answer a move can give: the graph would be numbering positions by a layout the workbook is no longer in, which is the exact failure `SheetLayout` exists to catch on the sheet axis.
+- Nothing else ever *cleans* what a move leaves behind. A formula that moved re-registers under its new key, so `remove_dependent` is never called for its old one; `precedents` keeps that entry and the phantom edges it names for the lifetime of the model, growing every cone that reaches them. It is the unbounded-growth argument `SheetRanges::deindex` is there for, one edit up.
+
+`mark_structural_dependents` is the other half of the same belt, and the second measurement above covers it too. What it is nominally for is the shapes whose *text* is displacement-stable — computed references, defined names, `ROW()`, `FORMULATEXT`, and a hidden flag arriving on a different line, which `move_row_unchecked` rewrites without journaling — and the journal reaches those as well, through the band positions those readers have edges on. The move gets it through the same band argument the insert and delete use: `[min(from, to), max(from, to)]` where theirs is `[boundary, ∞)`. That is the only per-edit thing about it, which is why it takes the band rather than the boundary.
+
+**The delta says `Everything`,** the same as an insert or delete and for the same reason: a move changes cells' *addresses*, and `take_changed_cells` reports positions. The cells whose content moved are not all dirty (a moved data cell is not), and there is no position list that means "this content is now over there", so `structural_unknown` is set and the pass after a move reports `Everything` (I6.3).
+
 ## Intentional divergences
 
 Two places where this engine deliberately does not reproduce what the pre-engine `Model::evaluate` did. Everything else is bug-for-bug identical, and a difference that is not in this list is a defect.
@@ -150,13 +233,16 @@ cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
 
 # Benchmark: cost of a single edit, incremental vs full
 cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
+
+# Benchmark: cost of a *run* of edits, which is what the cost contract is about
+cargo test -p ironcalc_base bench_amortized_runs --release -- --ignored --nocapture
 ```
 
 `RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts that the change report lists every change and nothing else, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the check cannot repair the state it is checking.
 
 ## Invariants and their witnesses
 
-The suite here is large next to the engine, and the only thing that makes that defensible is that every test is the minimal witness of a named clause. This section is the map: eight invariants, the clauses each decomposes into, what enforces each clause, and — where the answer is "a test" — which test.
+The suite here is large next to the engine, and the only thing that makes that defensible is that every test is the minimal witness of a named clause. This section is the map: nine invariants, the clauses each decomposes into, what enforces each clause, and — where the answer is "a test" — which test.
 
 Four things can enforce a clause, and only two of them owe a test:
 
@@ -183,6 +269,7 @@ Four things can enforce a clause, and only two of them owe a test:
 | I1.8 A reference-returning function's resolved target becomes an edge, at the extent it resolved to | test; the extent is one per call site | `offset_target_change_without_static_edge`; the extent is `offset_records_its_resolved_extent_not_the_walk` and `indirect_records_its_resolved_extent_not_the_walk` (I1.3's clipping rule, reached through a computed extent) |
 | I1.9 Reading an array-footprint position records an edge on its anchor, taken from the array index and recorded ahead of the scope gate | test | `cse_footprint_cycle_stored_value_diverges_from_a_live_reeval` (dies only under `recalc_verify`) |
 | I1.10 A formula commits its reads on both exits | construction | — |
+| I1.12 A full pass keeps an entry for the formulas it evaluated and for nothing else: one whose position stopped being a formula with no journal write to say so — a renumbered sheet, a spill that overwrote it — is swept | test | `a_full_pass_keeps_only_the_formulas_it_evaluated`. Nothing in the value suite sees it: a leftover entry only ever *adds* edges, so the cone is a superset and every value stays right, and what it costs is a graph that grows without bound |
 | I1.11 A range read records a bounded number of edges whatever its height: the per-cell reads under a recorded rect are suppressed, and the per-line and per-cell *inputs* under it widen to it. The economy is I1.3's, applied to every walk and not only the folds | construction (`ReadSet::record_cell` / `record_input` are the only ways in, and both consult `rects`) | `a_range_walk_records_a_bounded_number_of_edges` (edge counts equal at 10 and 400 rows, per walk); the cost it buys is `incremental_costs_no_more_than_full_over_whole_column_aggregates` in `base/tests/recalc_cost.rs` |
 
 Two reads in `functions/` are routed through `EvalCtx::sheet_dimension` and
@@ -243,7 +330,7 @@ records" has no exceptions to remember.
 
 ### I5 — a structural edit rewrites every positional index
 
-The remapping is deliberately conservative: an index that keeps a stale entry costs a redundant recompute or one full fallback, never a wrong value, because a dirtied cell re-records its reads from scratch. That argument covers *which* entries survive; it does not cover *where* they land, so the two comparisons that decide that are pinned directly.
+The remapping is deliberately conservative: an index that keeps a stale entry costs a redundant recompute or one full fallback, never a wrong value, because a dirtied cell re-records its reads from scratch. That argument covers *which* entries survive; it does not cover *where* they land, so the comparisons that decide that are pinned directly, one clause per edit.
 
 | Clause | Enforcement | Witness |
 |---|---|---|
@@ -252,6 +339,9 @@ The remapping is deliberately conservative: an index that keeps a stale entry co
 | I5.3 A delete that would only shrink a tracked range rebuilds instead of shifting — and both ends of that overlap test are exact | test | `incremental_row_delete_shrinking_range_forces_full`; the band edges are `shrink_detection_is_exact_at_the_band_edges` |
 | I5.4 A structural edit dirties what can change with no precedent moving | **redundant second path** — see below | the journal is the primary; `name_reader_redirty_on_insert` covers the name half by way of its cell edge |
 | I5.5 The remapping rule is exact at the edit boundary | test | `displacement_remaps_at_the_edit_boundary` |
+| I5.6 A move's remapping is a permutation for a cell, and never names fewer positions than it was given for a range | test | `move_remaps_by_permutation_and_widens_what_it_cannot_name` |
+| I5.7 A move shifts instead of rebuilding, and a reader outside the moved band sees the reordering | test | `incremental_row_move_reorders_a_reader_outside_the_band` |
+| I5.8 That shift and its dependent marking are a **redundant second path** — see "A move is a shift too" | the journal is the primary | — |
 
 **On I5.4.** `mark_structural_dependents` marks four things beyond the cell-edge half: range dependents, `Name`/`SheetStructure`/`Computed` readers, and `OwnCoord`/`FormulaText` readers. Each of the four can be deleted with nothing failing, and so can all four at once — the dirty set after an insert is still non-empty and still correct. The primary path is the journal, in two parts: `displace_cells` rewrites and journals every formula whose *text* the edit changes (which is every literal range that moves, and which re-dirties `FORMULATEXT` readers through the drain's own text-reader marking), and the worksheet's row/column shift journals every non-blank cell that physically moves, so ordinary reachability through the already-shifted edges reaches the dependents of everything that moved — through a rectangle included. A computed reference is the sharpest case and it resolves the same way: `=OFFSET($C$1,5,0)` above an insert keeps its text, but the cells it resolves through are journaled, and its shifted rect still reaches one of them.
 
@@ -292,15 +382,28 @@ Planting that shape class depends on every aggregate range walk going through `E
 | I8.5 **P1**: the cone reaches the array index; and a 1x1 dynamic anchor is *not* in it | test, one per direction | `incremental_overwrite_spill_anchor_updates_dependents`, `scalar_result_dynamic_anchors_stay_incremental` |
 | I8.6 The pass reported `#CIRC!` for a cycle the graph did not contain | test | `incremental_does_not_re_evaluate_a_mid_cycle_cell` |
 | I8.7 An evaluation write changed an array footprint — the one hazard P1 cannot see in advance, because a 1x1 anchor's *next* result is not stored state | test | `a_scalar_anchor_that_grows_is_redone_as_full` |
-| I8.8 A row, column or cell move forces the next pass full | oracle | the differential fuzzer catches it in four operations on seed 6; no deterministic test does |
+| I8.8 A cell displacement forces the next pass full | construction (the `DisplaceData` match in `record_structural_edit` is exhaustive, so a variant with no shift has to say so) | — |
 | I8.9 A state machine that cannot be half-ready: `mark_dirty` on a `MustRebuild` graph is ignored | test | `graph_state_is_explicit` |
 | I8.10 A pass never runs against a graph numbered for a different sheet order — a sheet add, delete, duplicate or move that skipped `invalidate_graph` is caught at the next pass entry, not read | **construction + gate** (the graph carries the sheet-id sequence it ran under; `Model::evaluate` compares before dispatching, and the sequence is derived from the workbook so there is nothing to remember to bump) | the obligation to *reach* the check is the gate `every_pass_checks_the_sheet_layout`; what the check decides is `sheet_renumbering_under_a_ready_graph_is_detected` |
+
+### I9 — opting in is never slower, amortized
+
+Every clause of I1–I8 is about what a pass computes. This one is about what it costs, which is the other way an opt-in fails: a fallback that pays for read tracing on every pass of a run produces exactly `Full`'s answers and charges a fifth to a half more for them. What the clauses hold up is [The cost contract](#the-cost-contract).
+
+| Clause | Enforcement | Witness |
+|---|---|---|
+| I9.1 A long run of full passes pays for tracing a logarithmic number of times, not once per pass | test | `consecutive_fallbacks_cost_what_full_costs` in `base/tests/recalc_cost.rs`; the mutant is `FullPassRun::traces` returning `true`, which measures about 1.6x against a 1.15x bound |
+| I9.2 An untraced pass records nothing and leaves the graph unready, so it can serve no stale edge and costs what `Full` costs | construction (`Model::as_full_mode` borrows the recalc mode itself — the one gate every recording site already reads — and a `Drop` guard restores it on every exit path) | — |
+| I9.3 The untraced run is not a trapdoor: every stretch ends in a traced pass, and the stretch is capped | construction (`FullPassRun::Running` counts to its own `stretch`, and `MAX_UNTRACED_STRETCH` bounds it) | — |
+| I9.4 The evidence for a run is *chosen* full passes only; a rebuild is not evidence, so a workbook that falls back once and then goes on being selective is selective on the very next pass | test + oracle | `deleting_the_last_array_clears_the_index`, whose final assertion is exactly that, dies when a rebuild is allowed to arm the run. So does the differential fuzzer's selectivity floor: at the same threshold, counting rebuilds too takes it from 48% to 40%, under the floor, which is the fuzzer refusing to compare `Full` against `Full` |
+| I9.5 `Verify` disables the hysteresis, as it disables the fanout guard | construction (`fallback_traces`, the same shape as `should_fallback_fanout`) | — |
+| I9.6 The comparison in `replace_reads` leaves the graph a remove-and-re-add would have left | test | `incremental_tracks_dynamic_branch_dependencies` (I4.6) and `name_reader_redirty_on_insert` (I1.7) both die to a blind skip; the skip that forgets to stamp dies to I1.12's witness |
 
 ### Clauses no witness closes
 
 Every clause above names an enforcement. Two are worth calling out because the enforcement is not a test:
 
-- **I8.8** is in the **oracle** column outright: the row/column-move fallback dies on seed 6 in four operations, and no deterministic shape kills it.
+- **I5.8** is a deliberate second path whose primary is the journal, and unlike I5.4 the subsumption argument for it is structural rather than empirical — every position a move touches is written, so every edge it could invalidate belongs to a seed. It is kept for the two reasons recorded in "A move is a shift too", neither of which is about the answer this pass produces, and it is the sharpest live example of the rule below: two mutants that delete it outright leave every oracle green.
 - **I5.4** and `recompute_frontier`'s two belts are kept as a deliberate second path with the reason recorded where they live. `recompute_frontier`'s memo restore bounds work rather than fixing a value — a skipped helper recomputed unscoped returns the same value, by the third design rule — and its second `reports_change` sweep is the delta-completeness net that Verify's own delta check is the oracle for. `get_range`'s `trace_rect` is I1.8's rule at the range-composition site.
 
 A mechanism may be deleted for a *structural* subsumption argument, never for the oracle failing to notice it. **Fuzz silence is not evidence a mechanism is dead**: deleting ten mechanisms at once has left the lib suite green in all three modes and the differential fuzzer green too, including the two `trace_rect` calls a twelve-line test proves are load-bearing.
