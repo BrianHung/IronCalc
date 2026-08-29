@@ -307,6 +307,11 @@ pub struct Model<'a> {
     /// These always-report in the delta; FormulaText/Hidden readers are dirty
     /// but only reported if their observable value moved.
     pub(crate) write_seeds: HashSet<Position>,
+    /// The cost contract's state: where in a run of full passes this model is,
+    /// and so whether the next one pays for tracing. See
+    /// [`incremental::FullPassRun`] and `base/src/recalc/README.md`, "The cost
+    /// contract".
+    pub(crate) full_pass_run: incremental::FullPassRun,
 }
 
 /// Whether `cell` belongs to the full pass's phase 1.
@@ -2045,6 +2050,7 @@ impl<'a> Model<'a> {
             read_pool: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
+            full_pass_run: incremental::FullPassRun::default(),
         };
 
         model.parse_formulas();
@@ -3433,7 +3439,7 @@ impl<'a> Model<'a> {
         // ends, panic included.
         let mut evaluating = self.pause_journal();
         match mode {
-            RecalcMode::Full => evaluating.evaluate_full_untracked(),
+            RecalcMode::Full => evaluating.evaluate_full_reporting_everything(),
             RecalcMode::Incremental => {
                 evaluating.evaluate_selective();
             }
@@ -3783,7 +3789,9 @@ impl<'a> Model<'a> {
             // rebuild that re-records every live formula and sweeps whatever it
             // did not, so keeping them is exactly as sound as clearing them and
             // saves that pass from rebuilding a workbook's edges out of an
-            // empty map.
+            // empty map. On a run of untraced fallbacks that pass is the one
+            // that ends each stretch — the one pass of the run whose cost the
+            // contract has to answer for.
             self.graph.force_full();
         }
     }

@@ -650,5 +650,143 @@ fn print_table(rows: &[Row]) {
         println!("{}", row.render());
     }
     println!("\nTimes are the median of the timed iterations with the 10th-90th percentile\nbeside them; `evaluate` alone is timed, the edit that precedes it is not.");
-    println!("\nOn a `full fallback` row both timed columns are the same whole-workbook pass,\nso the speedup column is the reciprocal of what read tracing costs: incremental\nmode records what every formula reads even on a pass it runs in full.\n");
+    println!("\nOn a `full fallback` row both timed columns are the same whole-workbook pass,\nso the speedup column is what the fallback adds on top of it. In a series this\nlong that is mostly the untraced steady state: the pass that pays for read\ntracing is one sample of the twenty-five, and a median cannot see it. What a\nwhole run costs, investment included, is `bench_amortized_runs` below.\n");
+}
+
+// ---------------------------------------------------------------------------
+// The cost contract: what a run of edits costs, not what one edit costs
+// ---------------------------------------------------------------------------
+
+/// How many consecutive edits one amortized measurement times.
+const RUN_EDITS: usize = 80;
+
+/// How many times the whole run is repeated, best kept.
+const RUN_ROUNDS: usize = 2;
+
+/// What a *run* of edits costs, from a workbook that has just been built.
+///
+/// The table above is the wrong instrument for the cost contract, and
+/// deliberately so: it reports a median over twenty-five passes, which is what
+/// one edit costs in a settled series and cannot see an amortization at all.
+/// The passes that pay for read tracing are a handful of samples in that
+/// series, and the whole claim of `base/src/recalc/README.md`'s "The cost
+/// contract" is that those passes buy the ones after them. So this times the
+/// run instead -- `RUN_EDITS` edits and evaluates end to end, with the
+/// investment inside the number.
+///
+/// `RUN_EDITS` is eighty because the contract is a curve, not a constant: the
+/// run has to prove itself twelve chosen fallbacks over before the engine stops
+/// paying for tracing, and each untraced stretch after that is twice the last,
+/// so the per-edit cost keeps falling. Eighty is far enough along it to show
+/// the shape without the whole-workbook shapes here taking minutes. The numbers
+/// at other lengths are in the README.
+///
+/// `structural: move_rows` is here to show the case the contract deliberately
+/// does not take: every one of its passes is full because the move invalidated
+/// the graph, and a rebuild is not evidence that tracing does not pay, so the
+/// run never arms and the row does not move.
+///
+/// Best of `RUN_ROUNDS`, each round rebuilding both models so the run really
+/// does start cold, and timing the two one after the other so a slow round is
+/// slow for both.
+///
+/// Run:
+///
+/// ```text
+/// cargo test -p ironcalc_base bench_amortized_runs --release -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_amortized_runs() {
+    let rows = [
+        amortized(
+            "dashboard (wide fanout)",
+            |m| build_dashboard(m, 5, 20, 10, 40),
+            |m, i| {
+                m.set_user_input(0, 1, 1, format!("{}", i % 97 + 1))
+                    .unwrap()
+            },
+        ),
+        amortized(
+            "long-chain, edit head",
+            |m| build_long_chain(m, CHAIN),
+            |m, i| {
+                m.set_user_input(0, 1, 1, format!("{}", i % 97 + 1))
+                    .unwrap()
+            },
+        ),
+        amortized(
+            "spill-heavy",
+            |m| build_spill_heavy(m, SPILLS),
+            |m, i| {
+                m.set_user_input(0, 1, 1, format!("{}", i % 89 + 1))
+                    .unwrap()
+            },
+        ),
+        amortized(
+            "structural: move_rows",
+            |m| build_financial_model(m, FIN_SHEETS, FIN_ROWS),
+            |m, i| {
+                let delta = if i % 2 == 0 { 1 } else { -1 };
+                m.move_rows_action(0, 1_000, 1, delta).unwrap();
+            },
+        ),
+        // A control: a shape incremental wins outright, so a run measurement
+        // that put everything at parity would read as broken rather than as
+        // pleasing.
+        amortized(
+            "sparse-workbook",
+            |m| build_sparse_workbook(m, SPARSE_ROWS, SPARSE_BLOCK),
+            |m, i| {
+                m.set_user_input(0, 5_001, 1, format!("{}", i % 89 + 1))
+                    .unwrap()
+            },
+        ),
+    ];
+
+    println!(
+        "\n| scenario | {RUN_EDITS} edits, Full mode | {RUN_EDITS} edits, Incremental | ratio |"
+    );
+    println!("| --- | --- | --- | --- |");
+    for (scenario, full, incremental) in &rows {
+        println!(
+            "| {scenario} | {} | {} | {:.2}x |",
+            fmt(*full),
+            fmt(*incremental),
+            full.as_secs_f64() / incremental.as_secs_f64(),
+        );
+    }
+    println!(
+        "\nEach cell is the best of {RUN_ROUNDS} runs of {RUN_EDITS} consecutive edits on a freshly\nbuilt workbook; the build and the first `evaluate` are not timed, everything\nafter them is. The ratio is Full over Incremental, so above 1.00x is a win and\nthe contract is that no row falls far below it.\n"
+    );
+}
+
+/// One row of the amortized table: the shape, and the two totals.
+fn amortized(
+    scenario: &'static str,
+    build: impl Fn(&mut Model),
+    edit: impl Fn(&mut Model, usize) + Copy,
+) -> (&'static str, Duration, Duration) {
+    let run = |mode: RecalcMode, round: usize| -> Duration {
+        let mut model = Model::new_empty("bench", "en", "UTC", "en")
+            .unwrap()
+            .with_recalc_mode(mode);
+        build(&mut model);
+        // The cold pass that builds the graph is not what is being measured;
+        // what follows it is.
+        model.evaluate();
+        let start = Instant::now();
+        for i in 0..RUN_EDITS {
+            edit(&mut model, round * RUN_EDITS + i);
+            model.evaluate();
+        }
+        start.elapsed()
+    };
+    let mut full = Duration::MAX;
+    let mut incremental = Duration::MAX;
+    for round in 0..RUN_ROUNDS {
+        full = full.min(run(RecalcMode::Full, round));
+        incremental = incremental.min(run(RecalcMode::Incremental, round));
+    }
+    (scenario, full, incremental)
 }

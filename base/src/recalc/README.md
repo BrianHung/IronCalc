@@ -44,7 +44,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges and widens the per-line and per-cell inputs read beneath it, so a walk's edge count is a property of its shape rather than of the height of the range it walked. |
 | `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `begin_rebuild`/`end_rebuild` (a full pass is a mark and a sweep, not a clear), `reachable`, `topo_order`, `structural_edit`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
 | `model/eval_ctx.rs` | `EvalCtx`, the receiver `functions/` evaluates on. A newtype over `&mut Model` whose inner reference is private, so the only cell state a function can reach is the accessors re-exposed there, and every one of them records. |
-| `model/incremental.rs` | The scheduler: `evaluate_selective`, `cone_is_plain` (the one predicate that decides whether a pass may be selective), `evaluate_full_to_fixed_point` (the settling loop every full pass runs through, in every mode), and the frontier and whole-cone recomputes. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
+| `model/incremental.rs` | The scheduler: `evaluate_selective`, `cone_is_plain` (the one predicate that decides whether a pass may be selective), `evaluate_full_to_fixed_point` (the settling loop every full pass runs through, in every mode), the frontier and whole-cone recomputes, and `FullPassRun`, which is the whole of "The cost contract" below. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
 | `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
 | `model/array_index.rs` | `array_footprint` and the walks that maintain the array/spill index and the formula count between full passes. |
 | `model/unstable_cells.rs` | Rebuilds one of the two sets of cells whose stored value may not be served (below): the readers of blocked spill anchors, which is the set that needs stored cell state the graph cannot see. The other set, the cycle cone, is derived from edges alone, so the graph computes it itself (`cycle_cone`) and each scheduler installs it after its pass. |
@@ -98,9 +98,13 @@ Four things outside the cone predicate also send a pass to full:
 - The pass reported `#CIRC!` for a cycle the graph did not already contain. The closing edge is only observed while the pass runs, so the cone was ordered without it and the error would land on a different cell than the full pass picks. A cycle the graph already knows about is walked by position instead, in the full pass's own two phases: array formulas first, then everything else, each row-major. That is the order the full pass walks in, and the cone contains every cell full could reach a cycle member through, because such a cell reads one transitively and so is a reader of an always-dirty cell. Since a known cycle is in every cone, this is also the walk a cycle *closing* on this pass gets when another cycle is already open — which is why phase 1 stays: the pass an anchor first falls inside a cycle, the anchor is not yet a seed, and only phase 1 makes full enter the cycle where it does.
 - The pass itself wrote into an array footprint: a spill landed, a CSE range filled, or an anchor stored `#SPILL!`. This is the one hazard no pre-pass predicate can rule out. P1 admits a dynamic anchor whose last result was a plain 1×1 scalar; whether *this* pass's result is still 1×1 is not a property of any stored state, it is what the pass produces. An anchor that grows spills members the selective pass has no ordering for, so the pass is redone as full and `collect_array_cells` rebuilds the index exactly rather than patching it.
 
-## What a traced full pass costs
+## The cost contract
 
 Falling back is correct by construction — a full pass is what every mode runs — so what a fallback can get wrong is only the bill. And it did: a traced full pass pays for `Full`'s whole-workbook recompute **and** for recording what every formula read and rebuilding the graph from those reads. Measured on `bench_scenarios`, that investment was between 0.25 and 1.2 of a pass, so a mode whose reason to exist is to beat `Full` was, on its fallback rows, between a fifth and half again slower than it.
+
+The investment buys exactly one thing: the next pass's selectivity. So it is worth paying when the next pass can spend it, and worth nothing when the next pass falls back too. Two mechanisms follow from that, and they are independent: make the investment smaller, and stop paying it on a run of passes that cannot spend it.
+
+### Making the investment smaller
 
 Where the cost lived was measured, not assumed. On a traced full pass over the `dashboard` and `long-chain` shapes it split roughly: **60% edge churn** in `replace_reads`, **20% the whole-graph cycle-cone rebuild** at the pass's tail, **20% the read-set allocation** — one `Vec` per formula per pass.
 
@@ -111,6 +115,50 @@ That comparison is `ReadSet: PartialEq`, and its equivalence is exact rather tha
 Read frames are pooled (`Model::read_pool`) for the same reason: a formula's read set is built and then either compared away or cloned into the graph, so dropping it means allocating three vectors again for the next formula. That one matters most on the *selective* path, where it is an allocation saved per recomputed cell.
 
 Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What is left is dominated by the tail — `nodes()`, `cycle_cone` over the whole graph, `refresh_blocked_array_readers` — which is not tracing at all: it is the whole-graph cycle rebuild that "Cells that never serve a stored value" requires after every full pass. Making *that* cheaper (its `successors_within` allocates a vector per node) is the next thing worth doing and is a follow-up, not a fallback problem.
+
+### Not paying it on a run
+
+`FullPassRun` in `model/incremental.rs` is the scheduler's memory of what the previous passes did, and the whole of the decision. Untraced means literally what `RecalcMode::Full` means: the pass runs through `Model::as_full_mode`, a `Drop` guard that borrows the mode for the duration, so every recording site — `tracing()`, the array-anchor edge in `evaluate_cell`, `commit_reads`, and the tail of `evaluate_full` that chooses between marking the graph ready and forcing a rebuild — is the *same* gate `Full` mode goes through rather than a second set someone has to keep in step. "At exactly `Full`'s cost" is true by construction. The delta an untraced fallback reports is `Everything`, which is what every fallback already reports.
+
+**The bet is not symmetric, and that shapes everything else.** Untracing a pass saves the investment — a fraction of a pass. It costs a *whole* pass when the guess is wrong, because an untraced pass leaves the graph unready and the pass after it has no graph to be selective with. On a workbook where a selective pass is a hundredth of a full one, guessing wrong once undoes a dozen right guesses. So:
+
+- **The run is watched before it is acted on.** Twelve full passes the scheduler *chose* — the graph was ready, the cone was there to be walked, and it went full anyway — before the first untraced one. A rebuild does not count: full was the only pass on offer, which says nothing about whether tracing pays, and the pass after a rebuild is commonly the pass that spends what it recorded. This is also what keeps a workbook that falls back once and goes on being selective (an array deleted, one wide edit among narrow ones) selective on the very next pass.
+- **The run is acted on gently, and then less gently.** The first untraced stretch is one pass; every stretch the run survives doubles the next, up to sixteen. A run that ends early costs one wasted pass. A run that goes on pays the investment a logarithmic number of times, so its per-pass cost keeps falling.
+- **`Verify` disables all of it**, exactly as it disables the fanout guard and for the same reason: both are performance choices, and the oracle exists to compare a *selective* pass against a shadow full one.
+
+The untraced pass leaves the edges where they are rather than dropping them. A `MustRebuild` graph is never walked, so they can serve nothing, and the next pass that does trace re-records and sweeps — so keeping them is exactly as sound as clearing them, and it is what makes the traced pass at the end of a stretch cheap rather than a rebuild from an empty map.
+
+### What it actually costs
+
+The contract, priced, on a 4,000-cell chain whose every edit reaches the whole workbook:
+
+| run of consecutive fallbacks | 40 edits | 80 | 160 | 320 |
+|---|---|---|---|---|
+| Incremental / Full | 1.24x | 1.15x | 1.07x | 1.06x |
+
+With the hysteresis deleted, every one of those is about 1.6x. So:
+
+> A selective pass is cheaper. A traced full pass costs `Full` plus a one-time investment, paid only while the passes before it leave any prospect of spending it. A *run* of full passes pays that investment a logarithmic number of times, so the longer the run the closer it costs to `Full`'s price — and a run that turns out not to be one costs a single wasted pass to find out.
+
+Short runs are the case this deliberately loses. The engine is still watching at forty edits, and it is watching because guessing early is how you spend a hundred selective passes to save a dozen tracing ones.
+
+That price is paid somewhere else too, and it is worth naming. The differential fuzzer holds itself to a floor — at least half its non-volatile evaluates must stay selective, or the oracle is comparing `Full` against `Full` — and untraced passes spend exactly that. Over 60 seeds x 200 steps the engine without this mechanism reaches 55%, and with it 54%; at `CHOSEN_BEFORE_ACTING = 6` it reaches 52% and misses the floor outright on the 30 x 150 `Verify` configuration. Both constants were chosen against that number, not against the bench alone, and the bench barely notices the difference — the arming passes are a shrinking share of a long run.
+
+And on the `bench_scenarios` shapes, which is where the problem was named. Speedup is `Full` over `Incremental`, so 1.00x is parity and the fallback rows are the ones that were below it:
+
+| fallback row | before | after |
+|---|---|---|
+| `dashboard (wide fanout)` | 0.34x | 0.48x |
+| `long-chain, edit head` | 0.47x | 0.64x |
+| `spill-heavy` | 0.79x | 0.94x |
+| `whole-column aggregates` | 0.91x | 0.98x |
+| `structural: move_rows` | 0.39x | 0.63x |
+
+None of those reach parity, and the reason is in the two mechanisms rather than in the measurement. `bench_scenarios` medians twenty samples of a twenty-five-pass series, and twelve of those passes are the ones the run spends proving itself, so the median still lands among them; `bench_amortized_runs`, over eighty edits, reads 0.73x, 0.74x and 0.92x for the first three. `structural: move_rows` moves at all only because of the smaller investment — its passes are rebuilds, so its run never arms, on purpose.
+
+### What measures it
+
+`bench_scenarios` reports a median over twenty-five passes, which is what one edit costs in a settled series and cannot see an amortization at all. `bench_amortized_runs` in the same file is the contract's own instrument: forty consecutive edits on a freshly built workbook, timed end to end in both modes, with the investment inside the number. The wall-clock assertion is `consecutive_fallbacks_cost_what_full_costs` in `base/tests/recalc_cost.rs`.
 
 ## One `evaluate` settles
 
@@ -164,13 +212,16 @@ cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
 
 # Benchmark: cost of a single edit, incremental vs full
 cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
+
+# Benchmark: cost of a *run* of edits, which is what the cost contract is about
+cargo test -p ironcalc_base bench_amortized_runs --release -- --ignored --nocapture
 ```
 
 `RecalcMode::Verify` (behind the `recalc_verify` feature) runs the incremental pass, asserts that the change report lists every change and nothing else, asserts every stored formula value equals a live re-evaluation, then runs a full pass on a snapshot and compares, so the check cannot repair the state it is checking.
 
 ## Invariants and their witnesses
 
-The suite here is large next to the engine, and the only thing that makes that defensible is that every test is the minimal witness of a named clause. This section is the map: eight invariants, the clauses each decomposes into, what enforces each clause, and — where the answer is "a test" — which test.
+The suite here is large next to the engine, and the only thing that makes that defensible is that every test is the minimal witness of a named clause. This section is the map: nine invariants, the clauses each decomposes into, what enforces each clause, and — where the answer is "a test" — which test.
 
 Four things can enforce a clause, and only two of them owe a test:
 
@@ -310,6 +361,19 @@ Planting that shape class depends on every aggregate range walk going through `E
 | I8.8 A row, column or cell move forces the next pass full | oracle | the differential fuzzer catches it in four operations on seed 6; no deterministic test does |
 | I8.9 A state machine that cannot be half-ready: `mark_dirty` on a `MustRebuild` graph is ignored | test | `graph_state_is_explicit` |
 | I8.10 A pass never runs against a graph numbered for a different sheet order — a sheet add, delete, duplicate or move that skipped `invalidate_graph` is caught at the next pass entry, not read | **construction + gate** (the graph carries the sheet-id sequence it ran under; `Model::evaluate` compares before dispatching, and the sequence is derived from the workbook so there is nothing to remember to bump) | the obligation to *reach* the check is the gate `every_pass_checks_the_sheet_layout`; what the check decides is `sheet_renumbering_under_a_ready_graph_is_detected` |
+
+### I9 — opting in is never slower, amortized
+
+Every clause of I1–I8 is about what a pass computes. This one is about what it costs, which is the other way an opt-in fails: a fallback that pays for read tracing on every pass of a run produces exactly `Full`'s answers and charges a fifth to a half more for them. What the clauses hold up is [The cost contract](#the-cost-contract).
+
+| Clause | Enforcement | Witness |
+|---|---|---|
+| I9.1 A long run of full passes pays for tracing a logarithmic number of times, not once per pass | test | `consecutive_fallbacks_cost_what_full_costs` in `base/tests/recalc_cost.rs`; the mutant is `FullPassRun::traces` returning `true`, which measures about 1.6x against a 1.15x bound |
+| I9.2 An untraced pass records nothing and leaves the graph unready, so it can serve no stale edge and costs what `Full` costs | construction (`Model::as_full_mode` borrows the recalc mode itself — the one gate every recording site already reads — and a `Drop` guard restores it on every exit path) | — |
+| I9.3 The untraced run is not a trapdoor: every stretch ends in a traced pass, and the stretch is capped | construction (`FullPassRun::Running` counts to its own `stretch`, and `MAX_UNTRACED_STRETCH` bounds it) | — |
+| I9.4 The evidence for a run is *chosen* full passes only; a rebuild is not evidence, so a workbook that falls back once and then goes on being selective is selective on the very next pass | test + oracle | `deleting_the_last_array_clears_the_index`, whose final assertion is exactly that, dies when a rebuild is allowed to arm the run. So does the differential fuzzer's selectivity floor: at the same threshold, counting rebuilds too takes it from 48% to 40%, under the floor, which is the fuzzer refusing to compare `Full` against `Full` |
+| I9.5 `Verify` disables the hysteresis, as it disables the fanout guard | construction (`fallback_traces`, the same shape as `should_fallback_fanout`) | — |
+| I9.6 The comparison in `replace_reads` leaves the graph a remove-and-re-add would have left | test | `incremental_tracks_dynamic_branch_dependencies` (I4.6) and `name_reader_redirty_on_insert` (I1.7) both die to a blind skip; the skip that forgets to stamp dies to I1.12's witness |
 
 ### Clauses no witness closes
 
