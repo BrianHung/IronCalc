@@ -53,6 +53,44 @@ fn incremental_row_delete_shrinking_range_forces_full() {
     assert_eq!(model._get_text("C1"), "12"); // 1 + 2 + 4 + 5
 }
 
+/// I5.7 — a row move keeps the graph walkable, and a reader outside the moved
+/// band sees the reordering.
+///
+/// A move is the third member of the insert/delete family and shifts like
+/// them; this is `incremental_handles_row_delete`'s clause for the one edit
+/// that used to answer it by giving up. Kills `structural_move` going back to
+/// `force_full` — the whole point of modelling the move — and kills composing
+/// the move out of a delete and an insert, which drops every stored entry in
+/// the vacated band and takes `C1`'s range edge with it.
+///
+/// `CONCAT` rather than `SUM`: a move permutes a range's contents without
+/// changing the multiset, so an order-insensitive fold cannot tell that
+/// anything happened. `C1`'s own text is left alone — neither `A1` nor `A6` is
+/// inside the moved band — so nothing journals it and it is reached through
+/// its range edge alone.
+#[test]
+fn incremental_row_move_reorders_a_reader_outside_the_band() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    for row in 1..=6 {
+        model._set(&format!("A{row}"), &row.to_string());
+    }
+    model._set("C1", "=CONCAT(A1:A6)");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "123456");
+
+    // Row 2 moves down to row 4; rows 3 and 4 close up behind it.
+    model.move_rows_action(0, 2, 1, 2).unwrap();
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "134256");
+
+    // And the shifted edges still carry a later edit to a cell that moved.
+    model._set("A4", "9");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "134956");
+}
+
 #[test]
 fn incremental_structural_edit_moves_volatile_with_the_graph() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
