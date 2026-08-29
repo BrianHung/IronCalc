@@ -3672,6 +3672,22 @@ impl<'a> Model<'a> {
     /// reordered and the phase restarts; an N*N bound prevents infinite loops on
     /// circular spill dependencies. Phase 2 evaluates the remaining cells.
     fn evaluate_full(&mut self) {
+        // The cycle witness describes *this* pass. Reset here rather than only
+        // in `evaluate_selective`, because the tail of this function reads it
+        // to decide whether there is a cycle cone to rebuild, and a flag left
+        // standing from an earlier pass would answer for the wrong edges. The
+        // direction that matters is the one this cannot go: the flag is only
+        // ever set, never cleared, between here and the tail, so a pass that
+        // traverses a cycle cannot reach the tail claiming it did not.
+        self.saw_circular_reference = false;
+        // The witness is only a witness because this pass's walk is unrestricted.
+        // A scoped walk answers an out-of-scope read from the store instead of
+        // recursing, so it can pass straight through a cycle without entering
+        // one — which is exactly the false negative the tail must not have.
+        debug_assert!(
+            self.recompute_scope.is_none(),
+            "evaluate_full must run unscoped: a scoped walk cannot witness a cycle"
+        );
         if self.tracing() {
             self.graph.begin_rebuild();
         }
@@ -3772,9 +3788,26 @@ impl<'a> Model<'a> {
             // known here, because later incremental passes only look at the
             // cone their seeds reach, and a cycle they do not know about is one
             // they never seed.
-            let nodes = self.graph.nodes();
-            let cone = self.graph.cycle_cone(&nodes);
-            self.graph.set_never_served(cone);
+            //
+            // Unless this pass proved there is no cycle to know about, which is
+            // the ordinary case and now costs nothing. See "Cycles cost nothing
+            // when there are none" in `base/src/recalc/README.md`. The witness
+            // is the pass's own evaluation: `saw_circular_reference` is set at
+            // the one place a walk can re-enter a cell it is still evaluating,
+            // and it is reset at the top of this function, so it describes this
+            // pass and no earlier one.
+            if self.saw_circular_reference {
+                let nodes = self.graph.nodes();
+                let cone = self.graph.cycle_cone(&nodes);
+                self.graph.set_never_served(cone);
+            } else {
+                // `begin_rebuild` already emptied the set, so this costs an
+                // allocation-free `HashSet::new`. It is written out anyway:
+                // "the set is empty" is this branch's *conclusion*, and a
+                // reader should not have to go and check that some earlier call
+                // happens to have left it that way.
+                self.graph.set_never_served(HashSet::new());
+            }
             self.refresh_blocked_array_readers();
             // Edges come from the read tracer (commit_reads during evaluate_cell).
             self.graph.after_pass();

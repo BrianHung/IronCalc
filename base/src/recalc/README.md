@@ -66,6 +66,25 @@ Serving a stored value is only sound when that value is a function of the cell's
 
 Cycle cells are recomputed on every pass but are not *reported* on every pass: the delta still names only the cells whose observable state moved. Full's `#CIRC!` placement can shift with any edit, and when it does the recompute sees it and the delta says so.
 
+### Cycles cost nothing when there are none
+
+Almost no workbook has a cycle, and until this round every full pass paid as if one might: `nodes()` collected the whole graph and `cycle_cone` ordered all of it, after every pass, to derive a set that was then empty. On the three shapes a traced full pass loses on, that tail *was* the loss — 60% to 84% of the whole gap to `Full` (see "What it actually costs").
+
+It is gated now, on a fact the pass produces for free. `Model::saw_circular_reference` is set at the one place a walk can re-enter a cell it is still evaluating — `evaluate_cell`'s `CellState::Evaluating` arm, which is also where `#CIRC!` comes from. A full pass that never reached it traversed no cycle, so the values it stored are the fixed point of an acyclic read relation, so there is nothing to seed and `never_served` is empty. Only when the flag stands does the whole-graph ordering run at all.
+
+**The fact is about the pass, not about the graph, and that is the whole of why it can be trusted.** A fact about the graph would have to be *maintained* across edits, and a maintained fact can be stale. This one is derived from scratch by the pass that reads it: `evaluate_full` clears it on entry and nothing between there and the tail does anything but set it, so it describes that pass and no earlier one. A cycle closing sets it on the pass it closes (the walk goes round it); a cycle breaking clears it on the very next pass, because clearing is what entry does.
+
+**The two directions cost differently, which is why only one of them has to be exact.** A witness that claims a cycle where there is none costs a whole-graph ordering that finds nothing: slow, and right. A witness that claims none where there is one leaves that cycle's members serving values that are artifacts of where the walk entered them: wrong, and silently. So the gate is deliberately not asked "does the graph have a cycle" — it is asked "did this pass's walk go round one", and the two differ in exactly one direction, the safe one:
+
+- Every cycle the *walk* takes is a cycle in the graph. `evaluate_cell` records the read before any early return and a formula commits its reads on both exits (I1.1, I1.10), so a walk that went `d → p → … → d` left an edge for each step.
+- Not every cycle in the *graph* is one the walk takes. The graph over-approximates: a rectangle is recorded at the extent the reference declares (I1.3), and a function may read a range's shape without reading its cells — `=COLUMNS(A1:B1)` in `A1` records a rect containing `A1` and evaluates nothing. `topo_order` over the whole graph fails on that cell; its stored value is `2` on every pass regardless.
+
+Dropping those is not a loosening of the rule at the top of this section, it is the rule applied more nearly. A cell no walk ever re-entered holds a value that *is* a function of its inputs — the pass that computed it was a full pass, so it is by definition what `Full` computes — and every edge that could move it is still recorded, so it still dirties the ordinary way. The one thing that changes is that it is no longer recomputed on every pass for nothing.
+
+The selective path is unchanged and still edge-derived (`cycle_was_known || saw_circular_reference` over the cone), so a selective pass whose cone contains one of these graph-only cycles will install it after all. That is the safe direction being taken twice: the set it installs is a superset of what is needed, the next full pass drops it again, and no value moves either way.
+
+`RecalcMode::Verify` is the load-bearing check here, not the value suite. Verify skips the never-served cells; a smaller never-served set means Verify checks *more* cells against a live re-evaluation from the store, so a cell wrongly dropped from the set is a cell Verify now compares and finds wrong.
+
 ## Array footprints are edges
 
 An array anchor writes its spill members as evaluation writes, not edits, so nothing journals them. Reading a member is therefore recorded as a read of the anchor: the array index maps every footprint position to its anchor, and `evaluate_cell` records the anchor's position along with the position actually read — including a position whose spill cell a structural edit dropped, whose index entry survives until the next full pass refills it, and including reads that the incremental scope answers from the store. Without that edge a cycle running through an array footprint is invisible to the graph, and the cells around it look like ordinary results.
@@ -114,7 +133,11 @@ That comparison is `ReadSet: PartialEq`, and its equivalence is exact rather tha
 
 Read frames are pooled (`Model::read_pool`) for the same reason: a formula's read set is built and then either compared away or cloned into the graph, so dropping it means allocating three vectors again for the next formula. That one matters most on the *selective* path, where it is an allocation saved per recomputed cell.
 
-Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What is left is dominated by the tail — `nodes()`, `cycle_cone` over the whole graph, `refresh_blocked_array_readers` — which is not tracing at all: it is the whole-graph cycle rebuild that "Cells that never serve a stored value" requires after every full pass. Making *that* cheaper (its `successors_within` allocates a vector per node) is the next thing worth doing and is a follow-up, not a fallback problem.
+Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What was left after them was **not tracing at all**, and measuring that rather than assuming it is what the next mechanism came out of. Recording reads costs a traced pass between 4% and 22% over `Full` on the fallback shapes; the rest was whole-workbook walks that a pass which is about to fall back has no use for.
+
+### The cycle cone nobody needs
+
+What was left is the whole-graph cycle rebuild `nodes()` + `cycle_cone` ran at the end of every traced full pass. It was 60-84% of the entire gap to `Full` on the three fallback shapes — 0.97 ms of a 1.22 ms gap on `dashboard`, 4.07 ms of 6.76 ms on `long-chain`, 0.86 ms of 1.02 ms on `spill-heavy` — and on a workbook with no cycle in it every microsecond of that produced the empty set. It is now gated on the pass's own `#CIRC!` witness: see "Cycles cost nothing when there are none" above for why the witness can be trusted in the only direction that matters.
 
 ### Not paying it on a run
 
@@ -309,7 +332,8 @@ records" has no exceptions to remember.
 | Clause | Enforcement | Witness |
 |---|---|---|
 | I3.1 Cells on a cycle and everything downstream are seeded dirty every pass | test + oracle | `covfuzz_count_offset_cycle_lost_after_number_overwrite` |
-| I3.2 That set is rebuilt over the whole graph after a full pass, so a cycle no cone would seed is still known | test | the same shape (it dies to both mutants) |
+| I3.2 That set is rebuilt over the whole graph after a full pass that traversed a cycle, so a cycle no cone would seed is still known | test | the same shape (it dies to both mutants) |
+| I3.7 A full pass that traversed no cycle rebuilds nothing and leaves the set empty; the witness is that pass's own walk, cleared on entry to it and only ever set thereafter, so it cannot claim acyclicity for a pass that went round a cycle | test | `an_acyclic_full_pass_runs_no_cycle_machinery` — asserts on `DependencyGraph::cycle_scans`, because "no ordering ran" is work *not* done and no value or `never_served` assertion can see it. Both transitions are in it: the pass a cycle closes on must scan, the pass after it breaks must stop |
 | I3.3 A blocked (`#SPILL!`) anchor stays in the array index | test | `a_blocked_anchors_reader_is_recomputed_only_by_a_full_pass` |
 | I3.4 The blocked-reader set is rebuilt on every full pass | test | the same |
 | I3.5 Verify's stored-vs-live skip list is the never-served list | construction | — |

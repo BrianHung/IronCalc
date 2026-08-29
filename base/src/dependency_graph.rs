@@ -706,6 +706,13 @@ pub(crate) struct DependencyGraph {
     /// by [`Self::sync_sheet_layout`]; a disagreement means sheet CRUD moved the
     /// coordinates out from under the edges.
     sheet_layout: SheetLayout,
+    /// How many times [`Self::cycle_cone`] has been asked to order a node set.
+    /// Test-only, and for one thing: "an acyclic workbook pays nothing for
+    /// cycles" is a statement about work *not done*, which no assertion over
+    /// values or over [`Self::never_served`] can reach — both are empty whether
+    /// the scan ran or not.
+    #[cfg(test)]
+    cycle_scans: u64,
 }
 
 impl DependencyGraph {
@@ -1143,8 +1150,24 @@ impl DependencyGraph {
     /// exactly what [`Self::topo_order`] cannot place. `cells` must be closed
     /// under dependents, so that every member of a cycle it touches is present
     /// and the answer is a whole cycle rather than a slice of one.
-    pub(crate) fn cycle_cone(&self, cells: &HashSet<Position>) -> HashSet<Position> {
+    ///
+    /// Takes `&mut self` for [`Self::cycle_scans`] alone — it reads the graph
+    /// and changes nothing in it. Both callers hold `&mut` already, and a `Cell`
+    /// here would buy back a `&self` nobody needs at the price of making the
+    /// graph's interior mutable for a tally.
+    pub(crate) fn cycle_cone(&mut self, cells: &HashSet<Position>) -> HashSet<Position> {
+        #[cfg(test)]
+        {
+            self.cycle_scans += 1;
+        }
         self.topo_order(cells).err().unwrap_or_default()
+    }
+
+    /// How many node sets [`Self::cycle_cone`] has been asked to order. See
+    /// [`Self::cycle_scans`].
+    #[cfg(test)]
+    pub(crate) fn cycle_scans(&self) -> u64 {
+        self.cycle_scans
     }
 
     /// Every cell transitively reachable from `seeds`, including the seeds. Does
@@ -1294,6 +1317,9 @@ impl DependencyGraph {
             // sheet and cannot add, remove or reorder sheets, so the numbering
             // this names is exactly the one it named before.
             sheet_layout: _,
+            // A tally of scans, in test builds only. It holds no coordinates.
+            #[cfg(test)]
+                cycle_scans: _,
         } = self;
         cell_dependents.shift(displacement);
         range_dependents.shift(displacement);
