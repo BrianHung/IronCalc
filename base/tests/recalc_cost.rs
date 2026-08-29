@@ -111,6 +111,90 @@ fn incremental_costs_no_more_than_full_over_whole_column_aggregates() {
     );
 }
 
+/// A long run of edits that all fall back must cost about what the same run
+/// costs in `Full` mode. This is the amortized half of the cost contract, and
+/// no value assertion can express it: every pass here produces exactly what
+/// `Full` produces, and the only thing wrong is the bill.
+///
+/// A fallback pays for `Full`'s whole-workbook pass *and* for tracing every
+/// read and rebuilding the graph from them. That investment buys one thing --
+/// the next pass's selectivity -- so on a run where every pass falls back it
+/// buys nothing, and paying it per pass is how an opt-in that exists to beat
+/// `Full` ends up losing to it.
+///
+/// **Long**, because what the backoff promises is a run whose per-pass cost
+/// falls as it goes on, not a flat one. The same shape measures about 1.24x
+/// over forty edits, 1.15x over eighty and 1.07x over these hundred and sixty:
+/// the run has to prove itself twelve passes over before the engine stops
+/// paying, and then each untraced stretch is twice the last. Short runs are the
+/// case the contract deliberately loses, because guessing wrong there costs a
+/// whole selective pass to save a fraction of one.
+///
+/// The mutant is deleting the hysteresis: make `FullPassRun::traces` return
+/// `true` and every pass of the run traces again, which measures about 1.7x
+/// here and fails this bound with room to spare. Editing the head of a chain
+/// reaches every formula in the workbook, so every pass of the run is a
+/// fallback and the amortization has nothing else to hide behind. Both modes
+/// are measured on the same machine in the same interleaved run, best of four
+/// rounds each, because 15% is a real bound rather than one of the
+/// order-of-magnitude margins above it.
+#[test]
+fn consecutive_fallbacks_cost_what_full_costs() {
+    const EDITS: usize = 160;
+    const ROWS: i32 = 4_000;
+    // `A1 -> A2 -> ... -> An`: an edit at the head reaches all of it, which is
+    // what makes every pass of the run a fallback.
+    let run = |mode: RecalcMode, round: usize| -> (u128, String) {
+        let mut model = Model::new_empty("t", "en", "UTC", "en")
+            .unwrap()
+            .with_recalc_mode(mode);
+        model.set_user_input(0, 1, 1, "1".to_string()).unwrap();
+        for row in 2..=ROWS {
+            model
+                .set_user_input(0, row, 1, format!("=A{}+1", row - 1))
+                .unwrap();
+        }
+        // The cold pass that builds the graph is not part of the run: it is the
+        // pass every mode has to run once, and the contract is about what
+        // follows it.
+        model.evaluate();
+        let start = Instant::now();
+        for i in 0..EDITS {
+            model
+                .set_user_input(0, 1, 1, format!("{}", round * EDITS + i))
+                .unwrap();
+            model.evaluate();
+        }
+        (
+            start.elapsed().as_micros(),
+            model.get_formatted_cell_value(0, ROWS, 1).unwrap(),
+        )
+    };
+    let mut full = u128::MAX;
+    let mut incremental = u128::MAX;
+    for round in 0..4 {
+        let (cost, full_tail) = run(RecalcMode::Full, round);
+        full = full.min(cost);
+        let (cost, incremental_tail) = run(RecalcMode::Incremental, round);
+        incremental = incremental.min(cost);
+        // A wrong number is not a fast number.
+        assert_eq!(
+            full_tail, incremental_tail,
+            "the modes disagree at the far end of the chain"
+        );
+    }
+    println!("{EDITS} consecutive wide-fanout edits: full {full}us, incremental {incremental}us");
+    // 15% over `Full`, plus 5ms so a very fast machine is not held to the
+    // timer's own resolution. The margin is small because it can be: the two
+    // numbers are the same work measured back to back, and over a run this long
+    // what separates them is about a seventh of the passes still tracing.
+    assert!(
+        incremental * 100 < full * 115 + 500_000,
+        "a run of full fallbacks costs more than the same run in Full mode: \
+         full={full}us incremental={incremental}us"
+    );
+}
+
 /// A whole-column reference spans 1,048,576 rows and a whole-row reference
 /// 16,384 columns, but everything past the sheet's used range is blank. An
 /// aggregate that ignores blanks must therefore cost what the same aggregate

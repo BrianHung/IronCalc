@@ -301,6 +301,13 @@ pub struct Model<'a> {
     /// Stack of in-flight formula read sets. The evaluator pushes one per
     /// formula it is computing; nested `evaluate_cell` records on the top.
     pub(crate) read_stack: Vec<ReadSet>,
+    /// Spent read frames, kept for their buffers. A frame is built once per
+    /// formula per pass and is then either compared away by
+    /// `DependencyGraph::replace_reads` or cloned into the graph by it, so
+    /// dropping it would mean allocating three vectors again for the next
+    /// formula — a whole workbook's worth of allocation per pass, for buffers
+    /// that are the same size every time.
+    pub(crate) read_pool: Vec<ReadSet>,
     /// What cells changed since the last [`Model::take_changed_cells`], backing
     /// the incremental delta API. See [`ChangedCells`].
     pub(crate) changed_cells: ChangedCells,
@@ -308,6 +315,11 @@ pub struct Model<'a> {
     /// These always-report in the delta; FormulaText/Hidden readers are dirty
     /// but only reported if their observable value moved.
     pub(crate) write_seeds: HashSet<Position>,
+    /// The cost contract's state: where in a run of full passes this model is,
+    /// and so whether the next one pays for tracing. See
+    /// [`incremental::FullPassRun`] and `base/src/recalc/README.md`, "The cost
+    /// contract".
+    pub(crate) full_pass_run: incremental::FullPassRun,
 }
 
 /// Whether `cell` belongs to the full pass's phase 1.
@@ -1637,11 +1649,23 @@ impl<'a> Model<'a> {
             .get_formula()
     }
 
-    fn commit_reads(&mut self, dependent: (u32, i32, i32), reads: ReadSet) {
-        if !self.tracing() {
+    /// Pushes a read frame for a formula that is about to evaluate, reusing a
+    /// spent one where there is one.
+    fn push_read_frame(&mut self) {
+        self.read_stack
+            .push(self.read_pool.pop().unwrap_or_default());
+    }
+
+    /// Commits the finished formula's reads to the graph and returns its frame
+    /// to the pool. Paired with [`Model::push_read_frame`] on both exits from a
+    /// formula.
+    fn commit_reads(&mut self, dependent: (u32, i32, i32)) {
+        let Some(mut reads) = self.read_stack.pop() else {
             return;
-        }
-        self.graph.replace_reads(dependent, reads);
+        };
+        self.graph.replace_reads(dependent, &reads);
+        reads.clear();
+        self.read_pool.push(reads);
     }
 
     // Evaluates a cell and returns the value in the cell
@@ -1794,7 +1818,7 @@ impl<'a> Model<'a> {
                 // mark cell as being evaluated
                 self.cells.insert(key, CellState::Evaluating);
                 if self.tracing() {
-                    self.read_stack.push(ReadSet::default());
+                    self.push_read_frame();
                 }
                 let (node, _static_result) =
                     &self.parsed_formulas[cell_reference.sheet as usize][f as usize];
@@ -1861,9 +1885,7 @@ impl<'a> Model<'a> {
                 {
                     self.cells.insert(key, CellState::Evaluated);
                     if self.tracing() {
-                        if let Some(reads) = self.read_stack.pop() {
-                            self.commit_reads(key, reads);
-                        }
+                        self.commit_reads(key);
                     }
                     // TODO: I _think_ this can never happen. Maybe we should  refactor things in a way that this is apparent
                     return CalcResult::new_error(Error::ERROR, cell_reference, e);
@@ -1872,9 +1894,7 @@ impl<'a> Model<'a> {
                 // mark cell as evaluated
                 self.cells.insert(key, CellState::Evaluated);
                 if self.tracing() {
-                    if let Some(reads) = self.read_stack.pop() {
-                        self.commit_reads(key, reads);
-                    }
+                    self.commit_reads(key);
                 }
 
                 // return the result of the evaluation.
@@ -2042,8 +2062,10 @@ impl<'a> Model<'a> {
             cse_rects: None,
             cse_member_guard: cse_guard::CseMemberGuard::default(),
             read_stack: Vec::new(),
+            read_pool: Vec::new(),
             changed_cells: ChangedCells::All,
             write_seeds: HashSet::new(),
+            full_pass_run: incremental::FullPassRun::default(),
         };
 
         model.parse_formulas();
@@ -3432,7 +3454,7 @@ impl<'a> Model<'a> {
         // ends, panic included.
         let mut evaluating = self.pause_journal();
         match mode {
-            RecalcMode::Full => evaluating.evaluate_full_untracked(),
+            RecalcMode::Full => evaluating.evaluate_full_reporting_everything(),
             RecalcMode::Incremental => {
                 evaluating.evaluate_selective();
             }
@@ -3666,7 +3688,7 @@ impl<'a> Model<'a> {
     /// circular spill dependencies. Phase 2 evaluates the remaining cells.
     fn evaluate_full(&mut self) {
         if self.tracing() {
-            self.graph.clear_edges();
+            self.graph.begin_rebuild();
         }
         // Two facts the array-index gate at the end of this pass reads. The
         // index one is taken here rather than there because the gate's question
@@ -3763,6 +3785,10 @@ impl<'a> Model<'a> {
         }
         // Only the incremental path reads the graph; Full mode skips building it.
         if self.recalc_mode != RecalcMode::Full {
+            // Close the rebuild this pass opened: every formula it evaluated
+            // re-recorded, so what is left unconfirmed is not a formula any
+            // more. This must precede both walks below, which read the edges.
+            self.graph.end_rebuild();
             // This pass rebuilt every edge, so the never-served set is rebuilt
             // over the whole graph: a cycle anywhere in the workbook has to be
             // known here, because later incremental passes only look at the
@@ -3778,6 +3804,16 @@ impl<'a> Model<'a> {
             // Ready + an ever-growing dirty set would make a later Incremental
             // switch (tests, with_recalc_mode) see stale seeds. Full has no
             // valid graph, so the next Incremental pass must rebuild.
+            //
+            // The edges stay where they are rather than being dropped, and
+            // that is deliberate. A `MustRebuild` graph is never walked, so
+            // they can serve nothing; and the next pass that does trace opens a
+            // rebuild that re-records every live formula and sweeps whatever it
+            // did not, so keeping them is exactly as sound as clearing them and
+            // saves that pass from rebuilding a workbook's edges out of an
+            // empty map. On a run of untraced fallbacks that pass is the one
+            // that ends each stretch — the one pass of the run whose cost the
+            // contract has to answer for.
             self.graph.force_full();
         }
     }

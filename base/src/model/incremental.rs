@@ -20,9 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::changed_cells::{record_snapshot_diff, ChangedCells};
-use crate::dependency_graph::Position;
-#[cfg(feature = "recalc_verify")]
-use crate::dependency_graph::RecalcMode;
+use crate::dependency_graph::{Position, RecalcMode};
 use crate::expressions::types::CellReferenceIndex;
 use crate::model::{is_phase_one_cell, Model};
 
@@ -41,10 +39,128 @@ const INCREMENTAL_FANOUT_RATIO: usize = 2;
 /// [`Model::evaluate_full_to_fixed_point`].
 const MAX_SETTLING_PASSES: usize = 4;
 
+/// How many full passes the scheduler must *choose* in a row before it will
+/// stop paying for tracing.
+///
+/// Chosen, not merely full, and that is the whole of the evidence test. A
+/// rebuild — the graph was not ready, so full was the only pass on offer — says
+/// nothing about whether tracing pays, and the pass after one is commonly the
+/// pass that spends what it recorded. A pass that had a ready graph and a cone
+/// to walk and went full anyway is a different fact: the investment the last
+/// pass made is being declined, in front of us.
+///
+/// Twelve, and the number comes from the differential fuzzer rather than from
+/// the bench. Untracing a pass saves a fraction of a pass and costs a whole one
+/// when the guess is wrong, and the fuzzer prices exactly that: it holds itself
+/// to a floor of half its non-volatile evaluates staying selective, or the
+/// oracle is comparing `Full` against `Full`. At six the floor is missed on one
+/// of its configurations; at twelve the fuzzer's selectivity is within a point
+/// and a half of an engine with no hysteresis at all, and — because the arming
+/// passes are a smaller and smaller share of a long run — the long-run cost is
+/// the same either way. Cheap insurance, so buy plenty.
+const CHOSEN_BEFORE_ACTING: u32 = 12;
+
+/// The longest stretch of untraced passes the backoff will reach.
+///
+/// The stretch doubles for every stretch the run survives, so a long run pays
+/// the investment a logarithmic number of times and the longer it lasts the
+/// closer it costs to `Full`'s price. The cap is what stops that becoming an
+/// unbounded blind spell: a run that has lasted long enough to reach it waits
+/// at most this many passes to find out it is over.
+const MAX_UNTRACED_STRETCH: u32 = 16;
+
 /// Whether an evaluate stayed incremental or fell back to a full pass.
 pub(crate) enum EvalPass {
     Incremental,
     Full,
+}
+
+/// Whether a full pass was picked over a selective pass that was there to be
+/// run, or was the only pass on offer. Named rather than a bare `bool` because
+/// the call sites are five one-word arguments and the distinction is what
+/// [`FullPassRun`] counts.
+#[derive(Clone, Copy)]
+enum Chosen {
+    /// The graph was ready and the cone was there to be walked; this pass went
+    /// full anyway.
+    Yes,
+    /// The graph was not ready, or nothing was dirty: there was no selective
+    /// pass to prefer.
+    No,
+}
+
+/// The cost contract's whole state: where in a run of full passes this model
+/// is.
+///
+/// A traced full pass costs `Full`'s pass plus an investment — the read tracing
+/// and the graph rebuild — and that investment buys one thing, the *next*
+/// pass's selectivity. It is a good trade when the next pass can spend it and a
+/// bad one when the next pass is full too, so on a run of full passes the
+/// engine stops paying it.
+///
+/// What keeps that from being a licence to guess is the shape of the bet.
+/// Untracing saves a fraction of a pass and costs a whole one when it is wrong,
+/// because an untraced pass leaves the graph unready and the pass after it has
+/// no graph to be selective with. So the run has to prove itself at length
+/// first ([`Self::Watching`], and only *chosen* full passes count), and is then
+/// acted on gently: the first untraced stretch is one pass, and every stretch
+/// the run survives doubles the next, up to [`MAX_UNTRACED_STRETCH`]. A run
+/// that ends early costs one wasted pass; a run that goes on pays the
+/// investment a logarithmic number of times.
+///
+/// See `base/src/recalc/README.md`, "The cost contract".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FullPassRun {
+    /// No run: the previous pass was selective, was a rebuild, or there has not
+    /// been one yet. The next full pass traces.
+    #[default]
+    NoRun,
+    /// Full passes the scheduler chose in a row, still too few to act on. Every
+    /// one of them traces, which is what keeps a workbook that falls back once
+    /// and then goes on being selective — an array deleted, one wide edit among
+    /// narrow ones — selective on the very next pass.
+    Watching(u32),
+    /// A run long enough to act on: `untraced` passes have run untraced out of
+    /// the current `stretch`, and the stretch doubles each time the run
+    /// survives one. Once here, a rebuild continues the run rather than ending
+    /// it — the untraced pass is what made the graph unready in the first
+    /// place.
+    Running { untraced: u32, stretch: u32 },
+}
+
+impl FullPassRun {
+    /// Whether the full pass about to run records what it reads.
+    fn traces(&self) -> bool {
+        !matches!(self, Self::Running { untraced, stretch } if untraced < stretch)
+    }
+
+    /// Folds one full pass into the run. `chosen` is whether the scheduler
+    /// picked full over a selective pass that was available to it.
+    fn record(&mut self, traced: bool, chosen: bool) {
+        *self = match (*self, chosen) {
+            (Self::Running { untraced, stretch }, _) if !traced => Self::Running {
+                untraced: untraced + 1,
+                stretch,
+            },
+            (Self::Running { stretch, .. }, _) => Self::Running {
+                untraced: 0,
+                stretch: (stretch * 2).min(MAX_UNTRACED_STRETCH),
+            },
+            (_, false) => Self::NoRun,
+            (Self::Watching(seen), true) if seen + 1 >= CHOSEN_BEFORE_ACTING => Self::Running {
+                untraced: 0,
+                stretch: 1,
+            },
+            (Self::Watching(seen), true) => Self::Watching(seen + 1),
+            (Self::NoRun, true) => Self::Watching(1),
+        };
+    }
+
+    /// Ends the run: the pass that just finished was selective, so the graph is
+    /// live and being spent, and the next full pass is worth tracing again.
+    fn ended(&mut self) {
+        *self = Self::NoRun;
+    }
 }
 
 impl Model<'_> {
@@ -81,7 +197,7 @@ impl Model<'_> {
                 || self.graph.full_reflects_change()
                 || !self.graph.always_dirty_cells().is_empty()
             {
-                self.evaluate_full_untracked();
+                self.fall_back_to_full(Chosen::No);
             } else {
                 // A redundant full preserves the delta unless values actually
                 // moved (e.g. a spill that takes two passes). Diff cells and CF.
@@ -124,13 +240,13 @@ impl Model<'_> {
             self.recount_formula_cells();
         }
         if self.should_fallback_fanout(affected.len()) {
-            self.evaluate_full_untracked();
+            self.fall_back_to_full(Chosen::Yes);
             return EvalPass::Full;
         }
         // Selectivity is earned, not assumed: this pass is selective only if
         // every cell it would touch is one a selective pass can model.
         if !self.cone_is_plain(&affected) {
-            self.evaluate_full_untracked();
+            self.fall_back_to_full(Chosen::Yes);
             return EvalPass::Full;
         }
         // Per-evaluation scratch. `support` feeds only the full pass's spill
@@ -175,7 +291,7 @@ impl Model<'_> {
         // only for the case `recompute_all` never ran: a clean `topo_order`
         // whose walk then hit a cycle anyway.
         if self.saw_circular_reference && !cycle_was_known {
-            self.evaluate_full_untracked();
+            self.fall_back_to_full(Chosen::Yes);
             return EvalPass::Full;
         }
         // The one hazard plainness cannot rule out in advance. It admits a
@@ -187,7 +303,7 @@ impl Model<'_> {
         // Redo the pass as full so spill dependents are not missed and
         // `collect_array_cells` rebuilds the index exactly.
         if self.wrote_array_cells {
-            self.evaluate_full_untracked();
+            self.fall_back_to_full(Chosen::Yes);
             return EvalPass::Full;
         }
         // Rebuild the set from the graph this pass recorded. The cone is
@@ -216,7 +332,50 @@ impl Model<'_> {
         let cf_before = self.cf_cache.clone();
         self.evaluate_conditional_formatting();
         self.record_cf_changes(cf_before);
+        self.full_pass_run.ended();
         EvalPass::Incremental
+    }
+
+    /// Runs the full pass this scheduler could not avoid, and charges it
+    /// against the cost contract. [`FullPassRun`] decides whether it records
+    /// what it reads; `chosen` is the evidence that decision is made from.
+    ///
+    /// An untraced pass runs as `RecalcMode::Full` runs it, *by being* it for
+    /// the duration. The mode is the one thing every recording site already
+    /// consults — [`Model::tracing`], the array-anchor edge in `evaluate_cell`,
+    /// `commit_reads`, and the tail of `evaluate_full` that chooses between
+    /// marking the graph ready and forcing a rebuild — so borrowing it is what
+    /// makes "exactly Full's cost" true by construction rather than by a second
+    /// list of gates somebody has to keep in step with the first. That tail is
+    /// also what leaves the graph unready, so an untraced pass can no more
+    /// serve a stale edge than a `Full`-mode one can.
+    ///
+    /// The delta is `Everything` either way, which is already what a fallback
+    /// reports.
+    fn fall_back_to_full(&mut self, chosen: Chosen) {
+        let traced = self.fallback_traces();
+        if traced {
+            self.evaluate_full_reporting_everything();
+        } else {
+            self.as_full_mode().evaluate_full_reporting_everything();
+        }
+        self.full_pass_run
+            .record(traced, matches!(chosen, Chosen::Yes));
+    }
+
+    /// Whether the fallback about to run traces. `Verify` disables the
+    /// hysteresis exactly as it disables the fanout guard, and for the same
+    /// reason: both are performance choices, and the oracle's whole job is to
+    /// compare a *selective* pass against a shadow full one. An untraced pass
+    /// leaves no graph for the next pass to be selective with, so a Verify run
+    /// that honoured the hysteresis would spend most of its passes checking
+    /// nothing.
+    fn fallback_traces(&self) -> bool {
+        #[cfg(feature = "recalc_verify")]
+        if self.recalc_mode == RecalcMode::Verify {
+            return true;
+        }
+        self.full_pass_run.traces()
     }
 
     /// Whether `cone` is **plain**: every cell in it is one a selective pass can
@@ -377,7 +536,7 @@ impl Model<'_> {
 
     /// Full recompute whose result is not expressible as a delta: it may have
     /// changed any cell, so the next `take_changed_cells` reports `Everything`.
-    pub(crate) fn evaluate_full_untracked(&mut self) {
+    pub(crate) fn evaluate_full_reporting_everything(&mut self) {
         self.evaluate_full_to_fixed_point();
         self.changed_cells = ChangedCells::All;
     }
@@ -466,5 +625,53 @@ impl Model<'_> {
         }
         self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
             && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
+    }
+}
+
+/// The model with its recalc mode temporarily set to [`RecalcMode::Full`], so
+/// that the pass run through it records nothing and costs what a `Full` pass
+/// costs.
+///
+/// A hand-rolled save/set/restore triple would leak the borrowed mode on an
+/// early exit and leave an `Incremental` model silently in `Full` for the rest
+/// of its life — every later pass correct, none of them ever selective again.
+/// The guard makes that unrepresentable: it *is* the mutable handle to the
+/// model, so the pass has to run through it, and `Drop` restores the mode on
+/// every exit path including a panic. It is the same shape as
+/// [`JournalRecordingPaused`](crate::recalc::journal), for the same reason.
+#[must_use = "the mode is borrowed only while this guard is alive"]
+struct AsFullMode<'a, 'm> {
+    model: &'a mut Model<'m>,
+    restore: RecalcMode,
+}
+
+impl<'m> Model<'m> {
+    /// Runs one pass the way `RecalcMode::Full` runs it, whatever mode the
+    /// model is in. See [`Model::fall_back_to_full`].
+    fn as_full_mode(&mut self) -> AsFullMode<'_, 'm> {
+        AsFullMode {
+            restore: std::mem::replace(&mut self.recalc_mode, RecalcMode::Full),
+            model: self,
+        }
+    }
+}
+
+impl<'m> std::ops::Deref for AsFullMode<'_, 'm> {
+    type Target = Model<'m>;
+
+    fn deref(&self) -> &Self::Target {
+        self.model
+    }
+}
+
+impl std::ops::DerefMut for AsFullMode<'_, '_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.model
+    }
+}
+
+impl Drop for AsFullMode<'_, '_> {
+    fn drop(&mut self) {
+        self.model.recalc_mode = self.restore;
     }
 }

@@ -125,24 +125,100 @@ fn shift_coord(x: i32, boundary: i32, delta: i32) -> Option<i32> {
     }
 }
 
-/// One row/column insert (`delta > 0`) or delete (`delta < 0`) of `|delta|`
-/// lines at `boundary` on `sheet`, seen as a coordinate remapping.
+/// New coordinate after the line at `from` moves to `to`, the lines it passes
+/// closing up behind it by one. Everything outside `[min(from, to),
+/// max(from, to)]` stays where it is.
+///
+/// Total and injective, which is the whole reason a move can be modelled at
+/// all: it neither creates nor destroys a line, so no stored entry is dropped
+/// and no two entries collide. The band's own membership is unchanged — the
+/// map permutes `[min, max]` onto itself — which is what lets a range holding
+/// the whole band shift by identity.
+fn move_coord(x: i32, from: i32, to: i32) -> i32 {
+    if x == from {
+        to
+    } else if from < x && x <= to {
+        x - 1
+    } else if to <= x && x < from {
+        x + 1
+    } else {
+        x
+    }
+}
+
+/// How one structural edit rewrites the coordinates on its axis.
+#[derive(Clone, Copy)]
+enum Remap {
+    /// An insert (`delta > 0`) or delete (`delta < 0`) of `|delta|` lines at
+    /// `boundary`. Not injective: a delete maps a whole band to nothing.
+    Band { boundary: i32, delta: i32 },
+    /// One line moved from `from` to `to`. A permutation of the axis.
+    ///
+    /// Only ever one line, because that is the only move the model performs:
+    /// `move_rows_action` decomposes a K-row move into K single-row moves and
+    /// records a `DisplaceData::RowMove` for each, so the graph never sees a
+    /// band move and does not have to model one.
+    Move { from: i32, to: i32 },
+}
+
+/// One row/column structural edit on `sheet`, seen as a coordinate remapping.
 ///
 /// Every coordinate the graph stores is rewritten through this one value, so
 /// the remapping rule has a single definition. `None` from any of its methods
 /// means the coordinate fell inside a deleted band: the entry holding it is
-/// dropped, and the next full pass rebuilds it.
+/// dropped, and the next full pass rebuilds it. A [`Remap::Move`] never
+/// returns `None`.
 #[derive(Clone, Copy)]
 pub(crate) struct Displacement {
     sheet: u32,
     axis: Axis,
-    boundary: i32,
-    delta: i32,
+    remap: Remap,
 }
 
 impl Displacement {
     fn coord(self, x: i32) -> Option<i32> {
-        shift_coord(x, self.boundary, self.delta)
+        match self.remap {
+            Remap::Band { boundary, delta } => shift_coord(x, boundary, delta),
+            Remap::Move { from, to } => Some(move_coord(x, from, to)),
+        }
+    }
+
+    /// The new extent of the inclusive span `[a, b]` on this edit's axis, or
+    /// `None` if it was deleted.
+    ///
+    /// A band edit maps the two ends and keeps them: the map is monotone, so
+    /// the image of an interval is the interval between the images. A move's
+    /// map is *not* monotone — the moved line jumps the band — so the image of
+    /// an interval with one end inside the band and the other outside is an
+    /// interval with a hole in it, which no single span can name. This returns
+    /// the hull, deliberately: widening a stored range costs a redundant
+    /// recompute, narrowing one drops a dependent and is a wrong answer. The
+    /// move map is injective, so the hull can never come back narrower than
+    /// the span it was given.
+    fn span(self, a: i32, b: i32) -> Option<(i32, i32)> {
+        match self.remap {
+            Remap::Band { .. } => Some((self.coord(a)?, self.coord(b)?)),
+            Remap::Move { from, to } => {
+                // Away from `from` the map is `x + c` for a `c` that only ever
+                // grows with `x`, so its extremes over `[a, b]` sit at the ends
+                // of `[a, b]` or at one of the three lines around `from`, which
+                // is the only place the map goes backwards. The two lines
+                // around `to` are not candidates: the map is continuous in
+                // *order* there — it steps from `to - 1` to `to + 1` — so an
+                // interval spanning `to` still takes its extremes at its ends.
+                let mut lo = i32::MAX;
+                let mut hi = i32::MIN;
+                for x in [a, b, from - 1, from, from + 1] {
+                    if x < a || x > b {
+                        continue;
+                    }
+                    let y = move_coord(x, from, to);
+                    lo = lo.min(y);
+                    hi = hi.max(y);
+                }
+                Some((lo, hi))
+            }
+        }
     }
 
     /// The new location of `pos`, or `None` if it was deleted.
@@ -159,15 +235,22 @@ impl Displacement {
 
     /// The new extent of `area`, or `None` if either edge was deleted.
     /// A delete that would only *shrink* a tracked range never reaches here:
-    /// [`DependencyGraph::structural_edit`] rebuilds instead.
+    /// [`DependencyGraph::structural_edit`] rebuilds instead. A move needs no
+    /// such guard — see [`Self::span`].
     fn area(self, area: Area) -> Option<Area> {
         let (s, row1, column1, row2, column2) = area;
         if s != self.sheet {
             return Some(area);
         }
         match self.axis {
-            Axis::Row => Some((s, self.coord(row1)?, column1, self.coord(row2)?, column2)),
-            Axis::Column => Some((s, row1, self.coord(column1)?, row2, self.coord(column2)?)),
+            Axis::Row => {
+                let (row1, row2) = self.span(row1, row2)?;
+                Some((s, row1, column1, row2, column2))
+            }
+            Axis::Column => {
+                let (column1, column2) = self.span(column1, column2)?;
+                Some((s, row1, column1, row2, column2))
+            }
         }
     }
 
@@ -178,10 +261,12 @@ impl Displacement {
             Input::OwnCoord(p) => Some(Input::OwnCoord(self.position(p)?)),
             Input::FormulaText(a) => Some(Input::FormulaText(self.area(a)?)),
             Input::RowHidden(s, r1, r2) if s == self.sheet && matches!(self.axis, Axis::Row) => {
-                Some(Input::RowHidden(s, self.coord(r1)?, self.coord(r2)?))
+                let (r1, r2) = self.span(r1, r2)?;
+                Some(Input::RowHidden(s, r1, r2))
             }
             Input::ColHidden(s, c1, c2) if s == self.sheet && matches!(self.axis, Axis::Column) => {
-                Some(Input::ColHidden(s, self.coord(c1)?, self.coord(c2)?))
+                let (c1, c2) = self.span(c1, c2)?;
+                Some(Input::ColHidden(s, c1, c2))
             }
             other => Some(other),
         }
@@ -204,8 +289,29 @@ pub(crate) fn shift_position(
     Displacement {
         sheet,
         axis,
-        boundary,
-        delta,
+        remap: Remap::Band { boundary, delta },
+    }
+    .position(pos)
+}
+
+/// The new location of `pos` after the line at `from` on `axis` moves to `to`
+/// on `sheet`. Positions on other sheets are returned unchanged.
+///
+/// [`shift_position`]'s sibling for the move. The same rule the graph shifts
+/// itself by, reached through the same [`Displacement`] so there is still one
+/// definition of it; the `Option` is that shared signature and not a case a
+/// move can produce, since a move deletes no line.
+pub(crate) fn move_position(
+    sheet: u32,
+    axis: Axis,
+    from: i32,
+    to: i32,
+    pos: Position,
+) -> Option<Position> {
+    Displacement {
+        sheet,
+        axis,
+        remap: Remap::Move { from, to },
     }
     .position(pos)
 }
@@ -283,30 +389,47 @@ impl Shift for HashMap<Input, HashSet<Position>> {
     }
 }
 
-impl Shift for HashMap<Position, ReadSet> {
+/// What one formula read when it last evaluated, and the whole-graph rebuild
+/// that last confirmed it.
+///
+/// The stamp is what makes a full pass a *sweep* rather than a clear: see
+/// [`DependencyGraph::begin_rebuild`].
+#[derive(Clone, Debug)]
+struct Precedents {
+    reads: ReadSet,
+    /// The [`DependencyGraph::rebuild`] generation this entry was last written
+    /// or re-confirmed in.
+    seen: u64,
+}
+
+impl Shift for HashMap<Position, Precedents> {
     fn shift(&mut self, displacement: Displacement) {
         *self = self
             .drain()
-            .filter_map(|(dependent, reads)| {
+            .filter_map(|(dependent, precedents)| {
                 let dependent = displacement.position(dependent)?;
+                let Precedents { reads, seen } = precedents;
                 Some((
                     dependent,
-                    ReadSet {
-                        cells: reads
-                            .cells
-                            .into_iter()
-                            .filter_map(|p| displacement.position(p))
-                            .collect(),
-                        rects: reads
-                            .rects
-                            .into_iter()
-                            .filter_map(|area| displacement.area(area))
-                            .collect(),
-                        inputs: reads
-                            .inputs
-                            .into_iter()
-                            .filter_map(|input| displacement.input(input))
-                            .collect(),
+                    Precedents {
+                        reads: ReadSet {
+                            cells: reads
+                                .cells
+                                .into_iter()
+                                .filter_map(|p| displacement.position(p))
+                                .collect(),
+                            rects: reads
+                                .rects
+                                .into_iter()
+                                .filter_map(|area| displacement.area(area))
+                                .collect(),
+                            inputs: reads
+                                .inputs
+                                .into_iter()
+                                .filter_map(|input| displacement.input(input))
+                                .collect(),
+                        },
+                        seen,
                     },
                 ))
             })
@@ -576,7 +699,11 @@ pub(crate) struct DependencyGraph {
     input_dependents: HashMap<Input, HashSet<Position>>,
     /// What each formula read last time it evaluated; the reverse of the edge
     /// maps, so a formula's edges can be dropped in O(degree) before re-record.
-    precedents: HashMap<Position, ReadSet>,
+    precedents: HashMap<Position, Precedents>,
+    /// Which whole-graph rebuild is running, or last ran. Bumped by
+    /// [`Self::begin_rebuild`], stamped onto every entry [`Self::replace_reads`]
+    /// writes or confirms, and read by [`Self::end_rebuild`] to sweep the rest.
+    rebuild: u64,
     state: GraphState,
     /// The array/spill footprint index. Public to the crate because the
     /// scheduler tests membership directly to decide the arrays->Full fallback;
@@ -613,15 +740,47 @@ pub(crate) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    /// Drops all edges; a full pass rebuilds them. The never-served and
-    /// blocked-reader sets are derived from those edges, so they go too.
-    pub(crate) fn clear_edges(&mut self) {
-        self.cell_dependents.clear();
-        self.range_dependents.clear();
-        self.input_dependents.clear();
-        self.precedents.clear();
+    /// Opens a whole-graph rebuild: the full pass that follows re-records every
+    /// live formula, and [`Self::end_rebuild`] drops whatever it did not.
+    ///
+    /// This is a mark and a sweep where the older shape was "clear every edge,
+    /// then add them all back". The graph it leaves is the same one — what the
+    /// pass recorded, entry for entry, because a full pass evaluates every cell
+    /// in the workbook, so a position that is still a formula re-records and a
+    /// position that is not cannot. What it no longer does is throw the read
+    /// sets away first, and *that* is the point: clearing made every entry
+    /// unrecognizable, so [`Self::replace_reads`] had to rebuild a whole
+    /// workbook's edges from nothing on every full pass, even when nothing any
+    /// formula reads had moved. With the sets still there, the formulas that
+    /// read what they read last time — nearly all of them — cost a comparison
+    /// instead.
+    pub(crate) fn begin_rebuild(&mut self) {
+        self.rebuild += 1;
+        // Derived from edges the pass is about to replace, and both are rebuilt
+        // by its tail. Cleared here so a pass that dies mid-way leaves no set
+        // claiming to describe edges that are gone.
         self.never_served.replace(HashSet::new());
         self.blocked_array_readers.replace(HashSet::new());
+    }
+
+    /// Closes the rebuild [`Self::begin_rebuild`] opened. An entry the pass
+    /// neither rewrote nor confirmed belongs to a position that is no longer a
+    /// formula, so its edges go with it.
+    ///
+    /// Must run before anything reads the edges — the cycle cone and the
+    /// blocked-reader walk both do — because until it has, the graph is the
+    /// union of this pass's edges and the leftovers of the last one.
+    pub(crate) fn end_rebuild(&mut self) {
+        let rebuild = self.rebuild;
+        let stale: Vec<Position> = self
+            .precedents
+            .iter()
+            .filter(|(_, precedents)| precedents.seen != rebuild)
+            .map(|(&position, _)| position)
+            .collect();
+        for position in stale {
+            self.remove_dependent(position);
+        }
     }
 
     /// Records that `dependent` reads `precedent`. Idempotent.
@@ -665,7 +824,37 @@ impl DependencyGraph {
     }
 
     /// Replaces `dependent`'s outgoing edges with the reads just observed.
-    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: ReadSet) {
+    ///
+    /// A formula that read exactly what it read last time is the common case —
+    /// on a full pass it is nearly every formula in the workbook — and for it
+    /// the work below is a graph's worth of churn that ends where it began.
+    /// [`Self::remove_dependent`] deletes every edge, dropping the dependents
+    /// set of each precedent this was the last reader of, and the loops then
+    /// allocate them all back. So compare first: one hash lookup and a scan
+    /// linear in the degree, against a rebuild that is linear in the degree
+    /// *and* allocates.
+    ///
+    /// Equivalence is the invariant, and it is exact rather than approximate.
+    /// A remove followed by an identical add is the identity on all four maps:
+    /// each edge is removed from the same set it is then inserted into, an
+    /// entry pruned for becoming empty is recreated by the insert that follows,
+    /// and `precedents` ends holding the value it started with. The one place
+    /// the two loops differ — `remove_dependent` walks a self-read that
+    /// `add_cell_edge` refuses to record — cancels too: nothing ever inserts
+    /// `dependent` into its own dependents set, so removing it finds nothing
+    /// and prunes nothing.
+    ///
+    /// The skip still stamps. A rebuild sweeps every entry it did not see, so
+    /// an unchanged formula that returned here without saying so would have its
+    /// edges collected as if the cell had stopped being a formula.
+    pub(crate) fn replace_reads(&mut self, dependent: Position, reads: &ReadSet) {
+        let rebuild = self.rebuild;
+        if let Some(precedents) = self.precedents.get_mut(&dependent) {
+            if precedents.reads == *reads {
+                precedents.seen = rebuild;
+                return;
+            }
+        }
         self.remove_dependent(dependent);
         for &p in &reads.cells {
             if p != dependent {
@@ -678,12 +867,18 @@ impl DependencyGraph {
         for input in &reads.inputs {
             self.add_input_edge(input.clone(), dependent);
         }
-        self.precedents.insert(dependent, reads);
+        self.precedents.insert(
+            dependent,
+            Precedents {
+                reads: reads.clone(),
+                seen: rebuild,
+            },
+        );
     }
 
     /// Drops outgoing edges from a cell in O(degree) via the reverse index.
     pub(crate) fn remove_dependent(&mut self, dependent: Position) {
-        let Some(reads) = self.precedents.remove(&dependent) else {
+        let Some(Precedents { reads, .. }) = self.precedents.remove(&dependent) else {
             return;
         };
         for p in reads.cells {
@@ -716,7 +911,7 @@ impl DependencyGraph {
     pub(crate) fn cell_reads(&self, cell: Position, pred: impl Fn(&Input) -> bool) -> bool {
         self.precedents
             .get(&cell)
-            .is_some_and(|reads| reads.inputs.iter().any(pred))
+            .is_some_and(|precedents| precedents.reads.inputs.iter().any(pred))
     }
 
     /// How many cell, rect and input edges `cell`'s last evaluation recorded.
@@ -726,8 +921,23 @@ impl DependencyGraph {
     pub(crate) fn edge_counts(&self, cell: Position) -> (usize, usize, usize) {
         self.precedents
             .get(&cell)
-            .map(|reads| (reads.cells.len(), reads.rects.len(), reads.inputs.len()))
+            .map(|p| {
+                (
+                    p.reads.cells.len(),
+                    p.reads.rects.len(),
+                    p.reads.inputs.len(),
+                )
+            })
             .unwrap_or((0, 0, 0))
+    }
+
+    /// How many formulas the graph holds recorded reads for. Test-only, and for
+    /// one thing: a full pass must leave an entry for the formulas it evaluated
+    /// and for nothing else, which is a fact about the map's size that no value
+    /// assertion can reach.
+    #[cfg(test)]
+    pub(crate) fn recorded_formula_count(&self) -> usize {
+        self.precedents.len()
     }
 
     /// Records a value-only edit. Only a [`GraphState::Ready`] graph can opt into
@@ -1010,38 +1220,60 @@ impl DependencyGraph {
             self.state = GraphState::MustRebuild;
             return;
         }
+        // Everything at or after the boundary moves, so the band is open-ended.
+        self.apply(
+            sheet,
+            axis,
+            Remap::Band { boundary, delta },
+            (boundary, i32::MAX),
+        );
+    }
+
+    /// Applies a row/column move of the line at `from` to `to`.
+    ///
+    /// The move needs no counterpart to `structural_edit`'s shrink guard. That
+    /// guard exists because a delete can take rows out of the middle of a
+    /// tracked range, which two shifted corners cannot express; the move map is
+    /// a permutation, so [`Displacement::span`] always has a hull to return and
+    /// it is never narrower than what it was given.
+    pub(crate) fn structural_move(&mut self, sheet: u32, axis: Axis, from: i32, to: i32) {
+        // Only the lines between the two ends move; the rest is identity.
+        let band = (from.min(to), from.max(to));
+        self.apply(sheet, axis, Remap::Move { from, to }, band);
+    }
+
+    /// The body both structural edits share: mark what the edit can change,
+    /// rewrite every stored coordinate, and record that the delta cannot name
+    /// the data cells that moved.
+    fn apply(&mut self, sheet: u32, axis: Axis, remap: Remap, band: (i32, i32)) {
         if !matches!(self.state, GraphState::Ready { .. }) {
             self.state = GraphState::MustRebuild;
             return;
         }
-        self.mark_structural_dependents(sheet, axis, boundary);
-        self.shift(Displacement {
-            sheet,
-            axis,
-            boundary,
-            delta,
-        });
+        self.mark_structural_dependents(sheet, axis, band);
+        self.shift(Displacement { sheet, axis, remap });
         // Data cells in the shift band are not dirty. The cell-list delta cannot
         // name them, so `take_changed_cells` reports Everything after this pass.
         self.structural_unknown = true;
     }
 
-    /// Marks the dependents a structural edit at `boundary` can change: those
-    /// reading a moved precedent or a range reaching it. Uses pre-shift
-    /// coordinates; [`shift`](Self::shift) then moves the dirty set with the rest.
-    fn mark_structural_dependents(&mut self, sheet: u32, axis: Axis, boundary: i32) {
+    /// Marks the dependents a structural edit can change: those reading a
+    /// precedent inside `band` — the inclusive span of coordinates the edit
+    /// moves — or a range reaching into it. Uses pre-shift coordinates;
+    /// [`shift`](Self::shift) then moves the dirty set with the rest.
+    fn mark_structural_dependents(&mut self, sheet: u32, axis: Axis, (lo, hi): (i32, i32)) {
         if !matches!(self.state, GraphState::Ready { .. }) {
             return;
         }
         let mut extra: HashSet<Position> = HashSet::new();
         for (precedent, dependents) in &self.cell_dependents {
-            if precedent.0 == sheet && axis.coord(*precedent) >= boundary {
+            if precedent.0 == sheet && (lo..=hi).contains(&axis.coord(*precedent)) {
                 extra.extend(dependents.iter().copied());
             }
         }
         if let Some(sheet_ranges) = self.range_dependents.get(&sheet) {
             for (area, dependents) in sheet_ranges.iter() {
-                if axis.area_max(*area) >= boundary {
+                if axis.area_max(*area) >= lo && axis.area_min(*area) <= hi {
                     extra.extend(dependents.iter().copied());
                 }
             }
@@ -1090,6 +1322,10 @@ impl DependencyGraph {
             blocked_array_readers,
             // A fact about the pass that just ran. It holds no coordinates.
             structural_unknown: _,
+            // A counter of rebuilds. `precedents` carries the stamp with the
+            // entry it belongs to, so the entries a shift moves keep the one
+            // they had and the entries it drops take theirs with them.
+            rebuild: _,
             // Sheet ids, not coordinates. A row/column edit happens *within* one
             // sheet and cannot add, remove or reorder sheets, so the numbering
             // this names is exactly the one it named before.
@@ -1241,8 +1477,7 @@ mod tests {
             Displacement {
                 sheet: 0,
                 axis,
-                boundary,
-                delta,
+                remap: Remap::Band { boundary, delta },
             }
             .position(pos)
         };
@@ -1265,8 +1500,10 @@ mod tests {
             Displacement {
                 sheet: 1,
                 axis: Axis::Row,
-                boundary: 5,
-                delta: 2,
+                remap: Remap::Band {
+                    boundary: 5,
+                    delta: 2
+                },
             }
             .position((0, 5, 1)),
             Some((0, 5, 1))
@@ -1277,8 +1514,7 @@ mod tests {
             Displacement {
                 sheet: 0,
                 axis: Axis::Row,
-                boundary,
-                delta,
+                remap: Remap::Band { boundary, delta },
             }
             .area(a)
         };
@@ -1290,6 +1526,74 @@ mod tests {
         // silently shrinks. That is why `range_overlaps_band` has to reject the
         // edit before `shift` ever runs: this arithmetic cannot represent it.
         assert_eq!(area(5, -2, (0, 4, 1, 7, 1)), Some((0, 4, 1, 5, 1)));
+    }
+
+    /// I5.6 — a move remaps a cell by permutation, and widens a range it
+    /// cannot name rather than narrowing it.
+    ///
+    /// Two halves, because the map and the hull fail differently. The map is
+    /// pinned by value: it is the same rule `to_string_displaced` rewrites
+    /// formula text by, and a graph disagreeing with the text would hold
+    /// coordinates the next evaluation never reads. Kills the map collapsing to
+    /// the identity, and kills widening or narrowing any of its comparisons —
+    /// each of the four band edges is checked from both sides.
+    ///
+    /// The hull is the range decision, brute-forced against the actual image
+    /// because "covers" cannot be stated any other way without restating the
+    /// arithmetic. A range with one end inside the moved band and the other
+    /// outside has an image with a hole in it, which no single span names; the
+    /// two failure modes are not symmetric, so the answer widens. Kills
+    /// remapping the two corners the way the band arm does (`(coord(a),
+    /// coord(b))` shrinks `A1:A5` to `A1:A4` under a 3 -> 7 move, and inverts
+    /// it under 3 -> 4), and kills dropping any of the three lines around
+    /// `from` from the candidate list — each is the sole extreme for some
+    /// range, which is also why the three lines around `to` are not there.
+    #[test]
+    fn move_remaps_by_permutation_and_widens_what_it_cannot_name() {
+        // Row 3 moves down to row 7: 3 lands on 7, rows 4..7 close up by one,
+        // and the lines outside the band do not move.
+        assert_eq!(
+            (2..=8).map(|x| move_coord(x, 3, 7)).collect::<Vec<_>>(),
+            vec![2, 7, 3, 4, 5, 6, 8]
+        );
+        // Row 7 moves up to row 3: the exact inverse, which is what makes the
+        // map a permutation rather than a shift.
+        assert_eq!(
+            (2..=8).map(|x| move_coord(x, 7, 3)).collect::<Vec<_>>(),
+            vec![2, 4, 5, 6, 7, 3, 8]
+        );
+        // A line moved onto itself moves nothing.
+        assert_eq!(
+            (1..=5).map(|x| move_coord(x, 3, 3)).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        for from in 1..=9 {
+            for to in 1..=9 {
+                let displacement = Displacement {
+                    sheet: 0,
+                    axis: Axis::Row,
+                    remap: Remap::Move { from, to },
+                };
+                for a in 1..=9 {
+                    for b in a..=9 {
+                        let (lo, hi) = displacement.span(a, b).unwrap();
+                        let image: Vec<i32> = (a..=b).map(|x| move_coord(x, from, to)).collect();
+                        let (want_lo, want_hi) =
+                            (*image.iter().min().unwrap(), *image.iter().max().unwrap());
+                        assert_eq!(
+                            (lo, hi),
+                            (want_lo, want_hi),
+                            "[{a},{b}] under {from}->{to}: image {image:?}"
+                        );
+                        // The move destroys no line, so the hull of the image of
+                        // n lines holds at least n lines. Widening is the only
+                        // direction this can be wrong in.
+                        assert!(hi - lo >= b - a, "[{a},{b}] shrank to [{lo},{hi}]");
+                    }
+                }
+            }
+        }
     }
 
     /// I5.3 — shrink detection is exact at both edges of the deleted band.

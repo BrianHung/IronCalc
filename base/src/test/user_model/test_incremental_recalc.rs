@@ -53,6 +53,44 @@ fn incremental_row_delete_shrinking_range_forces_full() {
     assert_eq!(model._get_text("C1"), "12"); // 1 + 2 + 4 + 5
 }
 
+/// I5.7 — a row move keeps the graph walkable, and a reader outside the moved
+/// band sees the reordering.
+///
+/// A move is the third member of the insert/delete family and shifts like
+/// them; this is `incremental_handles_row_delete`'s clause for the one edit
+/// that used to answer it by giving up. Kills `structural_move` going back to
+/// `force_full` — the whole point of modelling the move — and kills composing
+/// the move out of a delete and an insert, which drops every stored entry in
+/// the vacated band and takes `C1`'s range edge with it.
+///
+/// `CONCAT` rather than `SUM`: a move permutes a range's contents without
+/// changing the multiset, so an order-insensitive fold cannot tell that
+/// anything happened. `C1`'s own text is left alone — neither `A1` nor `A6` is
+/// inside the moved band — so nothing journals it and it is reached through
+/// its range edge alone.
+#[test]
+fn incremental_row_move_reorders_a_reader_outside_the_band() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    for row in 1..=6 {
+        model._set(&format!("A{row}"), &row.to_string());
+    }
+    model._set("C1", "=CONCAT(A1:A6)");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "123456");
+
+    // Row 2 moves down to row 4; rows 3 and 4 close up behind it.
+    model.move_rows_action(0, 2, 1, 2).unwrap();
+    flush_writes(&mut model);
+    assert!(!model.graph.should_recompute_full());
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "134256");
+
+    // And the shifted edges still carry a later edit to a cell that moved.
+    model._set("A4", "9");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "134956");
+}
+
 #[test]
 fn incremental_structural_edit_moves_volatile_with_the_graph() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
@@ -1705,4 +1743,43 @@ fn offset_records_its_resolved_extent_not_the_walk() {
     model._set("A500", "5");
     model.evaluate();
     assert_eq!(model._get_text("B1"), "6");
+}
+
+/// I1.12. A full pass leaves an entry for the formulas it evaluated and for
+/// nothing else. The pass records every live formula's reads, so what makes
+/// this a *mechanism* rather than a tautology is the other half: an entry whose
+/// position stopped being a formula without a journal write to say so. Deleting
+/// a sheet is the sharpest case — it renumbers every position after it, so the
+/// entries of the deleted sheet's formulas now name live cells on a sheet that
+/// never had them.
+///
+/// Nothing in the value suite sees this. A leftover entry only ever *adds*
+/// edges, so the cone it widens is a superset and every value stays right; what
+/// it costs is a graph that grows without bound and cones that never shrink.
+/// Kills deleting the sweep in `evaluate_full`'s tail
+/// (`DependencyGraph::end_rebuild`), which is what makes a full pass a rebuild
+/// rather than an accumulation.
+#[test]
+fn a_full_pass_keeps_only_the_formulas_it_evaluated() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model.add_sheet("Second").unwrap();
+    // One formula per sheet, at positions that do not collide once the first
+    // sheet goes: (0,1,1) and (1,5,2).
+    model._set("A1", "=1+1");
+    model.set_user_input(1, 5, 2, "=2+2".to_string()).unwrap();
+    model.evaluate();
+    assert_eq!(model.graph.recorded_formula_count(), 2);
+
+    // "Second" becomes sheet 0, and its formula moves to (0,5,2). Both stored
+    // entries are now stale, and neither is overwritten by the pass that
+    // follows: nothing is a formula at (0,1,1), and (1,5,2) is not a position
+    // any more.
+    model.delete_sheet(0).unwrap();
+    model.evaluate();
+    assert_eq!(
+        model.graph.recorded_formula_count(),
+        1,
+        "a full pass kept edges for positions that are no longer formulas"
+    );
+    assert_eq!(model._get_text_at(0, 5, 2), "4");
 }
