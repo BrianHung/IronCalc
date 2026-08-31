@@ -42,7 +42,7 @@ The design follows the same pattern as reactive UI libraries such as MobX, Vue, 
 |---|---|
 | `recalc/journal.rs` | `Write` and `WriteLog`. Worksheet mutators push; `Model::evaluate` drains. Evaluation writes (storing a formula's result) are not journaled, because they are not edits. |
 | `recalc/trace.rs` | `ReadSet` and `Input`. Records the cells, rectangles, and non-cell inputs one formula reads. A covering rectangle suppresses per-cell edges and widens the per-line and per-cell inputs read beneath it, so a walk's edge count is a property of its shape rather than of the height of the range it walked. |
-| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `replace_reads`, `begin_rebuild`/`end_rebuild` (a full pass is a mark and a sweep, not a clear), `reachable_within` (the cone walk, which stops at the size its caller has already decided to fall back at), `topo_order`, `refresh_never_served` (the whole-graph cycle walk and the fact that says whether it is needed), `structural_edit`/`structural_move`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. The two edits differ only in the `Remap` the shared `Displacement` carries — see "A move is a shift too" below. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
+| `dependency_graph.rs` | The graph itself: edges keyed by cell, range, and input, a banded range index (`SheetRanges`), `PrecedentStore` (the reverse index, split into a cache-resident id table and a `Vec` of read sets so its once-per-formula probe is not a miss), `replace_reads`, `begin_rebuild`/`end_rebuild` (a full pass is a mark and a sweep, not a clear), `reachable_within` (the cone walk, which stops at the size its caller has already decided to fall back at), `wide_seeds` (the seeds a walk has already found to reach that size), `topo_order`, `refresh_never_served` (the whole-graph cycle walk and the fact that says whether it is needed), `edges_moved` (the one moment both of those derived facts stop being answers), `structural_edit`/`structural_move`, and `RecalcMode`. A structural edit shifts every index through `Shift`, applied field by field in `shift`, which destructures the struct so a new index cannot skip it. The two edits differ only in the `Remap` the shared `Displacement` carries — see "A move is a shift too" below. Also `SheetLayout`, the sheet numbering the stored positions are expressed in — see "Sheet numbering" below. |
 | `model/eval_ctx.rs` | `EvalCtx`, the receiver `functions/` evaluates on. A newtype over `&mut Model` whose inner reference is private, so the only cell state a function can reach is the accessors re-exposed there, and every one of them records. |
 | `model/incremental.rs` | The scheduler: `evaluate_selective`, `cone_is_plain` (the one predicate that decides whether a pass may be selective), `fanout_limit` (the one definition of the fanout guard, expressed as the size the cone walk stops at), `evaluate_full_to_fixed_point` (the settling loop every full pass runs through, in every mode), the frontier and whole-cone recomputes, and `FullPassRun`, which is the whole of "The cost contract" below. The *scheduling* decision lives here and only here; the evaluator's own mode branches are the `tracing()` gates in `model/mod.rs` and the dispatch in `Model::evaluate`. |
 | `model/changed_cells.rs` | What counts as an observable change (`ChangeKey`), and the delta `take_changed_cells` reports. |
@@ -70,7 +70,9 @@ Cycle cells are recomputed on every pass but are not *reported* on every pass: t
 
 Almost no workbook has a cycle, and until this round every full pass paid as if one might: `nodes()` collected the whole graph and `cycle_cone` ordered all of it, after every pass, to derive a set that was then usually empty. On the three shapes a traced full pass loses on, that tail *was* the loss — 60% to 84% of the whole gap to `Full` (see "What it actually costs").
 
-The set is a function of the edges and of nothing else, so it only has to be derived when they move. `DependencyGraph::never_served_stale` is set by every mutator that moves one — `replace_reads` when it takes the rebuild path rather than recognising a formula that read what it read last time, `remove_dependent`, `replace_arrays` when the footprint index actually differs, `shift` — and `refresh_never_served` at the full pass's tail is the only thing that clears it, because it is the only thing that does the whole-graph walk. A workbook whose shape is not changing pays for the walk once and then not again, cycle or no cycle.
+The set is a function of the edges and of nothing else, so it only has to be derived when they move. `DependencyGraph::edges_moved` is called by every mutator that moves one — `replace_reads` when it takes the rebuild path rather than recognising a formula that read what it read last time, `remove_dependent`, `replace_arrays` when the footprint index actually differs, `shift` — and `refresh_never_served` at the full pass's tail is the only thing that clears `never_served_stale`, because it is the only thing that does the whole-graph walk. A workbook whose shape is not changing pays for the walk once and then not again, cycle or no cycle.
+
+**Two facts now share that one moment.** The wide-seed memo ("The cone nobody walks twice", below) is a function of the same edges, so it stops being an answer when they move and not before, and `edges_moved` is where both are told. One lifecycle rather than two is what keeps a mutator written later from invalidating one and forgetting the other — the failure that would otherwise be invisible, because each fact is read by a different part of the pass. The two are *invalidated* differently, because they are wrong differently: the cone is marked rather than dropped, since re-deriving it over an unmoved graph returns what it already holds and keeping it costs a bool; the memo is dropped, since there is nothing to re-derive without running the walk it exists to avoid.
 
 `begin_rebuild` no longer clears the set, and that is part of the mechanism rather than a side effect. Clearing it meant every full pass started by throwing away an answer it was about to recompute unchanged — and, until its tail ran, a graph with a cycle in it carried an *empty* never-served set, which is the dangerous direction. What replaces the clear is the fact: a pass that dies mid-way leaves a set that is either still right or is marked as not.
 
@@ -78,7 +80,7 @@ The set is a function of the edges and of nothing else, so it only has to be der
 
 Sticky-*false* is the direction that has to be impossible, and what makes it impossible is that the list of mutators is closed. The cone is a function of `precedents`, `cell_dependents`, `range_dependents` and `arrays`, and every write to any of the four is inside `replace_reads`'s rebuild path, `remove_dependent`, `replace_arrays` or `shift` — all of which set the fact. The one write that is not is the journal drain's `graph.arrays.insert`, and it is sound for a reason recorded at that call site: a footprint position enters the graph with no incoming edges, and a node no edge arrives at cannot lie on a cycle. The clear is in one place, immediately after the walk that earns it.
 
-A cone-shaped answer — the one a selective pass installs from ordering its own cone — deliberately leaves the fact *set*. The whole-graph walk exists because a cycle no cone would seed still has to be known (I3.2), and a cone is not the whole graph, so a selective pass's answer stands until the next full pass without excusing that pass from its walk.
+A cone-shaped answer — the one a selective pass installs from ordering its own cone — deliberately leaves the fact *set*. The whole-graph walk exists because a cycle no cone would seed still has to be known (I3.2), and a cone is not the whole graph, so a selective pass's answer stands until the next full pass without excusing that pass from its walk. `set_never_served` is therefore the one caller that sets the staleness fact without going through `edges_moved`, and the distinction is exactly the one above: no edge moved there. What is owed is a derivation, which says nothing about what any seed reaches, so the memo is left alone. Routing it through would mean one narrow edit between two wide ones threw away the fact the second wide one is there to use.
 
 #### What was tried first, and why it is not what is here
 
@@ -136,6 +138,25 @@ That comparison is `ReadSet: PartialEq`, and its equivalence is exact rather tha
 
 Read frames are pooled (`Model::read_pool`) for the same reason: a formula's read set is built and then either compared away or cloned into the graph, so dropping it means allocating three vectors again for the next formula. That one matters most on the *selective* path, where it is an allocation saved per recomputed cell.
 
+#### Where the comparison is looked up
+
+Recognising the unchanged formula means finding its previous read set, and finding it was the expensive half. `precedents` was one `HashMap<Position, Precedents>`, which stores a 96-byte bucket, so twenty thousand formulas is a 3 MB table; hash order has nothing to do with the row-major order a full pass walks in, so every probe was a miss. Timed inside `replace_reads`, the lookup was 139 ns a formula on `long-chain` against 27 ns for the `ReadSet` comparison it exists to enable.
+
+The lookup itself is not optional — any scheme has to find a formula's previous reads to know whether they moved — so it is made cheap rather than avoided. `PrecedentStore` splits the map in two. The random access is a `Position → u32` index at 16 bytes a formula, small enough to stay in cache; the 80-byte entries live in a `Vec` addressed by that dense id, and ids are handed out in the order positions first record, which on a full pass *is* the walk order, so the second access is a sequential stride rather than a second probe. The hash is a multiply-xor mix of the position's three words instead of SipHash, whose reason to exist is an adversary who chooses the keys — nobody chooses these, and no key reaches the map from outside the engine.
+
+Four designs were microbenchmarked over the two shapes that miss parity, with the pass's own working set streaming beside the probe so the table is evicted the way it is in the engine (in isolation it stays L2-resident and reads 25 ns rather than 139 ns, which is why the isolated number is not the one to design against):
+
+| | `long-chain` | `dashboard` |
+|---|---|---|
+| one map, SipHash (before) | 69.4 ns | 15.9 ns |
+| one map, positional mix | 33.3 ns | 7.8 ns |
+| **split index + `Vec`, positional mix** | **14.6 ns** | **6.9 ns** |
+| boxed read set, positional mix | 19.8 ns | 7.7 ns |
+
+Boxing shrinks the bucket to 32 bytes and gets most of the way; the `Vec` beats it because a contiguous array in id order is prefetchable where a field of separate allocations is not, and the gap widens with the workbook. The hash change alone is worth about half.
+
+What the split introduces is one way of being wrong the single map did not have: `slots` is the sole authority on which entries are live, so a slot free while a key still names it would be handed to a second position and the two would answer as each other (I5.9). *Clearing* a freed entry is a retention measure and not a guard — `insert` overwrites the slot it is handed — and the doc comments say so, because a comment claiming a correctness role for it would be one nothing could ever fail to uphold.
+
 Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What was left after them was **not tracing at all**, and measuring that rather than assuming it is what the next two mechanisms came out of. Recording reads costs a traced pass between 5% and 34% over `Full` on the fallback shapes; the rest was two whole-workbook walks that a pass which is about to fall back has no use for.
 
 ### The cycle cone nobody needs
@@ -151,6 +172,19 @@ So the guard is expressed as a **limit** rather than as a predicate over a finis
 The saving is bounded by that ratio and cannot be better: the walk has to reach the limit to know it got there. What it buys is that the cost of *deciding* to fall back no longer scales with the workbook, only with the threshold. On `dashboard` that decision is what the median sample was paying; on `long-chain` it is now the smaller of the two remaining terms. Both are priced in "What is left, and where it lives".
 
 `Verify` and workbooks under `INCREMENTAL_FANOUT_FLOOR` pass `usize::MAX`, which is the same "no guard" the predicate gave them.
+
+### The cone nobody walks twice
+
+The floor above is real and the only way past it is not to walk. What makes that possible is that the walk's *outcome* is stable in exactly the way the cone is not: a seed that reached the limit reaches it again from the same edges, and the shape the guard exists for is a dashboard whose assumption cell is edited over and over. So `DependencyGraph::wide_seeds` remembers the outcome, keyed by seed — one `Position`, not half a workbook — and a pass seeded from a known-wide seed is the fallback it was going to be, without walking to prove it again.
+
+Two rules keep the attribution honest, and they are deliberately not symmetric:
+
+- **Recorded only from a pass with exactly one seed.** A walk over several seeds proves that *together* they reached the limit and says nothing about any one of them. Remembering a narrow seed as wide because it shared a pass with a wide one would send its own edits to a full pass for as long as the edges held still, which is the one way this could cost something that matters.
+- **Read for any seed of any set.** The cone of a set is the union of its members' cones, so a set holding a known-wide seed is at least as wide as that seed. That direction needs no attribution at all.
+
+**Every way of being wrong here costs a pass and never an answer**, which is what makes the memo a cheap thing to be approximate about: the only thing it can do is send a pass to `Full`, and a fallback already is one. Missing, and the walk happens. Left standing over a workbook whose fanout has since shrunk, and one pass falls back that need not have — which is what `edges_moved` prevents from persisting, and why the memo shares the cycle cone's lifecycle instead of having a second of its own. It is the one positional index `shift` drops rather than moves, because a structural edit moves the very edges it summarizes.
+
+Measured on the `long-chain` shape by counting walks: over a twenty-five-pass series of edits to the same cell, one walk instead of ten. Which ten is not obvious and is worth stating — a pass walks a cone only when the graph is `Ready`, which is only after a *traced* pass, so the walks were already confined to about half the series before this. What is left is the first one, which has to happen.
 
 ### Not paying it on a run
 
@@ -203,29 +237,41 @@ Taking the two whole-workbook walks out of the fallback pass moved them again. B
 
 and over eighty edits, where the investment is inside the number: `dashboard` 0.85x → 0.95x, `long-chain` 0.87x → 0.92x, `spill-heavy` 0.95x → 0.99x. No winning row moved: `sparse-workbook` 137x → 148x, `financial-model` 15.3x → 15.0x, `pathological-cycle` 135x → 142x, `structural: move_rows` 15.0x → 15.1x, `long-chain, edit tail` 39x → 36x.
 
+Then the two terms that table named — the storage of `precedents` and the cone walk itself — were the round after. Medians of **eight** interleaved rounds against the same commit rebuilt in a second tree, so the two columns are comparable with each other and with nothing above them; the baseline column is a re-measurement, not a copy, and on this machine it reads `dashboard` lower than the run recorded above (0.78x where that run said 0.85x) while `long-chain` matches:
+
+| fallback row | before | after |
+|---|---|---|
+| `dashboard (wide fanout)` | 0.78x | 0.89x |
+| `long-chain, edit head` | 0.82x | 0.95x |
+| `spill-heavy` | 0.95x | 1.01x |
+| `whole-column aggregates` | 1.02x | 1.01x |
+
+and over eighty edits: `dashboard` 0.92x → 0.96x, `long-chain` 0.96x → 0.95x, `spill-heavy` 0.98x → 0.99x. No winning row moved by more than measurement: `sparse-workbook` 128x → 132x, `financial-model` 16.8x → 16.5x, `pathological-cycle` 138x → 140x, `structural: move_rows` 16.3x → 16.7x, `structural: insert_rows` 4.86x → 5.01x, `long-chain, edit tail` 43.3x → 43.8x, `volatile-mix` 88.1x → 86.7x.
+
 ### What the single-edit median is actually a median of
 
 Worth writing down, because it is why the two bench rows move by different amounts and why the cone walk was worth attacking even though it is not the largest term.
 
-`bench_scenarios` takes twenty samples of a twenty-five-pass series, and on a shape where every pass falls back those samples are four populations, not one. The run arms over twelve chosen-full passes and then untraces in stretches of one, two, four, eight — so of the twenty sampled passes nine are traced and eleven are not. And a pass walks a cone only when the graph is ready, which is only after a *traced* pass. The samples are therefore about seven at `Full`'s cost, four at `Full` plus a cone walk, three at `Full` plus the recording, and six at `Full` plus both; the median lands in the middle bands rather than on either end.
+`bench_scenarios` takes twenty samples of a twenty-five-pass series, and on a shape where every pass falls back those samples are four populations, not one. The run arms over twelve chosen-full passes and then untraces in stretches of one, two, four, eight — so of the twenty sampled passes nine are traced and eleven are not. And a pass walks a cone only when the graph is ready, which is only after a *traced* pass. The samples were therefore about seven at `Full`'s cost, four at `Full` plus a cone walk, three at `Full` plus the recording, and six at `Full` plus both; the median lands in the middle bands rather than on either end.
+
+Two of those four populations are now gone. The wide-seed memo collapses the cone-walk bands into their neighbours — counted directly on `long-chain`, one walk in a twenty-five-pass series where there were ten — so the samples are two populations, `Full` and `Full` plus what recording still costs. **That is why removing a whole band does not move the median by the band's width**: the median steps to the next population rather than sliding, which is most of why `dashboard` gained less than the terms below would predict and why its remaining gap is stubborn at a hundredth rather than smoothly closing.
 
 ### What is left, and where it lives
 
-Two rows still sit under parity, and what remains is now one term per row rather than a mixture. Measured on one traced pass of each shape against the same pass run untraced, which is `Full`'s cost by construction:
+One row still sits under parity on a single edit, and the residue is now one term rather than a mixture. Measured on a traced fallback pass of each shape against the same pass run untraced, which is `Full`'s cost by construction, taking the best of seven alternating rounds:
 
-| | `dashboard` | `long-chain` | `spill-heavy` |
-|---|---|---|---|
-| the pass, untraced | 2.50 ms | 14.5 ms | 4.01 ms |
-| the cone walk the guard needs | 0.47 ms (19%) | 2.07 ms (14%) | — under the floor |
-| recording what every formula reads | 0.48 ms (19%) | 4.99 ms (34%) | 0.19 ms (5%) |
-| sweeping the rebuild (`end_rebuild`) | 0.08 ms (3%) | 0.55 ms (4%) | 0.13 ms (3%) |
-| the cycle cone | 0 | 0 | 0 |
+| | `dashboard` | `long-chain` |
+|---|---|---|
+| the pass, untraced | 2.29 ms | 13.75 ms |
+| recording what every formula reads, and sweeping the rebuild | 0.17 ms (8%) | 1.24 ms (9%) |
+| the cone walk, on the one pass that still pays it | 1.31 ms (57%) | 2.35 ms (17%) |
+| the cycle cone | 0 | 0 |
 
-**The cone walk cannot go below half.** The walk has to reach the limit to know it got there, so half the workbook is the floor for that term and not an implementation detail.
+**The cone walk still cannot go below half, and is now paid once.** The walk has to reach the limit to know it got there, so half the workbook is the floor for that term and not an implementation detail. What changed is how often it is paid: the outcome is remembered by seed, so a run of edits to the same assumption pays it on the first pass and not again until the edges move. The row above is therefore a one-off, not a per-pass charge, which is why it is shown outside the running total — and it is measured on the first pass after the build, so it carries that pass's cold caches too and is an upper bound on the walk rather than a like-for-like against the 0.47 ms and 2.07 ms the previous round timed.
 
-**Recording is where the rest is, and it is not the construction.** Of the recording cost, `replace_reads` is 73-78% on the two rows that miss — but on a workbook whose shape is holding still it is *already* the compare-and-return path that builds nothing. Timed inside it, the whole of that is one `HashMap<Position, Precedents>` lookup: 139 ns per formula against 27 ns for the `ReadSet` comparison on `long-chain`, 60 ns against 22 ns on `dashboard` (both inflated by about 20 ns of timer). The lookup is a random probe into a map holding an eighty-byte entry per formula — 1.6 MB on the chain, well past L2 — so it is a cache miss per formula, and *any* scheme that has to find a formula's previous read set pays it.
+**Recording is what is left, and it is now small.** It was 38% of the `long-chain` pass and 22% of `dashboard`'s, nearly all of it one cache-missing lookup per formula; splitting `precedents` into a cache-resident index and a `Vec` of read sets took both to 8-9%. A steady-state traced fallback is therefore about **1.09x `Full`** on the chain and **1.08x** on the dashboard — which is the number to read for "what does a fallback cost", because the bench's single-edit median is a median over the population mixture above and reads worse.
 
-That rules out the obvious next mechanism rather than recommending it. Collecting read sets into flat buffers and building the four edge maps in one batch would batch a construction that is not happening, add a copy of every read set to do it, and still need the same per-formula lookup to know which entries were unchanged. The lever on this term is the *storage* of `precedents` — a cheaper hash, or an entry dense enough that the probe is not a miss — which is a change to the graph's core types and a bigger piece of work than the one measured here.
+**What is left of the 8-9% is the tracing itself, not the storage.** Every formula still pushes a read frame, records each read into it, and compares the result; `replace_reads`'s lookup is no longer the bulk of that. Taking it further means not recording at all on passes that cannot spend it, which is what `FullPassRun` already does and the only mechanism that reaches zero — so the remaining gap on a *single* edit is a mixture artifact plus this, and the amortized figure is where it is honestly priced. `dashboard` at 0.89x on a single edit against 0.96x over eighty is that difference, stated rather than averaged away.
 
 ### What measures it
 
@@ -303,7 +349,7 @@ IRONCALC_RECALC=verify cargo test -p ironcalc_base --features recalc_verify --li
 cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
 
 # Benchmark: cost of a single edit, incremental vs full
-cargo test -p ironcalc_base bench_incremental --release -- --ignored --nocapture
+cargo test -p ironcalc_base bench_scenarios --release -- --ignored --nocapture
 
 # Benchmark: cost of a *run* of edits, which is what the cost contract is about
 cargo test -p ironcalc_base bench_amortized_runs --release -- --ignored --nocapture
@@ -414,6 +460,7 @@ The remapping is deliberately conservative: an index that keeps a stale entry co
 | I5.6 A move's remapping is a permutation for a cell, and never names fewer positions than it was given for a range | test | `move_remaps_by_permutation_and_widens_what_it_cannot_name` |
 | I5.7 A move shifts instead of rebuilding, and a reader outside the moved band sees the reordering | test | `incremental_row_move_reorders_a_reader_outside_the_band` |
 | I5.8 That shift and its dependent marking are a **redundant second path** — see "A move is a shift too" | the journal is the primary | — |
+| I5.9 A `PrecedentStore` slot is free exactly when no position names it, so no two formulas share one — including across the slots a structural edit frees | test | `a_slot_is_free_exactly_when_no_position_names_it`. One-sided in both directions: a key left on a removed position answers with an entry that is not there, and a slot freed while a key still names it is handed to a second formula, which then reads the first's precedents. *Clearing* a freed entry is retention, not correctness — `insert` overwrites — and owes no test |
 
 **On I5.4.** `mark_structural_dependents` marks four things beyond the cell-edge half: range dependents, `Name`/`SheetStructure`/`Computed` readers, and `OwnCoord`/`FormulaText` readers. Each of the four can be deleted with nothing failing, and so can all four at once — the dirty set after an insert is still non-empty and still correct. The primary path is the journal, in two parts: `displace_cells` rewrites and journals every formula whose *text* the edit changes (which is every literal range that moves, and which re-dirties `FORMULATEXT` readers through the drain's own text-reader marking), and the worksheet's row/column shift journals every non-blank cell that physically moves, so ordinary reachability through the already-shifted edges reaches the dependents of everything that moved — through a rectangle included. A computed reference is the sharpest case and it resolves the same way: `=OFFSET($C$1,5,0)` above an insert keeps its text, but the cells it resolves through are journaled, and its shifted rect still reaches one of them.
 
@@ -470,6 +517,8 @@ Every clause of I1–I8 is about what a pass computes. This one is about what it
 | I9.3 The untraced run is not a trapdoor: every stretch ends in a traced pass, and the stretch is capped | construction (`FullPassRun::Running` counts to its own `stretch`, and `MAX_UNTRACED_STRETCH` bounds it) | — |
 | I9.4 The evidence for a run is *chosen* full passes only; a rebuild is not evidence, so a workbook that falls back once and then goes on being selective is selective on the very next pass | test + oracle | `deleting_the_last_array_clears_the_index`, whose final assertion is exactly that, dies when a rebuild is allowed to arm the run. So does the differential fuzzer's selectivity floor: at the same threshold, counting rebuilds too takes it from 48% to 40%, under the floor, which is the fuzzer refusing to compare `Full` against `Full` |
 | I9.5 `Verify` disables the hysteresis, as it disables the fanout guard | construction (`fallback_traces`, the same shape as `should_fallback_fanout`) | — |
+| I9.7 A seed already known to reach the fanout limit is not walked to it again, and the memo saying so is released when the edges move | test | `a_seed_known_to_reach_the_fanout_limit_is_not_walked_again` — asserts on `DependencyGraph::cone_walks`, because "no walk ran" is work *not* done and a memo hit and a completed walk end in the same full pass over the same values. Its shape widens the fanout and then shrinks it, because the memo can only ever cost a full pass and the direction that matters is one left standing after the fanout is gone |
+| I9.8 The memo is recorded only from a pass with one seed, and read for any seed of any set | test | the same, through a two-seed pass whose narrow member must stay selective afterwards. The read direction needs no witness: the cone of a set is the union of its members' cones, so it is sound by construction |
 | I9.6 The comparison in `replace_reads` leaves the graph a remove-and-re-add would have left | test | `incremental_tracks_dynamic_branch_dependencies` (I4.6) and `name_reader_redirty_on_insert` (I1.7) both die to a blind skip; the skip that forgets to stamp dies to I1.12's witness |
 
 ### Clauses no witness closes
@@ -511,9 +560,9 @@ Where a test goes follows from that. The default is the lib suite: it is what
 - **Can go:** `Full` as a value users can select, the public surface that offers it, and the documentation that describes choosing between modes.
 - **Cannot go:** `evaluate_full` itself (every mode runs it — a fallback *is* a full pass), the `tracing()` gate that lets a fallback borrow `Full`'s cost, `RecalcMode::Full` as a variant reachable from tests, and `Model::as_full_mode`. The cost contract's whole claim — that an untraced fallback costs exactly what `Full` costs — is true *by construction* because it runs through the same mode, so deleting the mode would replace a construction argument with a second implementation to keep in step.
 
-The honest summary for that decision is in "What is left, and where it lives": the fallback shapes sit at 0.87x, 0.81x and 0.98x on a single edit and 0.95x, 0.93x and 0.98x over eighty, and the residue is two named terms with a floor under one of them.
+The honest summary for that decision is in "What is left, and where it lives". On a single edit the fallback shapes sit at **0.89x (`dashboard`), 0.95x (`long-chain`) and 1.01x (`spill-heavy`)**, and over eighty edits at **0.96x, 0.95x and 0.99x**; `whole-column aggregates` is at 1.01x. A steady-state traced fallback measures 1.08-1.09x `Full`, and the one row still under 0.90x on a single edit is under it by a hundredth, for a reason that is a property of the median rather than of the pass.
 
-**Cheaper storage for `precedents`.** The largest remaining term on the fallback shapes is one hash-map lookup per formula per traced pass — 139 ns on `long-chain`, against 27 ns for the comparison it exists to enable. See "What is left, and where it lives" for why batching the *construction* does not touch it and what would.
+The residue is one named term — the read tracing itself, 8-9% of a fallback pass — and the only mechanism that takes it to zero is not paying it, which `FullPassRun` already does on the runs where it cannot be spent. There is no third whole-workbook walk left to remove: the cycle cone is zero, and the cone walk is now paid once per run of edits to the same seed rather than per pass.
 
 **Stable `SheetId` in `Position`.** `SheetLayout` *detects* that the sheet numbering moved. Making the staleness unrepresentable instead means keying positions by the stable `sheet_id` a worksheet is allocated at creation, so renumbering stops existing as a concept. Assessed and deliberately not taken, for two reasons:
 
