@@ -7,6 +7,7 @@
 //! next pass to be full, so incremental never diverges from what full produces.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::recalc::{Input, ReadSet};
 
@@ -395,7 +396,7 @@ impl Shift for HashMap<Input, HashSet<Position>> {
 ///
 /// The stamp is what makes a full pass a *sweep* rather than a clear: see
 /// [`DependencyGraph::begin_rebuild`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Precedents {
     reads: ReadSet,
     /// The [`DependencyGraph::rebuild`] generation this entry was last written
@@ -403,38 +404,201 @@ struct Precedents {
     seen: u64,
 }
 
-impl Shift for HashMap<Position, Precedents> {
+/// Knuth's multiplicative constant, 2^64 / phi rounded to an odd number.
+const POSITION_HASH_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The hash [`PrecedentStore`]'s index is built on: a multiply-xor mix of the
+/// three words of a [`Position`].
+///
+/// The default `RandomState` is SipHash-1-3, whose reason to exist is
+/// resistance to an adversary who chooses the keys. Nobody chooses these. They
+/// are the coordinates of the cells a workbook holds, the map is private to
+/// this module, and no key reaches it from outside the engine. What the default
+/// costs instead is measurable: with the entry small enough to stay in cache,
+/// hashing twelve bytes is about half of what the whole probe costs.
+///
+/// The accumulator is Fibonacci hashing --- multiplying by an odd constant is a
+/// bijection on the low bits, so a column of consecutive rows lands spread
+/// across the buckets rather than in a run. A multiply carries entropy upwards
+/// only and `hashbrown` indexes its buckets from the *low* bits, so `finish`
+/// folds the high half back down before handing the value over; without that
+/// fold the top bits do all the work and the bucket index does none.
+#[derive(Default)]
+struct PositionHasher(u64);
+
+impl Hasher for PositionHasher {
+    fn finish(&self) -> u64 {
+        let mut h = self.0;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^ (h >> 29)
+    }
+
+    /// Every `write_*` below funnels into this one, so the mix is defined once.
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(POSITION_HASH_MULTIPLIER);
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_i32(&mut self, n: i32) {
+        self.write_u64(n as u32 as u64);
+    }
+
+    /// The three calls `Hash for (u32, i32, i32)` makes are the two above; this
+    /// is here because the trait requires it, and folds a byte at a time so
+    /// that it is at least correct if some other key type ever arrives.
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(byte as u64);
+        }
+    }
+}
+
+/// What every formula that has evaluated read, keyed by the position that read
+/// it.
+///
+/// Two structures rather than one map, and that split is the whole of the
+/// design. [`DependencyGraph::replace_reads`] probes this once per formula per
+/// pass --- on a full pass, once for every formula in the workbook, in the
+/// order the pass walks them --- and that probe was the largest single term
+/// left in a traced pass: 139 ns a formula on a 20,000-cell chain, against
+/// 27 ns for the `ReadSet` comparison it exists to enable. A
+/// `HashMap<Position, Precedents>` stores a 96-byte bucket, so that chain is a
+/// 3 MB table, and hash order has nothing to do with walk order, so every probe
+/// is a miss.
+///
+/// Splitting it puts the random access in a table small enough to stay in cache
+/// --- 16 bytes a formula, half a megabyte at that size --- and the 80-byte
+/// entries in a `Vec` addressed by a dense id. The ids are handed out in the
+/// order positions first record, which on a full pass *is* the walk order, so
+/// the second access is a sequential stride and not a second probe. Measured
+/// against the single map and against boxing the read set, on the two shapes
+/// that miss parity: 3.0x and 3.1x on the probe, where changing the hash alone
+/// was 1.8x and 2.1x.
+///
+/// The lookup itself is not optional --- any scheme has to find a formula's
+/// previous reads to know whether they moved --- so this makes it cheap rather
+/// than avoiding it.
+#[derive(Clone, Default)]
+struct PrecedentStore {
+    /// Position to the slot of `entries` holding its read set.
+    slots: HashMap<Position, u32, BuildHasherDefault<PositionHasher>>,
+    /// The read sets, by slot. A slot no position names holds
+    /// `Precedents::default()` and is listed in `free`.
+    entries: Vec<Precedents>,
+    /// Slots to hand out before growing `entries`. Recycling is what keeps the
+    /// ids dense over a model's life; without it a workbook that adds and
+    /// removes formulas would grow `entries` forever.
+    free: Vec<u32>,
+}
+
+impl PrecedentStore {
+    /// Only the test-only readers of the graph want a whole entry; the pass
+    /// itself takes [`Self::get_mut`], because it stamps what it finds.
+    #[cfg(test)]
+    fn get(&self, position: &Position) -> Option<&Precedents> {
+        self.slots
+            .get(position)
+            .map(|&id| &self.entries[id as usize])
+    }
+
+    fn get_mut(&mut self, position: &Position) -> Option<&mut Precedents> {
+        let &id = self.slots.get(position)?;
+        Some(&mut self.entries[id as usize])
+    }
+
+    fn insert(&mut self, position: Position, precedents: Precedents) {
+        if let Some(&id) = self.slots.get(&position) {
+            self.entries[id as usize] = precedents;
+            return;
+        }
+        let id = match self.free.pop() {
+            Some(id) => {
+                self.entries[id as usize] = precedents;
+                id
+            }
+            None => {
+                // One slot per formula ever live at once, and an entry is
+                // eighty bytes, so reaching `u32::MAX` would take three hundred
+                // gigabytes of read sets. Said out loud rather than left to be
+                // a silent truncation if that ever stops being true.
+                debug_assert!(self.entries.len() < u32::MAX as usize);
+                self.entries.push(precedents);
+                (self.entries.len() - 1) as u32
+            }
+        };
+        self.slots.insert(position, id);
+    }
+
+    /// Drops `position`'s entry and returns it, freeing its slot. Clearing the
+    /// entry is not tidiness: the slot is about to be handed to another
+    /// position, and a `Vec` that kept the old read set would hand that
+    /// position its predecessor's edges.
+    fn remove(&mut self, position: &Position) -> Option<Precedents> {
+        let id = self.slots.remove(position)?;
+        self.free.push(id);
+        Some(std::mem::take(&mut self.entries[id as usize]))
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &Position> + '_ {
+        self.slots.keys()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Position, &Precedents)> + '_ {
+        self.slots
+            .iter()
+            .map(|(position, &id)| (position, &self.entries[id as usize]))
+    }
+}
+
+impl Shift for PrecedentStore {
     fn shift(&mut self, displacement: Displacement) {
-        *self = self
-            .drain()
-            .filter_map(|(dependent, precedents)| {
-                let dependent = displacement.position(dependent)?;
-                let Precedents { reads, seen } = precedents;
-                Some((
-                    dependent,
-                    Precedents {
-                        reads: ReadSet {
-                            cells: reads
-                                .cells
-                                .into_iter()
-                                .filter_map(|p| displacement.position(p))
-                                .collect(),
-                            rects: reads
-                                .rects
-                                .into_iter()
-                                .filter_map(|area| displacement.area(area))
-                                .collect(),
-                            inputs: reads
-                                .inputs
-                                .into_iter()
-                                .filter_map(|input| displacement.input(input))
-                                .collect(),
-                        },
-                        seen,
-                    },
-                ))
-            })
-            .collect();
+        let Self {
+            slots,
+            entries,
+            free,
+        } = self;
+        let mut shifted = HashMap::with_capacity_and_hasher(slots.len(), Default::default());
+        for (dependent, id) in std::mem::take(slots) {
+            let Some(dependent) = displacement.position(dependent) else {
+                // The position was deleted. Its slot goes back on the free
+                // list, cleared, for the same reason `remove` clears one.
+                entries[id as usize] = Precedents::default();
+                free.push(id);
+                continue;
+            };
+            // The entry keeps its slot and its rebuild stamp; only the
+            // coordinates inside it move.
+            let entry = &mut entries[id as usize];
+            let reads = std::mem::take(&mut entry.reads);
+            entry.reads = ReadSet {
+                cells: reads
+                    .cells
+                    .into_iter()
+                    .filter_map(|p| displacement.position(p))
+                    .collect(),
+                rects: reads
+                    .rects
+                    .into_iter()
+                    .filter_map(|area| displacement.area(area))
+                    .collect(),
+                inputs: reads
+                    .inputs
+                    .into_iter()
+                    .filter_map(|input| displacement.input(input))
+                    .collect(),
+            };
+            shifted.insert(dependent, id);
+        }
+        *slots = shifted;
     }
 }
 
@@ -669,7 +833,7 @@ pub(crate) struct DependencyGraph {
     input_dependents: HashMap<Input, HashSet<Position>>,
     /// What each formula read last time it evaluated; the reverse of the edge
     /// maps, so a formula's edges can be dropped in O(degree) before re-record.
-    precedents: HashMap<Position, Precedents>,
+    precedents: PrecedentStore,
     /// Which whole-graph rebuild is running, or last ran. Bumped by
     /// [`Self::begin_rebuild`], stamped onto every entry [`Self::replace_reads`]
     /// writes or confirms, and read by [`Self::end_rebuild`] to sweep the rest.
@@ -1745,6 +1909,61 @@ mod tests {
         // The axis and the sheet both have to match.
         assert!(!graph.range_overlaps_band(0, Axis::Column, 3, -1));
         assert!(!graph.range_overlaps_band(1, Axis::Row, 3, -1));
+    }
+
+    /// I5.7 — a slot the store hands out again carries none of its last
+    /// occupant's reads.
+    ///
+    /// [`PrecedentStore`] addresses read sets by a dense id and recycles the
+    /// ids, which is a way of being wrong the single map it replaced did not
+    /// have: a formula landing on a stale slot would answer with the previous
+    /// occupant's precedents, and `remove_dependent` would then delete edges
+    /// belonging to a cell that no longer exists. Kills dropping the clear in
+    /// [`PrecedentStore::remove`], and kills dropping the one on the shift
+    /// path, which frees its slots separately and so has its own clear.
+    #[test]
+    fn a_recycled_slot_carries_no_reads_from_its_last_occupant() {
+        let reads = |cell: Position| ReadSet {
+            cells: vec![cell],
+            rects: Vec::new(),
+            inputs: Vec::new(),
+        };
+        let mut graph = DependencyGraph::default();
+        graph.replace_reads((0, 1, 2), &reads((0, 1, 1)));
+        graph.replace_reads((0, 2, 2), &reads((0, 2, 1)));
+
+        // The first cell stops being a formula, so its slot is handed back.
+        graph.remove_dependent((0, 1, 2));
+        assert!(graph.precedents.get(&(0, 1, 2)).is_none());
+        assert_eq!(graph.precedents.free.len(), 1);
+
+        // A new formula takes that slot and must not inherit what was in it.
+        graph.replace_reads((0, 3, 2), &reads((0, 3, 1)));
+        assert!(graph.precedents.free.is_empty());
+        assert_eq!(
+            graph.precedents.get(&(0, 3, 2)).unwrap().reads,
+            reads((0, 3, 1))
+        );
+        assert_eq!(
+            graph.precedents.get(&(0, 2, 2)).unwrap().reads,
+            reads((0, 2, 1))
+        );
+        assert_eq!(graph.dependents_of((0, 3, 1)), vec![(0, 3, 2)]);
+        assert!(graph.dependents_of((0, 1, 1)).is_empty());
+
+        // The other way a slot comes free: a structural edit deletes the
+        // position that held it, by rewriting the map rather than by calling
+        // `remove`.
+        graph.after_pass();
+        graph.structural_edit(0, Axis::Row, 3, -1);
+        assert!(graph.precedents.get(&(0, 3, 2)).is_none());
+        assert_eq!(graph.precedents.free.len(), 1);
+        graph.replace_reads((0, 9, 2), &reads((0, 9, 1)));
+        assert_eq!(
+            graph.precedents.get(&(0, 9, 2)).unwrap().reads,
+            reads((0, 9, 1))
+        );
+        assert_eq!(graph.dependents_of((0, 9, 1)), vec![(0, 9, 2)]);
     }
 
     #[test]
