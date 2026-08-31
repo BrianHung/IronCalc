@@ -1759,3 +1759,114 @@ fn the_cone_limit_is_the_fanout_guard() {
         "the limit halved the formula count downwards"
     );
 }
+
+/// R14.1 — a seed already known to reach the fanout limit is not walked to it
+/// again, and the memo that says so goes when the edges do.
+///
+/// The walk has a floor: it must reach the limit to know it got there, so the
+/// only saving left on that term is not walking at all. The claim is therefore
+/// a statement about work *not* done, and neither a value nor the `EvalPass`
+/// the scheduler returns can see it — a memo hit and a walk that runs to the
+/// limit end in the same full pass over the same values. `cone_walks` is what
+/// makes it checkable.
+///
+/// The shape is a wide fanout past `INCREMENTAL_FANOUT_FLOOR` because that is
+/// the only shape where a cone reaches a limit at all; on a workbook that stays
+/// selective there is nothing to remember.
+///
+/// The direction that must not slip is the remembered one. A memo can only ever
+/// send a pass to `Full`, so it cannot produce a wrong value — but one left
+/// standing over a workbook whose fanout has since shrunk sends a one-cell cone
+/// to a full pass for the rest of the model's life, which is why the fanout is
+/// shrunk here rather than only widened.
+///
+/// Kills never recording the memo (the repeat wide edit walks again), kills
+/// recording it from a pass with several seeds (`A5` reaches one cell on its
+/// own and would be remembered as wide because it shared a pass with `A1`), and
+/// kills dropping the memo from `edges_moved` — the shrink below then never
+/// releases it.
+#[test]
+fn a_seed_known_to_reach_the_fanout_limit_is_not_walked_again() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("A5", "1");
+    // Past `INCREMENTAL_FANOUT_FLOOR`, and every one of them reads `A1`, so an
+    // `A1` edit reaches the whole workbook and every pass is a full pass. `A5`
+    // is read by nothing, and is here to be the seed a wide pass does not
+    // entitle anyone to conclude anything about.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=$A$1*2");
+    }
+    model.evaluate();
+
+    let pass_of = |m: &mut crate::Model, edits: &[(&str, &str)]| {
+        for (cell, value) in edits {
+            m._set(cell, value);
+        }
+        m.drain_write_journal();
+        let mut evaluating = m.pause_journal();
+        evaluating.evaluate_selective()
+    };
+
+    // Two seeds, and together they reach the limit. Which of them did is not
+    // something this walk answers, so neither is remembered.
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "2"), ("A5", "2")]),
+        EvalPass::Full
+    ));
+    // `A5` alone reaches one cell. A memo that had recorded it from the pass
+    // above would send this to a full pass on a cone of one.
+    let after_the_pair = model.graph.cone_walks();
+    assert!(
+        matches!(pass_of(&mut model, &[("A5", "3")]), EvalPass::Incremental),
+        "a seed was remembered as wide from a pass that only proved its set was"
+    );
+    assert!(
+        model.graph.cone_walks() > after_the_pair,
+        "the narrow pass decided without walking"
+    );
+
+    // One seed, and it reaches the limit on its own. This walk does say which.
+    let before = model.graph.cone_walks();
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "3")]),
+        EvalPass::Full
+    ));
+    assert_eq!(
+        model.graph.cone_walks(),
+        before + 1,
+        "the first wide edit decided the fanout without walking"
+    );
+
+    // The next is the same seed over the same edges, so it is the same
+    // fallback — reached without the walk that proved it the first time.
+    let after_the_first = model.graph.cone_walks();
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "4")]),
+        EvalPass::Full
+    ));
+    assert_eq!(
+        model.graph.cone_walks(),
+        after_the_first,
+        "a seed already known to be wide was walked to the limit again"
+    );
+    assert_eq!(model._get_text("C1"), "8");
+
+    // Now shrink the fanout: nothing reads `A1` any more. That moves edges, and
+    // the memo is a fact about edges that have moved.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=2");
+    }
+    model.evaluate();
+
+    let after_the_shrink = model.graph.cone_walks();
+    assert!(
+        matches!(pass_of(&mut model, &[("A1", "5")]), EvalPass::Incremental),
+        "an `A1` edit that now reaches one cell was still handed to a full pass"
+    );
+    assert!(
+        model.graph.cone_walks() > after_the_shrink,
+        "the pass decided the fanout from a memo the edges had invalidated"
+    );
+    assert_eq!(model._get_text("A1"), "5");
+}

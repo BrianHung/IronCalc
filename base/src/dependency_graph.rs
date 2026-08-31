@@ -533,10 +533,16 @@ impl PrecedentStore {
         self.slots.insert(position, id);
     }
 
-    /// Drops `position`'s entry and returns it, freeing its slot. Clearing the
-    /// entry is not tidiness: the slot is about to be handed to another
-    /// position, and a `Vec` that kept the old read set would hand that
-    /// position its predecessor's edges.
+    /// Drops `position`'s entry and returns it, freeing its slot.
+    ///
+    /// Dropping the *key* is what makes the slot free: `slots` is the sole
+    /// authority on which entries are live, so a slot no key names is
+    /// unreachable through every reader here, and [`Self::insert`] overwrites
+    /// whatever it finds when it hands the slot out again. Taking the entry
+    /// rather than cloning it is therefore not a guard against the next
+    /// occupant — it is how the caller gets the read set it needs to drop the
+    /// edges — and it leaves the slot empty, which is what keeps a removed
+    /// formula's buffers from being held until the slot is reused.
     fn remove(&mut self, position: &Position) -> Option<Precedents> {
         let id = self.slots.remove(position)?;
         self.free.push(id);
@@ -569,8 +575,12 @@ impl Shift for PrecedentStore {
         let mut shifted = HashMap::with_capacity_and_hasher(slots.len(), Default::default());
         for (dependent, id) in std::mem::take(slots) {
             let Some(dependent) = displacement.position(dependent) else {
-                // The position was deleted. Its slot goes back on the free
-                // list, cleared, for the same reason `remove` clears one.
+                // The position was deleted, so nothing names this slot any
+                // more and it can be handed out again. Only this branch may
+                // free one: a slot freed while a key still names it would be
+                // given to a second position, and the two would then share an
+                // entry. Emptying it is the retention point `remove` makes,
+                // not a guard — `insert` overwrites what it finds.
                 entries[id as usize] = Precedents::default();
                 free.push(id);
                 continue;
@@ -870,6 +880,32 @@ pub(crate) struct DependencyGraph {
     /// them, which is why it is set by the mutators rather than inferred at the
     /// point of use.
     never_served_stale: bool,
+    /// Seeds whose cone reached the fanout limit on its own: the outcome of a
+    /// walk, kept so the same seed does not have to be walked to it again.
+    ///
+    /// The walk the fanout guard needs has a floor — it has to reach the limit
+    /// to know it got there — so the only thing left to save on that term is
+    /// the walk itself, and the shape that makes that worth doing is the one
+    /// the guard exists for: a dashboard whose assumption cell is edited over
+    /// and over, every edit reaching the whole workbook and every pass falling
+    /// back. What is remembered is the *outcome* rather than the cone, so it is
+    /// one [`Position`] and not half a workbook.
+    ///
+    /// Sound in a set of several seeds, because the cone of a set is the union
+    /// of its members' cones: a set holding a known-wide seed is at least as
+    /// wide as that seed. Recorded only from a pass with exactly one seed,
+    /// because that is the only pass whose walk attributes the width to a
+    /// particular seed; a set of several says only that *together* they reached
+    /// it.
+    ///
+    /// Every way this can be wrong costs time and nothing else, because the
+    /// only thing it can do is send a pass to `Full` — the pass every mode can
+    /// run, and the pass a fallback already is. Missing, and the walk happens.
+    /// Left standing over a workbook whose fanout has since shrunk, and one
+    /// pass falls back that need not have — which is what
+    /// [`Self::edges_moved`] is for, and why this shares that one lifecycle
+    /// with [`Self::never_served_stale`] instead of having a second of its own.
+    wide_seeds: HashSet<Position>,
     /// Readers of a blocked spill anchor: the other cells whose last result was
     /// not a function of the store. The anchor holds `#SPILL!` but hands a
     /// same-pass reader the live array's top-left value instead, so a reader
@@ -896,6 +932,14 @@ pub(crate) struct DependencyGraph {
     /// are the same whether the walk ran or not.
     #[cfg(test)]
     cycle_scans: u64,
+    /// How many times a pass has walked the cone to find out whether it fits
+    /// the fanout limit. Test-only, and for the same reason as
+    /// [`Self::cycle_scans`]: "the memo meant this pass did not walk" is a
+    /// statement about work *not done*, and nothing else can see it — a memo
+    /// hit and a walk that runs to the limit end in the same full pass, over
+    /// the same values.
+    #[cfg(test)]
+    cone_walks: u64,
 }
 
 impl DependencyGraph {
@@ -945,6 +989,26 @@ impl DependencyGraph {
         for position in stale {
             self.remove_dependent(position);
         }
+    }
+
+    /// Records that the stored edges are no longer the edges this graph's
+    /// derived facts were derived from.
+    ///
+    /// Two facts, one lifecycle. The cycle cone ([`Self::never_served`]) and
+    /// the wide-seed memo ([`Self::wide_seeds`]) are both functions of the
+    /// edges and of nothing else, so both stop being answers at exactly the
+    /// same moment: when an edge moves. Every mutator that moves one says so
+    /// here and nowhere else, so a mutator written later cannot invalidate one
+    /// of them and forget the other.
+    ///
+    /// The two are invalidated differently because they are wrong differently.
+    /// The cone is *marked*, not dropped: a re-derivation over an unmoved graph
+    /// returns what it already holds, so keeping it is worth a bool. The memo
+    /// is dropped, because there is nothing to re-derive without running the
+    /// walks it exists to avoid.
+    fn edges_moved(&mut self) {
+        self.never_served_stale = true;
+        self.wide_seeds.clear();
     }
 
     /// Records that `dependent` reads `precedent`. Idempotent.
@@ -1019,9 +1083,9 @@ impl DependencyGraph {
                 return;
             }
         }
-        // Past here the edges move, and the cycle cone was derived from where
-        // they were.
-        self.never_served_stale = true;
+        // Past here the edges move, and both derived facts were derived from
+        // where they were.
+        self.edges_moved();
         self.remove_dependent(dependent);
         for &p in &reads.cells {
             if p != dependent {
@@ -1048,7 +1112,7 @@ impl DependencyGraph {
         let Some(Precedents { reads, .. }) = self.precedents.remove(&dependent) else {
             return;
         };
-        self.never_served_stale = true;
+        self.edges_moved();
         for p in reads.cells {
             if let Some(set) = self.cell_dependents.get_mut(&p) {
                 set.remove(&dependent);
@@ -1157,6 +1221,12 @@ impl DependencyGraph {
     /// The dirty set is drained either way. The full pass that follows
     /// recomputes every cell those seeds could have reached and more, so
     /// dropping them is not losing them.
+    ///
+    /// A walk that reached the limit is remembered by its seed, so the *next*
+    /// edit to the same seed is the fallback it was going to be without walking
+    /// to prove it again. See [`Self::wide_seeds`] for why that is sound in a
+    /// set of several, why only a one-seed pass records it, and why every way
+    /// of being wrong about it costs a pass rather than an answer.
     pub(crate) fn take_seeds_and_affected(
         &mut self,
         limit: usize,
@@ -1165,7 +1235,19 @@ impl DependencyGraph {
             return Some((Vec::new(), HashSet::new()));
         };
         let seeds: Vec<Position> = std::mem::take(dirty).into_iter().collect();
-        let affected = self.reachable_within(seeds.clone(), limit)?;
+        if seeds.iter().any(|seed| self.wide_seeds.contains(seed)) {
+            return None;
+        }
+        #[cfg(test)]
+        {
+            self.cone_walks += 1;
+        }
+        let Some(affected) = self.reachable_within(seeds.clone(), limit) else {
+            if let [seed] = seeds[..] {
+                self.wide_seeds.insert(seed);
+            }
+            return None;
+        };
         Some((seeds, affected))
     }
 
@@ -1180,7 +1262,7 @@ impl DependencyGraph {
         // to what it already was, and paying a whole-graph walk for that would
         // be exactly the cost this fact exists to avoid.
         if self.arrays.0 != cells {
-            self.never_served_stale = true;
+            self.edges_moved();
         }
         self.arrays.replace(cells);
     }
@@ -1222,6 +1304,15 @@ impl DependencyGraph {
     /// whole graph, and the reason the whole-graph walk exists is that a cycle
     /// no cone would seed still has to be known; so this answer stands until
     /// the next full pass, and does not excuse that pass from its walk.
+    ///
+    /// This is the one caller that sets that fact without going through
+    /// [`Self::edges_moved`], and the distinction is exactly the one that
+    /// method's doc draws: no edge moved here. What is owed is a whole-graph
+    /// derivation this pass was not in a position to do, which says nothing
+    /// about what any seed reaches, so [`Self::wide_seeds`] is left alone. A
+    /// selective pass runs this on every pass it completes, and clearing the
+    /// memo here would mean one narrow edit between two wide ones threw away
+    /// the fact the second wide one is there to use.
     pub(crate) fn set_never_served(&mut self, cells: HashSet<Position>) {
         self.never_served.replace(cells);
         self.never_served_stale = true;
@@ -1408,6 +1499,13 @@ impl DependencyGraph {
         self.cycle_scans
     }
 
+    /// How many cones a pass has walked to decide the fanout guard. See
+    /// [`Self::cone_walks`].
+    #[cfg(test)]
+    pub(crate) fn cone_walks(&self) -> u64 {
+        self.cone_walks
+    }
+
     /// Every cell transitively reachable from `seeds`, including the seeds, with
     /// no limit on how many that is. Does not touch the dirty set.
     ///
@@ -1580,6 +1678,14 @@ impl DependencyGraph {
             // It holds no coordinates, and it is set unconditionally at the end
             // of this function — see the note there.
             never_served_stale: _,
+            // Positions, and the one index here that is *dropped* rather than
+            // moved. This function moves the very edges the memo summarizes, so
+            // `edges_moved` at the end clears it whole; shifting entries that
+            // are about to be discarded would be work with no reader. What
+            // makes that safe rather than convenient is that the memo can only
+            // ever cost a full pass, so losing it costs one walk and keeping a
+            // wrong one would cost one fallback.
+            wide_seeds: _,
             // A counter of rebuilds. `precedents` carries the stamp with the
             // entry it belongs to, so the entries a shift moves keep the one
             // they had and the entries it drops take theirs with them.
@@ -1588,9 +1694,12 @@ impl DependencyGraph {
             // sheet and cannot add, remove or reorder sheets, so the numbering
             // this names is exactly the one it named before.
             sheet_layout: _,
-            // A tally of scans, in test builds only. It holds no coordinates.
+            // Tallies of work done, in test builds only. They hold no
+            // coordinates.
             #[cfg(test)]
                 cycle_scans: _,
+            #[cfg(test)]
+                cone_walks: _,
         } = self;
         cell_dependents.shift(displacement);
         range_dependents.shift(displacement);
@@ -1600,22 +1709,25 @@ impl DependencyGraph {
         arrays.shift(displacement);
         never_served.shift(displacement);
         blocked_array_readers.shift(displacement);
-        // The cone is derived again after this rather than shifted into place.
+        // The two derived facts are re-derived after this rather than shifted
+        // into place, so this is a mutator like any other and says so.
         //
-        // Every other setter of this fact is reached by a mutator; this one is
-        // not, because a displacement drops the entries whose positions fell in
-        // a deleted band by rewriting the map, never through
-        // `remove_dependent`. There is an argument that it is redundant anyway
-        // -- removing a cell that a cycle ran through breaks a reference some
-        // survivor held, and that survivor re-records different reads on the
-        // next pass, which sets the fact through `replace_reads`. No test kills
-        // this line, and that argument is why.
+        // Every other call of this is reached by a mutator; this one is not,
+        // because a displacement drops the entries whose positions fell in a
+        // deleted band by rewriting the map, never through `remove_dependent`.
+        // There is an argument that it is redundant anyway -- removing a cell
+        // that a cycle ran through breaks a reference some survivor held, and
+        // that survivor re-records different reads on the next pass, which
+        // reaches this through `replace_reads`. No test kills this line, and
+        // that argument is why.
         //
         // It stays because the argument leans on the shift model being exact,
-        // and this fact is what stands between a wrong shift and a cycle whose
-        // members quietly stop being seeded. One bool on the rarest path is a
-        // cheaper thing to keep than that argument is to rely on.
-        self.never_served_stale = true;
+        // and the cone's fact is what stands between a wrong shift and a cycle
+        // whose members quietly stop being seeded. One call on the rarest path
+        // is a cheaper thing to keep than that argument is to rely on. The memo
+        // needs it for a plainer reason: it holds positions this function has
+        // just moved out from under it.
+        self.edges_moved();
     }
 
     /// Whether this pass follows an insert/delete whose delta cannot name every
@@ -1911,18 +2023,26 @@ mod tests {
         assert!(!graph.range_overlaps_band(1, Axis::Row, 3, -1));
     }
 
-    /// I5.7 — a slot the store hands out again carries none of its last
-    /// occupant's reads.
+    /// I5.9 — a slot is free exactly when no position names it, so no two
+    /// formulas ever share one.
     ///
     /// [`PrecedentStore`] addresses read sets by a dense id and recycles the
     /// ids, which is a way of being wrong the single map it replaced did not
-    /// have: a formula landing on a stale slot would answer with the previous
-    /// occupant's precedents, and `remove_dependent` would then delete edges
-    /// belonging to a cell that no longer exists. Kills dropping the clear in
-    /// [`PrecedentStore::remove`], and kills dropping the one on the shift
-    /// path, which frees its slots separately and so has its own clear.
+    /// have. `slots` is the sole authority on which entries are live, and the
+    /// whole of the design rests on that one fact: an entry no key names is
+    /// unreachable, and [`PrecedentStore::insert`] overwrites the slot it is
+    /// handed. So *clearing* a freed entry is a retention measure and no test
+    /// is owed for it — what is owed is the correspondence, and it is
+    /// one-sided in both directions. A key left behind on a removed position
+    /// answers with an entry that is not there; a slot freed while a key still
+    /// names it is handed to a second position, and the first then reads the
+    /// second's precedents and `remove_dependent` deletes the second's edges.
+    ///
+    /// Kills `remove` freeing the slot without dropping the key, and kills the
+    /// shift path freeing the slots of positions that survived the edit
+    /// alongside the ones it deleted.
     #[test]
-    fn a_recycled_slot_carries_no_reads_from_its_last_occupant() {
+    fn a_slot_is_free_exactly_when_no_position_names_it() {
         let reads = |cell: Position| ReadSet {
             cells: vec![cell],
             rects: Vec::new(),
@@ -1953,17 +2073,31 @@ mod tests {
 
         // The other way a slot comes free: a structural edit deletes the
         // position that held it, by rewriting the map rather than by calling
-        // `remove`.
+        // `remove`. Row 3 goes; row 2 stays, and its slot must not go with it.
         graph.after_pass();
         graph.structural_edit(0, Axis::Row, 3, -1);
         assert!(graph.precedents.get(&(0, 3, 2)).is_none());
-        assert_eq!(graph.precedents.free.len(), 1);
+        assert_eq!(
+            graph.precedents.free.len(),
+            1,
+            "the edit freed a slot belonging to a position it did not delete"
+        );
+
+        // The next formula takes the one slot that came free, and the survivor
+        // still has its own. A shift that freed both would hand this formula
+        // the survivor's entry, and the two would answer as each other.
         graph.replace_reads((0, 9, 2), &reads((0, 9, 1)));
         assert_eq!(
             graph.precedents.get(&(0, 9, 2)).unwrap().reads,
             reads((0, 9, 1))
         );
+        assert_eq!(
+            graph.precedents.get(&(0, 2, 2)).unwrap().reads,
+            reads((0, 2, 1)),
+            "a surviving formula reads a slot a later formula was given"
+        );
         assert_eq!(graph.dependents_of((0, 9, 1)), vec![(0, 9, 2)]);
+        assert_eq!(graph.dependents_of((0, 2, 1)), vec![(0, 2, 2)]);
     }
 
     #[test]
