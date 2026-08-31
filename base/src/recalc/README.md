@@ -192,16 +192,16 @@ And on the `bench_scenarios` shapes, which is where the problem was named. Speed
 
 None of those reach parity, and the reason is in the two mechanisms rather than in the measurement. `bench_scenarios` medians twenty samples of a twenty-five-pass series, and twelve of those passes are the ones the run spends proving itself, so the median still lands among them; `bench_amortized_runs`, over eighty edits, reads 0.73x, 0.74x and 0.92x for the first three. `structural: move_rows` moves at all only because of the smaller investment — its passes are rebuilds, so its run never arms, on purpose.
 
-Taking the two whole-workbook walks out of the fallback pass moved them again. Both columns are medians of three interleaved runs on one machine, so they are comparable with each other and not with the table above:
+Taking the two whole-workbook walks out of the fallback pass moved them again. Both columns are medians of six interleaved runs on one machine, so they are comparable with each other and not with the table above:
 
 | fallback row | before | after |
 |---|---|---|
-| `dashboard (wide fanout)` | 0.58x | 0.87x |
-| `long-chain, edit head` | 0.64x | 0.81x |
-| `spill-heavy` | 0.91x | 0.98x |
-| `whole-column aggregates` | 0.96x | 0.98x |
+| `dashboard (wide fanout)` | 0.59x | 0.85x |
+| `long-chain, edit head` | 0.64x | 0.83x |
+| `spill-heavy` | 0.93x | 0.97x |
+| `whole-column aggregates` | 0.97x | 0.98x |
 
-and over eighty edits, where the investment is inside the number: `dashboard` 0.85x → 0.95x, `long-chain` 0.87x → 0.93x, `spill-heavy` 0.95x → 0.98x. No winning row moved: `sparse-workbook` 145x → 148x, `financial-model` 14.9x → 15.0x, `pathological-cycle` 151x → 142x, `structural: move_rows` 14.9x → 15.1x.
+and over eighty edits, where the investment is inside the number: `dashboard` 0.85x → 0.95x, `long-chain` 0.87x → 0.92x, `spill-heavy` 0.95x → 0.99x. No winning row moved: `sparse-workbook` 137x → 148x, `financial-model` 15.3x → 15.0x, `pathological-cycle` 135x → 142x, `structural: move_rows` 15.0x → 15.1x, `long-chain, edit tail` 39x → 36x.
 
 ### What the single-edit median is actually a median of
 
