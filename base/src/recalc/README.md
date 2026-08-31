@@ -134,7 +134,7 @@ That comparison is `ReadSet: PartialEq`, and its equivalence is exact rather tha
 
 Read frames are pooled (`Model::read_pool`) for the same reason: a formula's read set is built and then either compared away or cloned into the graph, so dropping it means allocating three vectors again for the next formula. That one matters most on the *selective* path, where it is an allocation saved per recomputed cell.
 
-Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What was left after them was **not tracing at all**, and measuring that rather than assuming it is what the next two mechanisms came out of. Recording reads costs a traced pass between 4% and 22% over `Full` on the fallback shapes; the rest was two whole-workbook walks that a pass which is about to fall back has no use for.
+Together these take a traced full pass from about 1.9x `Full` to about 1.5-1.6x on the chain shapes and 1.2x on the spill shape. What was left after them was **not tracing at all**, and measuring that rather than assuming it is what the next two mechanisms came out of. Recording reads costs a traced pass between 5% and 34% over `Full` on the fallback shapes; the rest was two whole-workbook walks that a pass which is about to fall back has no use for.
 
 ### The cycle cone nobody needs
 
@@ -146,7 +146,7 @@ The second is the cone itself. Before a pass can decide anything it walks the di
 
 So the guard is expressed as a **limit** rather than as a predicate over a finished cone, and the walk takes the limit and stops there. `Model::fanout_limit` is the one definition; `DependencyGraph::reachable_within` abandons the walk the moment the set reaches it and returns `None`, which the scheduler reads as the fallback it was going to take anyway. Stopping once the set *reaches* `formulas / RATIO` rounded up is exactly `cone * RATIO >= formulas`, so this is the same guard, decided at the same place, having done at most half the work — a cone bounded by half the workbook instead of by the workbook.
 
-The saving is bounded by that ratio and cannot be better: the walk has to reach the limit to know it got there. What it buys is that the cost of *deciding* to fall back no longer scales with the workbook, only with the threshold — and on the shapes where every pass falls back, that decision was the largest thing left in the pass.
+The saving is bounded by that ratio and cannot be better: the walk has to reach the limit to know it got there. What it buys is that the cost of *deciding* to fall back no longer scales with the workbook, only with the threshold. On `dashboard` that decision is what the median sample was paying; on `long-chain` it is now the smaller of the two remaining terms. Both are priced in "What is left, and where it lives".
 
 `Verify` and workbooks under `INCREMENTAL_FANOUT_FLOOR` pass `usize::MAX`, which is the same "no guard" the predicate gave them.
 
@@ -189,6 +189,41 @@ And on the `bench_scenarios` shapes, which is where the problem was named. Speed
 | `structural: move_rows` | 0.39x | 0.63x |
 
 None of those reach parity, and the reason is in the two mechanisms rather than in the measurement. `bench_scenarios` medians twenty samples of a twenty-five-pass series, and twelve of those passes are the ones the run spends proving itself, so the median still lands among them; `bench_amortized_runs`, over eighty edits, reads 0.73x, 0.74x and 0.92x for the first three. `structural: move_rows` moves at all only because of the smaller investment — its passes are rebuilds, so its run never arms, on purpose.
+
+Taking the two whole-workbook walks out of the fallback pass moved them again. Both columns are medians of three interleaved runs on one machine, so they are comparable with each other and not with the table above:
+
+| fallback row | before | after |
+|---|---|---|
+| `dashboard (wide fanout)` | 0.58x | 0.87x |
+| `long-chain, edit head` | 0.64x | 0.81x |
+| `spill-heavy` | 0.91x | 0.98x |
+| `whole-column aggregates` | 0.96x | 0.98x |
+
+and over eighty edits, where the investment is inside the number: `dashboard` 0.85x → 0.95x, `long-chain` 0.87x → 0.93x, `spill-heavy` 0.95x → 0.98x. No winning row moved: `sparse-workbook` 145x → 148x, `financial-model` 14.9x → 15.0x, `pathological-cycle` 151x → 142x, `structural: move_rows` 14.9x → 15.1x.
+
+### What the single-edit median is actually a median of
+
+Worth writing down, because it is why the two bench rows move by different amounts and why the cone walk was worth attacking even though it is not the largest term.
+
+`bench_scenarios` takes twenty samples of a twenty-five-pass series, and on a shape where every pass falls back those samples are four populations, not one. The run arms over twelve chosen-full passes and then untraces in stretches of one, two, four, eight — so of the twenty sampled passes nine are traced and eleven are not. And a pass walks a cone only when the graph is ready, which is only after a *traced* pass. The samples are therefore about seven at `Full`'s cost, four at `Full` plus a cone walk, three at `Full` plus the recording, and six at `Full` plus both; the median lands in the middle bands rather than on either end.
+
+### What is left, and where it lives
+
+Two rows still sit under parity, and what remains is now one term per row rather than a mixture. Measured on one traced pass of each shape against the same pass run untraced, which is `Full`'s cost by construction:
+
+| | `dashboard` | `long-chain` | `spill-heavy` |
+|---|---|---|---|
+| the pass, untraced | 2.50 ms | 14.5 ms | 4.01 ms |
+| the cone walk the guard needs | 0.47 ms (19%) | 2.07 ms (14%) | — under the floor |
+| recording what every formula reads | 0.48 ms (19%) | 4.99 ms (34%) | 0.19 ms (5%) |
+| sweeping the rebuild (`end_rebuild`) | 0.08 ms (3%) | 0.55 ms (4%) | 0.13 ms (3%) |
+| the cycle cone | 0 | 0 | 0 |
+
+**The cone walk cannot go below half.** The walk has to reach the limit to know it got there, so half the workbook is the floor for that term and not an implementation detail.
+
+**Recording is where the rest is, and it is not the construction.** Of the recording cost, `replace_reads` is 73-78% on the two rows that miss — but on a workbook whose shape is holding still it is *already* the compare-and-return path that builds nothing. Timed inside it, the whole of that is one `HashMap<Position, Precedents>` lookup: 139 ns per formula against 27 ns for the `ReadSet` comparison on `long-chain`, 60 ns against 22 ns on `dashboard` (both inflated by about 20 ns of timer). The lookup is a random probe into a map holding an eighty-byte entry per formula — 1.6 MB on the chain, well past L2 — so it is a cache miss per formula, and *any* scheme that has to find a formula's previous read set pays it.
+
+That rules out the obvious next mechanism rather than recommending it. Collecting read sets into flat buffers and building the four edge maps in one batch would batch a construction that is not happening, add a copy of every read set to do it, and still need the same per-formula lookup to know which entries were unchanged. The lever on this term is the *storage* of `precedents` — a cheaper hash, or an entry dense enough that the probe is not a miss — which is a change to the graph's core types and a bigger piece of work than the one measured here.
 
 ### What measures it
 
@@ -468,6 +503,15 @@ Where a test goes follows from that. The default is the lib suite: it is what
   not pay for a 32k-cell workbook once per mutant.
 
 ## Follow-ups
+
+**What cutting `Full` mode can and cannot remove.** If `Incremental` becomes the only mode the product ships, the `RecalcMode::Full` *code path* still has to be compiled in test builds, and this is worth stating before someone reads the parity table and reaches for the delete key. `RecalcMode::Verify` is defined as "run the selective pass, then a shadow full one, and assert they agree", and `base/tests/fuzz_differential.rs` runs identical operation sequences on a `Full` model and an `Incremental` model and compares every cell after every `evaluate`. Both oracles *are* the comparison against `Full`; without it they assert nothing. So:
+
+- **Can go:** `Full` as a value users can select, the public surface that offers it, and the documentation that describes choosing between modes.
+- **Cannot go:** `evaluate_full` itself (every mode runs it — a fallback *is* a full pass), the `tracing()` gate that lets a fallback borrow `Full`'s cost, `RecalcMode::Full` as a variant reachable from tests, and `Model::as_full_mode`. The cost contract's whole claim — that an untraced fallback costs exactly what `Full` costs — is true *by construction* because it runs through the same mode, so deleting the mode would replace a construction argument with a second implementation to keep in step.
+
+The honest summary for that decision is in "What is left, and where it lives": the fallback shapes sit at 0.87x, 0.81x and 0.98x on a single edit and 0.95x, 0.93x and 0.98x over eighty, and the residue is two named terms with a floor under one of them.
+
+**Cheaper storage for `precedents`.** The largest remaining term on the fallback shapes is one hash-map lookup per formula per traced pass — 139 ns on `long-chain`, against 27 ns for the comparison it exists to enable. See "What is left, and where it lives" for why batching the *construction* does not touch it and what would.
 
 **Stable `SheetId` in `Position`.** `SheetLayout` *detects* that the sheet numbering moved. Making the staleness unrepresentable instead means keying positions by the stable `sheet_id` a worksheet is allocated at creation, so renumbering stops existing as a concept. Assessed and deliberately not taken, for two reasons:
 
