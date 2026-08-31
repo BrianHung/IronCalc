@@ -239,10 +239,10 @@ impl Model<'_> {
         // cone walk now stops at the limit the count sets. The guard is a limit
         // rather than a predicate for that reason and no other: a cone that
         // reaches it is one this pass has already decided not to use, so the
-        // rest of the walk builds a set nobody reads. On the shapes where every
-        // edit reaches every formula that unread remainder was the largest
-        // single cost left in the pass — see "The cone nobody reads" in
-        // `base/src/recalc/README.md`.
+        // rest of the walk builds a set nobody reads, and on the shapes where
+        // every edit reaches every formula that remainder was a fifth of the
+        // pass — see "The cone nobody reads" in `base/src/recalc/README.md`,
+        // and "What is left, and where it lives" for what it is now next to.
         if self.formula_count_stale {
             self.recount_formula_cells();
         }
