@@ -3550,6 +3550,24 @@ impl<'a> Model<'a> {
                 }
                 _ => {}
             }
+            // The one place the array index grows without going through
+            // `DependencyGraph::replace_arrays`, and so the one place it grows
+            // without saying the cycle cone needs deriving again. That is
+            // sound, and it is worth writing down because the fact's safety
+            // rests on the list of mutators that set it being complete.
+            //
+            // A footprint position enters the cycle graph with *no incoming
+            // edges*. Reading one records an edge on the position and on its
+            // anchor, both pointing at the reader, so it is a precedent of
+            // things and a dependent of nothing; and it holds no formula, so
+            // it commits no reads of its own. A node no edge arrives at cannot
+            // lie on a cycle, and adding one changes neither the cycle set nor
+            // what is downstream of it. The other case is a position that is
+            // already a node -- an anchor, or a footprint cell a user has
+            // written a formula into -- where the node set does not move at
+            // all. Anything that *does* move the edges (a reader now seeing a
+            // different anchor) moves them through `replace_reads`, which
+            // says so.
             for (p, anchor) in footprint {
                 self.graph.arrays.insert(p, anchor);
             }

@@ -76,6 +76,8 @@ The set is a function of the edges and of nothing else, so it only has to be der
 
 **Sticky-true is the safe way for the fact to be wrong**, which is why it is set by the mutators rather than inferred where it is read. An extra walk finds what the last one found and costs a pass a fraction of itself. A missed one leaves a cycle's members serving values that are artifacts of where the walk entered them, silently, for as long as the shape holds still.
 
+Sticky-*false* is the direction that has to be impossible, and what makes it impossible is that the list of mutators is closed. The cone is a function of `precedents`, `cell_dependents`, `range_dependents` and `arrays`, and every write to any of the four is inside `replace_reads`'s rebuild path, `remove_dependent`, `replace_arrays` or `shift` — all of which set the fact. The one write that is not is the journal drain's `graph.arrays.insert`, and it is sound for a reason recorded at that call site: a footprint position enters the graph with no incoming edges, and a node no edge arrives at cannot lie on a cycle. The clear is in one place, immediately after the walk that earns it.
+
 A cone-shaped answer — the one a selective pass installs from ordering its own cone — deliberately leaves the fact *set*. The whole-graph walk exists because a cycle no cone would seed still has to be known (I3.2), and a cone is not the whole graph, so a selective pass's answer stands until the next full pass without excusing that pass from its walk.
 
 #### What was tried first, and why it is not what is here
