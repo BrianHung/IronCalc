@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
+use crate::model::incremental::EvalPass;
 use crate::recalc::Input;
 use crate::test::util::{incremental_mode, new_empty_model};
 use crate::{ChangedSinceRead, RecalcMode, UserModel};
@@ -1645,4 +1646,271 @@ fn a_full_pass_keeps_only_the_formulas_it_evaluated() {
         "a full pass kept edges for positions that are no longer formulas"
     );
     assert_eq!(model._get_text_at(0, 5, 2), "4");
+}
+
+/// R13.1 — the cycle cone is a function of the edges, so a pass whose edges did
+/// not move does not derive it again.
+///
+/// "The walk did not run" is a statement about work *not* done, and no assertion
+/// over values or over `never_served` can reach it: both are the same whether
+/// the whole-graph ordering ran or not. `cycle_scans` is what makes it checkable.
+///
+/// The shape is a wide fanout on purpose. The claim is about the *full* pass's
+/// tail, and on a workbook small enough to stay selective no pass ever reaches
+/// it — a version of this test on three cells passes with the caching deleted,
+/// with the staleness fact never set, and with both.
+///
+/// The direction that must not slip is the cached one: a cone left standing over
+/// edges that moved would leave a cycle's members serving values that are
+/// artifacts of where the walk entered them. So the fact is set by the mutators
+/// that move edges rather than inferred where it is read, and the edges are
+/// moved here in the two ways that reach different mutators — a cell becoming a
+/// formula (`replace_reads`) and a cell ceasing to be one (`remove_dependent`).
+///
+/// Kills caching the cone unconditionally (the closed cycle is never found),
+/// never caching it (the value-only passes walk again), and dropping the fact
+/// from `remove_dependent` (the broken cycle's cone is never released).
+#[test]
+fn the_cycle_cone_is_re_derived_only_when_the_edges_move() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    // Past `INCREMENTAL_FANOUT_FLOOR`, and every one of them reads `A1`, so an
+    // `A1` edit reaches the whole workbook and every pass is a full pass.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=$A$1*2");
+    }
+    model.evaluate();
+    let after_the_first_pass = model.graph.cycle_scans();
+    assert!(
+        after_the_first_pass > 0,
+        "the first pass never derived the cone at all"
+    );
+
+    // A value edit moves no edge: every formula reads what it read last time, so
+    // the cone in hand is still the cone of this graph.
+    model._set("A1", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "10");
+    assert_eq!(
+        model.graph.cycle_scans(),
+        after_the_first_pass,
+        "a pass that moved no edge ordered the whole graph again"
+    );
+
+    // A cycle closes: `A1` reads `C1`, and all 1100 of them read `A1`. `A1`
+    // becoming a formula moves its edges, so the cone is derived again.
+    model._set("A1", "=C1");
+    model.evaluate();
+    assert!(
+        model.graph.cycle_scans() > after_the_first_pass,
+        "a formula edit moved the edges and nothing re-derived the cone"
+    );
+    assert!(
+        model.graph.never_served().contains(&(0, 1, 1)),
+        "a cycle closed and its cone was not seeded dirty"
+    );
+
+    // ...and breaks. Nothing that stayed a formula reads anything new, so the
+    // only edge that moves is the one `A1` had; a fact that only `replace_reads`
+    // set would miss it and leave the cone standing.
+    model._set("A1", "7");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "14");
+    assert!(
+        model.graph.never_served().is_empty(),
+        "the cone of a cycle that is gone is still being seeded dirty"
+    );
+
+    // And the settled state stops paying again.
+    let after_the_break = model.graph.cycle_scans();
+    model._set("A1", "9");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "18");
+    assert_eq!(
+        model.graph.cycle_scans(),
+        after_the_break,
+        "a settled pass ordered the whole graph again"
+    );
+}
+
+/// R13.2 — the cone walk's limit *is* the fanout guard, at the boundary.
+///
+/// The walk stops at the first cone size the guard would reject, so a limit
+/// that disagrees with the guard by one is a scheduling decision quietly made
+/// on the wrong side: a pass that goes full where it should have stayed
+/// selective (a lost win) or one that stays selective where full is cheaper (a
+/// slow pass). Both are invisible to every value assertion in the suite, and
+/// both sides of the boundary are asserted here, on workbooks that differ by
+/// one formula.
+///
+/// Kills a `>` for `>=` in the walk's stop test and a floor-for-ceiling slip in
+/// `fanout_limit`.
+#[test]
+fn the_cone_limit_is_the_fanout_guard() {
+    // `INCREMENTAL_FANOUT_FLOOR` is 1024 and `INCREMENTAL_FANOUT_RATIO` is 2, so
+    // the guard is `cone * 2 >= formulas` and the limit is `formulas` halved,
+    // rounded *up*. The cone of an `A1` edit is `A1` itself plus the chain
+    // hanging off it; the filler formulas in column C are never in it and are
+    // there to fix the count. A odd count is one of the three cases, because it
+    // is the only one that separates rounding up from rounding down.
+    // Pinned to `Incremental` rather than taking the suite's mode, because
+    // `Verify` has no fanout guard to be at the boundary of: it disables the
+    // guard outright so the oracle keeps comparing a selective pass against a
+    // shadow full one, and under it every cone here stays selective.
+    let build = |chain: i32, formulas: i32| {
+        let mut m = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+        m._set("A1", "1");
+        for row in 2..=chain + 1 {
+            m._set(&format!("A{row}"), &format!("=A{}+1", row - 1));
+        }
+        for row in 1..=formulas - chain {
+            m._set(&format!("C{row}"), "=1+0");
+        }
+        m.evaluate();
+        assert_eq!(
+            m.formula_cell_count, formulas as usize,
+            "the shape is what sets the limit"
+        );
+        m
+    };
+    let pass_of = |m: &mut crate::Model| {
+        m._set("A1", "2");
+        m.drain_write_journal();
+        let mut evaluating = m.pause_journal();
+        evaluating.evaluate_selective()
+    };
+
+    // 2048 formulas, limit 1024. 1022 chain cells plus the seed is a cone of
+    // 1023, one under it.
+    let mut under = build(1022, 2048);
+    assert!(
+        matches!(pass_of(&mut under), EvalPass::Incremental),
+        "a cone one cell under the limit was handed to a full pass"
+    );
+    // One more, and the cone reaches 1024: the walk stops there, and stopping is
+    // the fallback.
+    let mut at = build(1023, 2048);
+    assert!(
+        matches!(pass_of(&mut at), EvalPass::Full),
+        "a cone at the limit stayed selective"
+    );
+    // 2049 formulas: `1025 * 2 >= 2049` and `1024 * 2` does not, so the limit is
+    // 1025 and the same 1024-cell cone is now under it. Rounding the halving
+    // down would put the limit at 1024 and send this pass to full.
+    let mut odd = build(1023, 2049);
+    assert!(
+        matches!(pass_of(&mut odd), EvalPass::Incremental),
+        "the limit halved the formula count downwards"
+    );
+}
+
+/// R14.1 — a seed already known to reach the fanout limit is not walked to it
+/// again, and the memo that says so goes when the edges do.
+///
+/// The walk has a floor: it must reach the limit to know it got there, so the
+/// only saving left on that term is not walking at all. The claim is therefore
+/// a statement about work *not* done, and neither a value nor the `EvalPass`
+/// the scheduler returns can see it — a memo hit and a walk that runs to the
+/// limit end in the same full pass over the same values. `cone_walks` is what
+/// makes it checkable.
+///
+/// The shape is a wide fanout past `INCREMENTAL_FANOUT_FLOOR` because that is
+/// the only shape where a cone reaches a limit at all; on a workbook that stays
+/// selective there is nothing to remember.
+///
+/// The direction that must not slip is the remembered one. A memo can only ever
+/// send a pass to `Full`, so it cannot produce a wrong value — but one left
+/// standing over a workbook whose fanout has since shrunk sends a one-cell cone
+/// to a full pass for the rest of the model's life, which is why the fanout is
+/// shrunk here rather than only widened.
+///
+/// Kills never recording the memo (the repeat wide edit walks again), kills
+/// recording it from a pass with several seeds (`A5` reaches one cell on its
+/// own and would be remembered as wide because it shared a pass with `A1`), and
+/// kills dropping the memo from `edges_moved` — the shrink below then never
+/// releases it.
+#[test]
+fn a_seed_known_to_reach_the_fanout_limit_is_not_walked_again() {
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Incremental);
+    model._set("A1", "1");
+    model._set("A5", "1");
+    // Past `INCREMENTAL_FANOUT_FLOOR`, and every one of them reads `A1`, so an
+    // `A1` edit reaches the whole workbook and every pass is a full pass. `A5`
+    // is read by nothing, and is here to be the seed a wide pass does not
+    // entitle anyone to conclude anything about.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=$A$1*2");
+    }
+    model.evaluate();
+
+    let pass_of = |m: &mut crate::Model, edits: &[(&str, &str)]| {
+        for (cell, value) in edits {
+            m._set(cell, value);
+        }
+        m.drain_write_journal();
+        let mut evaluating = m.pause_journal();
+        evaluating.evaluate_selective()
+    };
+
+    // Two seeds, and together they reach the limit. Which of them did is not
+    // something this walk answers, so neither is remembered.
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "2"), ("A5", "2")]),
+        EvalPass::Full
+    ));
+    // `A5` alone reaches one cell. A memo that had recorded it from the pass
+    // above would send this to a full pass on a cone of one.
+    let after_the_pair = model.graph.cone_walks();
+    assert!(
+        matches!(pass_of(&mut model, &[("A5", "3")]), EvalPass::Incremental),
+        "a seed was remembered as wide from a pass that only proved its set was"
+    );
+    assert!(
+        model.graph.cone_walks() > after_the_pair,
+        "the narrow pass decided without walking"
+    );
+
+    // One seed, and it reaches the limit on its own. This walk does say which.
+    let before = model.graph.cone_walks();
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "3")]),
+        EvalPass::Full
+    ));
+    assert_eq!(
+        model.graph.cone_walks(),
+        before + 1,
+        "the first wide edit decided the fanout without walking"
+    );
+
+    // The next is the same seed over the same edges, so it is the same
+    // fallback — reached without the walk that proved it the first time.
+    let after_the_first = model.graph.cone_walks();
+    assert!(matches!(
+        pass_of(&mut model, &[("A1", "4")]),
+        EvalPass::Full
+    ));
+    assert_eq!(
+        model.graph.cone_walks(),
+        after_the_first,
+        "a seed already known to be wide was walked to the limit again"
+    );
+    assert_eq!(model._get_text("C1"), "8");
+
+    // Now shrink the fanout: nothing reads `A1` any more. That moves edges, and
+    // the memo is a fact about edges that have moved.
+    for row in 1..=1100 {
+        model._set(&format!("C{row}"), "=2");
+    }
+    model.evaluate();
+
+    let after_the_shrink = model.graph.cone_walks();
+    assert!(
+        matches!(pass_of(&mut model, &[("A1", "5")]), EvalPass::Incremental),
+        "an `A1` edit that now reaches one cell was still handed to a full pass"
+    );
+    assert!(
+        model.graph.cone_walks() > after_the_shrink,
+        "the pass decided the fanout from a memo the edges had invalidated"
+    );
+    assert_eq!(model._get_text("A1"), "5");
 }
