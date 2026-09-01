@@ -1777,6 +1777,7 @@ fn area_contains(&(sheet, row1, column1, row2, column2): &Area, (s, r, c): Posit
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]
