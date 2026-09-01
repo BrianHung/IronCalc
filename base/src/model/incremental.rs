@@ -231,18 +231,27 @@ impl Model<'_> {
         for &cell in &never_served {
             self.graph.mark_dirty(cell);
         }
-        let (seeds, affected) = self.graph.take_seeds_and_affected();
         // A wide-fanout edit reaches most of the workbook, where incremental
         // bookkeeping costs about as much as it saves; past half the formulas a
         // full pass is cheaper. The floor keeps small workbooks on the fast path.
         // Verify skips this: it is a performance fallback, not a correctness one.
+        //
+        // The count is taken *before* the cone rather than after it, because the
+        // cone walk now stops at the limit the count sets. The guard is a limit
+        // rather than a predicate for that reason and no other: a cone that
+        // reaches it is one this pass has already decided not to use, so the
+        // rest of the walk builds a set nobody reads, and on the shapes where
+        // every edit reaches every formula that remainder was a fifth of the
+        // pass — see "The cone nobody reads" in `base/src/recalc/README.md`,
+        // and "What is left, and where it lives" for what it is now next to.
         if self.formula_count_stale {
             self.recount_formula_cells();
         }
-        if self.should_fallback_fanout(affected.len()) {
+        let limit = self.fanout_limit();
+        let Some((seeds, affected)) = self.graph.take_seeds_and_affected(limit) else {
             self.fall_back_to_full(Chosen::Yes);
             return EvalPass::Full;
-        }
+        };
         // Selectivity is earned, not assumed: this pass is selective only if
         // every cell it would touch is one a selective pass can model.
         if !self.cone_is_plain(&affected) {
@@ -616,15 +625,31 @@ impl Model<'_> {
         }
     }
 
-    /// Performance-only: a wide cone is cheaper as a full pass. Verify stays on
-    /// the incremental path so the oracle still compares the two.
-    fn should_fallback_fanout(&self, fanout: usize) -> bool {
+    /// The cone size at which this pass gives up and runs a full one:
+    /// performance-only, because a wide cone is cheaper as a full pass than as
+    /// the bookkeeping it would save.
+    ///
+    /// A *limit* rather than a predicate over a finished cone, and that is the
+    /// whole of what it buys. The walk that builds the cone takes it and stops
+    /// there, so a pass that was always going to fall back stops paying for the
+    /// cone at the size that decides it instead of at the size of the workbook.
+    /// The two forms are the same guard: stopping once the set *reaches*
+    /// `count / RATIO` rounded up is exactly `fanout * RATIO >= count`.
+    ///
+    /// `usize::MAX` is "no guard", and it has two reasons. Under the floor,
+    /// incremental never falls back on fanout at all, so there is nothing to
+    /// stop for. Under `Verify` the guard is disabled outright — the oracle
+    /// exists to compare a *selective* pass against a shadow full one, and a
+    /// performance fallback would leave it comparing full against full.
+    fn fanout_limit(&self) -> usize {
         #[cfg(feature = "recalc_verify")]
         if self.recalc_mode == RecalcMode::Verify {
-            return false;
+            return usize::MAX;
         }
-        self.formula_cell_count >= INCREMENTAL_FANOUT_FLOOR
-            && fanout * INCREMENTAL_FANOUT_RATIO >= self.formula_cell_count
+        if self.formula_cell_count < INCREMENTAL_FANOUT_FLOOR {
+            return usize::MAX;
+        }
+        self.formula_cell_count.div_ceil(INCREMENTAL_FANOUT_RATIO)
     }
 }
 
