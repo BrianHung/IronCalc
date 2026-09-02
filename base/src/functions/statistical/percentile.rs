@@ -1,9 +1,10 @@
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn collect_sorted_values(
         &mut self,
         arg: &Node,
@@ -11,7 +12,7 @@ impl<'a> Model<'a> {
     ) -> Result<Vec<f64>, CalcResult> {
         let raw = match self.evaluate_node_in_context(arg, cell) {
             CalcResult::Range { left, right } => {
-                let v = self.values_from_range(left, right)?;
+                let v = self.values_from_range_clipped(left, right, cell)?;
                 v.into_iter().flatten().collect::<Vec<_>>()
             }
             CalcResult::Array(arr) => match self.values_from_array(arr) {

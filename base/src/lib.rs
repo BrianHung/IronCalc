@@ -51,10 +51,12 @@ mod cast;
 mod conditional_formatting;
 mod constants;
 mod cut_paste;
+mod dependency_graph;
 mod functions;
 mod implicit_intersection;
 pub mod links;
 mod model;
+mod recalc;
 mod styles;
 mod tz;
 mod units;
@@ -68,10 +70,16 @@ mod test;
 #[cfg(any(test, feature = "mock_time"))]
 pub mod mock_time;
 
+pub use dependency_graph::RecalcMode;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
+pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
+// Public only because `Worksheet::write_log` is a public field; the type is
+// an implementation detail of incremental recalculation, not API.
+#[doc(hidden)]
+pub use recalc::WriteLog;
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
 pub use user_model::UserModel;

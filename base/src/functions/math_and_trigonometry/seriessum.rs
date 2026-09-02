@@ -5,10 +5,10 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── SERIESSUM ─────────────────────────────────────────────────────────────
 
     /// `=SERIESSUM(x, n, m, coefficients)`

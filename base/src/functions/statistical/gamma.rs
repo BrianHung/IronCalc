@@ -3,10 +3,11 @@ use statrs::function::gamma::{gamma, ln_gamma};
 
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_gamma(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 1 {
             return CalcResult::new_args_number_error(cell);

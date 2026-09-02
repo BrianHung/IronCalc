@@ -258,7 +258,7 @@ impl<'a> UserModel<'a> {
                         if let Some(row_style) = row_data.row.clone() {
                             worksheet.rows.push(row_style);
                         }
-                        worksheet.sheet_data.insert(r, row_data.data.clone());
+                        worksheet.restore_row(r, row_data.data.clone());
                     }
                 }
                 Diff::InsertColumns {

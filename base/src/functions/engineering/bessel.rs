@@ -3,7 +3,7 @@ use statrs::function::erf::{erf, erfc};
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 use super::transcendental::{bessel_i, bessel_j, bessel_k, bessel_y};
@@ -12,7 +12,7 @@ use super::transcendental::{bessel_i, bessel_j, bessel_k, bessel_y};
 // Notice that the parameters for Bessel functions in Excel and here have inverted order
 // EXCEL_BESSEL(x, n) => bessel(n, x)
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_besseli(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 2 {
             return CalcResult::new_args_number_error(cell);

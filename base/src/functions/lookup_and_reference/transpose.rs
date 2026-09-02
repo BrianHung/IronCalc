@@ -4,10 +4,10 @@ use crate::{
         parser::{ArrayNode, Node},
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── TRANSPOSE ─────────────────────────────────────────────────────────────
 
     /// `=TRANSPOSE(array)`

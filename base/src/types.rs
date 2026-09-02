@@ -222,6 +222,10 @@ pub struct Worksheet {
     pub conditional_formatting: Vec<ConditionalFormatting>,
     /// Hyperlinks in the worksheet, keyed by (row, column) of the cell they are attached to
     pub links: HashMap<(i32, i32), Link>,
+    /// User writes since the last evaluate. Not part of the `.ic` encoding.
+    #[doc(hidden)]
+    #[bitcode(skip)]
+    pub write_log: crate::recalc::WriteLog,
 }
 
 /// Internal representation of Excel's sheet_data
@@ -267,6 +271,11 @@ pub enum CellType {
 
 /// The evaluated value stored in a formula cell.
 /// `Unevaluated` is a transient state that only exists during evaluation.
+///
+/// A formula whose live result is an empty cell (`=A1` with `A1` blank)
+/// coerces to `Number(0.0)` at the formula-result boundary, matching Excel
+/// (which caches `<v>0</v>`) and keeping Full order-independent: same-pass
+/// readers see the stored `0`, never a pre-coercion blank.
 #[derive(Encode, Decode, Debug, Clone, PartialEq)]
 pub enum FormulaValue {
     Unevaluated,

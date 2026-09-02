@@ -2,9 +2,9 @@ use statrs::distribution::{ContinuousCDF, Normal};
 
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
-use crate::{calc_result::CalcResult, expressions::parser::Node, model::Model};
+use crate::{calc_result::CalcResult, expressions::parser::Node, model::eval_ctx::EvalCtx};
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_gauss(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 1 {
             return CalcResult::new_args_number_error(cell);

@@ -2,6 +2,7 @@ use crate::constants::{self, LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::expressions::utils::{is_valid_column_number, is_valid_row};
 use crate::model::CellStructure;
+use crate::recalc::Write;
 use crate::{expressions::token::Error, types::*};
 
 use std::collections::HashMap;
@@ -22,6 +23,16 @@ pub enum NavigationDirection {
     Down,
 }
 
+/// Whether removing `cell` is an edit a reader could observe.
+///
+/// A blank cell that only ever carried a style is not: the public API cannot
+/// tell an `EmptyCell` from a missing one (both read as value `None`, type
+/// `Number`), so its removal moves nothing. Journaling it anyway would seed the
+/// graph with a cell no formula can depend on.
+fn removal_is_an_edit(cell: &Cell) -> bool {
+    cell.get_formula().is_some() || !matches!(cell, Cell::EmptyCell { .. })
+}
+
 impl Worksheet {
     pub fn get_name(&self) -> String {
         self.name.clone()
@@ -39,6 +50,12 @@ impl Worksheet {
         self.sheet_data.get(&row)?.get(&column)
     }
 
+    /// Read-only view of the sheet's cells. Mutations must go through
+    /// `update_cell` / `remove_cell` so they are journaled.
+    pub fn sheet_data(&self) -> &SheetData {
+        &self.sheet_data
+    }
+
     pub(crate) fn cell_mut(&mut self, row: i32, column: i32) -> Option<&mut Cell> {
         self.sheet_data.get_mut(&row)?.get_mut(&column)
     }
@@ -54,20 +71,57 @@ impl Worksheet {
             return Err("Incorrect row or column".to_string());
         }
 
+        // The journal entry is decided against the cell being overwritten, so it
+        // is built here, before the write, and pushed after it.
+        //
+        // Only built when the log would keep it. Evaluation stores every formula
+        // result through this method with recording paused, so on a full pass
+        // this is one branch per formula cell instead of a lookup, a whole-`Cell`
+        // comparison and two `get_formula` calls whose answers are then thrown
+        // away. `push` still checks: this decides nothing about what is
+        // journaled, only when the argument is worth computing.
+        let entry = if self.write_log.is_recording() {
+            let old = self.cell(row, column);
+            let was_formula = old.and_then(Cell::get_formula).is_some();
+            let old_formula = old.and_then(Cell::get_formula);
+            let new_formula = new_cell.get_formula();
+            // True when the write installs a formula the cell did not already
+            // have, as opposed to the same formula written back with different
+            // spill geometry or style. The drain's only use for it is re-running
+            // FORMULATEXT and ISFORMULA readers, which observe formula-ness
+            // rather than the value; `was_formula` is what drops the outgoing
+            // edges.
+            let is_formula = new_formula.is_some() && old_formula != new_formula;
+            let changed = old != Some(&new_cell);
+            // A style on a blank cell materializes EmptyCell; that is not a
+            // value or formula edit and must not dirty the graph. The public API
+            // does not distinguish a missing cell from an EmptyCell (both read as
+            // value None, type Number), so nothing observable moves.
+            let style_only = matches!(new_cell, Cell::EmptyCell { .. })
+                && matches!(old, None | Some(Cell::EmptyCell { .. }));
+            // A no-op write (identical cell) is not an edit.
+            (changed && !style_only).then_some(Write::Cell {
+                row,
+                column,
+                was_formula,
+                is_formula,
+            })
+        } else {
+            None
+        };
+
         match self.sheet_data.get_mut(&row) {
-            Some(column_data) => match column_data.get(&column) {
-                Some(_cell) => {
-                    column_data.insert(column, new_cell);
-                }
-                None => {
-                    column_data.insert(column, new_cell);
-                }
-            },
+            Some(column_data) => {
+                column_data.insert(column, new_cell);
+            }
             None => {
                 let mut column_data = HashMap::new();
                 column_data.insert(column, new_cell);
                 self.sheet_data.insert(row, column_data);
             }
+        }
+        if let Some(entry) = entry {
+            self.write_log.push(entry);
         }
         Ok(())
     }
@@ -355,6 +409,41 @@ impl Worksheet {
         self.update_cell(row, column, cell)
     }
 
+    /// Tears down the footprint of an array formula: the `width` x `height`
+    /// rectangle spanned from its anchor at (`row`, `column`). With
+    /// `keep_anchor` the anchor cell itself is skipped, for callers that have
+    /// already rewritten the anchor in place.
+    ///
+    /// This is the one primitive for footprint teardown. Every cell goes
+    /// through the style-preserving [`Worksheet::cell_clear_contents`], which
+    /// materializes an `EmptyCell` holding the style: a footprint can reach
+    /// cells outside the area a user selected, and `remove_cell` would drop
+    /// their style (enforced for `range_clear_all` by the grep-gate
+    /// `range_clear_all_spill_teardown_preserves_style`). Errors are ignored:
+    /// part of the footprint may already be gone.
+    ///
+    /// The evaluation-time respill in `model/mod.rs` is deliberately not a
+    /// caller: it may only clear cells proven to be the anchor's own
+    /// `SpillCell`s, because any other content must survive to block the
+    /// spill on re-evaluation.
+    pub(crate) fn clear_array_footprint(
+        &mut self,
+        row: i32,
+        column: i32,
+        width: i32,
+        height: i32,
+        keep_anchor: bool,
+    ) {
+        for r in row..row + height {
+            for c in column..column + width {
+                if keep_anchor && r == row && c == column {
+                    continue;
+                }
+                let _ = self.cell_clear_contents(r, c);
+            }
+        }
+    }
+
     pub fn set_frozen_rows(&mut self, frozen_rows: i32) -> Result<(), String> {
         if frozen_rows < 0 {
             return Err("Frozen rows cannot be negative".to_string());
@@ -383,10 +472,17 @@ impl Worksheet {
             return Err(format!("Row number '{row}' is not valid."));
         }
 
+        let currently = self.is_row_hidden(row)?;
         let rows = &mut self.rows;
         for r in rows.iter_mut() {
             if r.r == row {
                 r.hidden = hidden;
+                if currently != hidden {
+                    self.write_log.push(Write::Hidden {
+                        row: Some(row),
+                        column: None,
+                    });
+                }
                 return Ok(());
             }
         }
@@ -398,6 +494,12 @@ impl Worksheet {
             s: 0,
             hidden,
         });
+        if hidden {
+            self.write_log.push(Write::Hidden {
+                row: Some(row),
+                column: None,
+            });
+        }
         Ok(())
     }
 
@@ -445,11 +547,19 @@ impl Worksheet {
     }
 
     pub fn set_column_hidden(&mut self, column: i32, hidden: bool) -> Result<(), String> {
+        let currently = self.is_column_hidden(column)?;
         let width = self
             .get_actual_column_width(column)
             .unwrap_or(constants::DEFAULT_COLUMN_WIDTH);
         let style = self.get_column_style(column)?;
-        self.set_column_width_and_style(column, width, hidden, style)
+        self.set_column_width_and_style(column, width, hidden, style)?;
+        if currently != hidden {
+            self.write_log.push(Write::Hidden {
+                row: None,
+                column: Some(column),
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn set_column_width_and_style(
@@ -640,17 +750,71 @@ impl Worksheet {
                 });
             }
         }
+        // `sheet_data` is a hash map: sort so callers that rewrite the column
+        // cell by cell, such as a column move, do it in the same order every
+        // run. Matches the ascending order of `Model::get_columns_for_row`.
+        column_cell_references.sort_unstable_by_key(|r| r.row);
         Ok(column_cell_references)
     }
 
+    /// Drops the cell entirely, style included, and journals the removal when
+    /// it is one a reader could observe. See [`removal_is_an_edit`].
     pub(crate) fn remove_cell(&mut self, row: i32, column: i32) -> Result<(), String> {
+        let cell = self.cell(row, column);
+        let was_formula = cell.and_then(Cell::get_formula).is_some();
+        let is_edit = cell.is_some_and(removal_is_an_edit);
         if let Some(row_data) = self.sheet_data.get_mut(&row) {
             row_data.remove(&column);
             if row_data.is_empty() {
                 self.sheet_data.remove(&row);
             }
         }
+        if is_edit {
+            self.write_log.push(Write::Cell {
+                row,
+                column,
+                was_formula,
+                is_formula: false,
+            });
+        }
         Ok(())
+    }
+
+    /// Drops a whole row's cells at once, journaling each removal that is one.
+    /// The same removals [`Worksheet::remove_cell`] would journal one at a time,
+    /// which is why both ask [`removal_is_an_edit`].
+    pub(crate) fn remove_row_data(&mut self, row: i32) {
+        if let Some(row_data) = self.sheet_data.remove(&row) {
+            for (column, cell) in row_data {
+                if removal_is_an_edit(&cell) {
+                    self.write_log.push(Write::Cell {
+                        row,
+                        column,
+                        was_formula: cell.get_formula().is_some(),
+                        is_formula: false,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Reinstates a row's cells wholesale, replacing whatever is there, and
+    /// journals every position it writes. Undo's counterpart to
+    /// [`Worksheet::remove_row_data`]: unlike a removal, a restore is an edit
+    /// at every position, because the row it replaces is not this one.
+    pub(crate) fn restore_row(&mut self, row: i32, data: HashMap<i32, Cell>) {
+        for (column, cell) in &data {
+            self.write_log.push(Write::Cell {
+                row,
+                column: *column,
+                was_formula: self
+                    .cell(row, *column)
+                    .and_then(Cell::get_formula)
+                    .is_some(),
+                is_formula: cell.get_formula().is_some(),
+            });
+        }
+        self.sheet_data.insert(row, data);
     }
 
     /// Returns the height of a row in pixels

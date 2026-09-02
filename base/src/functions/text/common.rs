@@ -2,7 +2,6 @@ use crate::{
     arithmetic::bcast_idx,
     calc_result::CalcResult,
     cast::{array_node_to_string, calc_result_to_array_node},
-    constants::{LAST_COLUMN, LAST_ROW},
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
@@ -13,7 +12,7 @@ use crate::{
         text::util::{substitute, text_after, text_before, Case},
         util::from_wildcard_to_regex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
     number_format::to_precision,
 };
 
@@ -201,7 +200,7 @@ fn search(search_for: &str, text: &str, start: usize) -> Option<i32> {
     None
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_concat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let mut result = "".to_string();
         for arg in args {
@@ -225,8 +224,13 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,
@@ -287,7 +291,7 @@ impl<'a> Model<'a> {
                     Ok(s) => s,
                     Err(e) => return e,
                 };
-                let locale = self.locale;
+                let locale = self.locale();
                 let mut output = Vec::with_capacity(arr.len());
                 for row in arr {
                     let mut data_row = Vec::with_capacity(row.len());
@@ -339,7 +343,7 @@ impl<'a> Model<'a> {
                     Ok(s) => s,
                     Err(s) => return s,
                 };
-                let d = format_number(value, &format_code, self.locale);
+                let d = format_number(value, &format_code, self.locale());
                 if let Some(_e) = d.error {
                     return CalcResult::Error {
                         error: Error::VALUE,
@@ -995,34 +999,11 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    let row1 = left.row;
-                    let mut row2 = right.row;
-                    let column1 = left.column;
-                    let mut column2 = right.column;
-                    if row1 == 1 && row2 == LAST_ROW {
-                        row2 = match self.workbook.worksheet(left.sheet) {
-                            Ok(s) => s.dimension().max_row,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
                         };
-                    }
-                    if column1 == 1 && column2 == LAST_COLUMN {
-                        column2 = match self.workbook.worksheet(left.sheet) {
-                            Ok(s) => s.dimension().max_column,
-                            Err(_) => {
-                                return CalcResult::new_error(
-                                    Error::ERROR,
-                                    cell,
-                                    format!("Invalid worksheet index: '{}'", left.sheet),
-                                );
-                            }
-                        };
-                    }
                     for row in row1..row2 + 1 {
                         for column in column1..(column2 + 1) {
                             match self.evaluate_cell(CellReferenceIndex {
@@ -1179,7 +1160,7 @@ impl<'a> Model<'a> {
         match self.evaluate_node_in_context(&args[0], cell) {
             CalcResult::String(text) => {
                 let currencies = vec!["$", "€"];
-                if let Ok((value, _)) = parse_formatted_number(&text, &currencies, self.locale) {
+                if let Ok((value, _)) = parse_formatted_number(&text, &currencies, self.locale()) {
                     return CalcResult::Number(value);
                 };
                 CalcResult::Error {

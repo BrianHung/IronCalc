@@ -5,14 +5,14 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 fn log_factorial(n: u64) -> f64 {
     (1..=n).map(|i| (i as f64).ln()).sum()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── MULTINOMIAL ───────────────────────────────────────────────────────────
 
     /// `=MULTINOMIAL(number1, [number2], ...)`
@@ -46,8 +46,15 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..=right.row {
-                        for column in left.column..=right.column {
+                    // Blank cells contribute a 0, which leaves both the sum and
+                    // the product of factorials untouched: the clip is neutral.
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(
                                 crate::expressions::types::CellReferenceIndex {
                                     sheet: left.sheet,

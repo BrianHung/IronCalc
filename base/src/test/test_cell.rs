@@ -60,7 +60,11 @@ fn cell_is_always_dynamic() {
     let b2_cell = model.workbook.worksheets[0].sheet_data[&2][&2].clone();
     assert!(matches!(
         b2_cell,
-        Cell::ArrayFormula { kind: ArrayKind::Dynamic, v: FormulaValue::Number(v), .. } if v == 0.0
+        Cell::ArrayFormula {
+            kind: ArrayKind::Dynamic,
+            v: FormulaValue::Number(v),
+            ..
+        } if v == 0.0
     ));
 }
 #[test]

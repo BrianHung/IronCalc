@@ -3,7 +3,7 @@
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 // Windows-1252 codepoints for the range 0x80..=0x9F (positions 128-159).
@@ -78,7 +78,7 @@ fn char_to_win1252(c: char) -> Option<u32> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// CHAR(number) — Returns the character specified by the Windows-1252 code number.
     pub(crate) fn fn_char(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 1 {

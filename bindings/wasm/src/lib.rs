@@ -14,11 +14,49 @@ use ironcalc_base::{
     },
     types::{CellType, Color, Link, Style, StyleIncludes},
     worksheet::NavigationDirection,
-    BorderArea, ClipboardData, UserModel as BaseModel,
+    BorderArea, ChangedSinceRead, ClipboardData, RecalcMode as BaseRecalcMode,
+    UserModel as BaseModel,
 };
 
 fn to_js_error(error: String) -> JsError {
     JsError::new(&error.to_string())
+}
+
+/// How a model recomputes on [`Model::evaluate`]: `Full` recomputes every cell
+/// (the default and original behavior); `Incremental` recomputes only the cells
+/// an edit affects, falling back to full for edits it does not yet model. Chosen
+/// per model at construction and fixed for its lifetime.
+#[cfg(not(feature = "recalc_verify"))]
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum RecalcMode {
+    Full,
+    Incremental,
+}
+
+// `wasm_bindgen` does not honor `cfg` on individual variants, so the enum is
+// defined whole per configuration.
+#[cfg(feature = "recalc_verify")]
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum RecalcMode {
+    Full,
+    Incremental,
+    /// Runs Incremental and asserts every pass against a live recomputation
+    /// and a shadow full pass. Only in builds with the `recalc_verify`
+    /// feature; a divergence aborts loudly instead of returning a wrong cell.
+    Verify,
+}
+
+impl From<RecalcMode> for BaseRecalcMode {
+    fn from(mode: RecalcMode) -> Self {
+        match mode {
+            RecalcMode::Full => BaseRecalcMode::Full,
+            RecalcMode::Incremental => BaseRecalcMode::Incremental,
+            #[cfg(feature = "recalc_verify")]
+            RecalcMode::Verify => BaseRecalcMode::Verify,
+        }
+    }
 }
 
 /// Return an array with a list of all the tokens from a formula
@@ -113,6 +151,13 @@ fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_owned().into_boxed_str())
 }
 
+fn apply_recalc_mode(model: BaseModel<'static>, mode: Option<RecalcMode>) -> BaseModel<'static> {
+    match mode {
+        Some(mode) => model.with_recalc_mode(mode.into()),
+        None => model,
+    }
+}
+
 #[wasm_bindgen]
 pub struct Model {
     model: BaseModel<'static>,
@@ -126,6 +171,7 @@ impl Model {
         locale: &str,
         timezone: &str,
         language_id: &str,
+        recalc_mode: Option<RecalcMode>,
     ) -> Result<Model, JsError> {
         let name = leak_str(name);
         let locale = leak_str(locale);
@@ -133,13 +179,21 @@ impl Model {
         let language_id = leak_str(language_id);
         let model =
             BaseModel::new_empty(name, locale, timezone, language_id).map_err(to_js_error)?;
-        Ok(Model { model })
+        Ok(Model {
+            model: apply_recalc_mode(model, recalc_mode),
+        })
     }
 
-    pub fn from_bytes(bytes: &[u8], language_id: &str) -> Result<Model, JsError> {
+    pub fn from_bytes(
+        bytes: &[u8],
+        language_id: &str,
+        recalc_mode: Option<RecalcMode>,
+    ) -> Result<Model, JsError> {
         let language_id = leak_str(language_id);
         let model = BaseModel::from_bytes(bytes, language_id).map_err(to_js_error)?;
-        Ok(Model { model })
+        Ok(Model {
+            model: apply_recalc_mode(model, recalc_mode),
+        })
     }
 
     pub fn undo(&mut self) -> Result<(), JsError> {
@@ -163,6 +217,32 @@ impl Model {
     #[wasm_bindgen(js_name = "pauseEvaluation")]
     pub fn pause_evaluation(&mut self) {
         self.model.pause_evaluation()
+    }
+
+    /// Returns the cells whose observable state moved on incremental
+    /// evaluations since the last call, and clears the record.
+    /// `{ kind: "everything" }` after a full recompute;
+    /// `{ kind: "cells", cells: [...] }` for an incremental delta
+    /// (possibly empty). These are not the same answer, so this is not `null`.
+    /// Only meaningful for a model constructed with `RecalcMode.Incremental`.
+    #[wasm_bindgen(
+        js_name = "takeChangedCells",
+        unchecked_return_type = "{ kind: 'everything' } | { kind: 'cells', cells: CellReferenceIndex[] }"
+    )]
+    pub fn take_changed_cells(&mut self) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "camelCase")]
+        enum ChangedSinceReadJs {
+            Everything,
+            Cells {
+                cells: Vec<ironcalc_base::expressions::types::CellReferenceIndex>,
+            },
+        }
+        let payload = match self.model.take_changed_cells() {
+            ChangedSinceRead::Everything => ChangedSinceReadJs::Everything,
+            ChangedSinceRead::Cells(cells) => ChangedSinceReadJs::Cells { cells },
+        };
+        serde_wasm_bindgen::to_value(&payload).map_err(|e| to_js_error(e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "resumeEvaluation")]

@@ -1,0 +1,102 @@
+# Nightly deep audit of the incremental-recalc engine. The per-push CI fuzz
+# (40x120) catches quick breaks; the bug classes this stack actually shipped
+# were only visible to long soaks and mutation testing, so those run here.
+name: nightly-recalc-audit
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # 09:17 UTC daily
+  workflow_dispatch:
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rotating-window differential soak (400 seeds x 400 steps)
+        # A new seed window every night; regressions overfit to a fixed
+        # window are exactly what rotation exists to catch.
+        run: |
+          START=$(( ( $(date +%s) / 86400 % 50 ) * 400 + 1 ))
+          echo "seed window: $START..$(( START + 399 ))"
+          FUZZ_START=$START FUZZ_SEEDS=400 FUZZ_STEPS=400 \
+            cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
+      - name: Verify-mode soak (oracle assertions on)
+        run: |
+          START=$(( ( $(date +%s) / 86400 % 50 ) * 400 + 1 ))
+          FUZZ_START=$START FUZZ_SEEDS=100 FUZZ_STEPS=300 \
+            cargo test -p ironcalc_base --features recalc_verify --test fuzz_differential -- --nocapture
+
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+      - name: Mutation-test the recalc engine against the Verify suite
+        # A surviving mutant means the oracles have a hole, not that the code
+        # is wrong. Triage survivors: equivalent -> document, else add the
+        # killing test. mutants.out is uploaded either way.
+        run: |
+          set -euo pipefail
+
+          # The engine as directory globs, not a hand-kept file list. The list
+          # this replaces named `model/incremental.rs` when that file was the
+          # whole scheduler; the round-5 split moved four modules out from
+          # under it and the filter kept passing while covering none of them.
+          # A glob cannot lose a file to a split.
+          #
+          # Two files under those globs are excluded on purpose:
+          #
+          #  * `model/mod.rs` is the evaluator, ~4.6k lines. It is not the
+          #    incremental engine, and mutating it does not fit the job's
+          #    budget. If a piece of the engine is ever split out of it, the
+          #    glob picks the new file up automatically -- which is the point.
+          #  * `model/verify.rs` is the oracle this job runs the suite under.
+          #    Mutating it means checking the oracle against itself: a mutant
+          #    that makes an assertion *fire* is killed by the very suite it
+          #    breaks, and a mutant that makes one vacuous survives by
+          #    construction, because nothing checks the checker. Every
+          #    survivor it could report is unkillable and untriageable, so it
+          #    would be pure noise on the triage list it costs runtime to
+          #    produce. Verify is held honest by the differential fuzz above
+          #    instead, where a weakened oracle shows up as a mode divergence.
+          FILTER=(
+            -f 'base/src/recalc/**'
+            -f 'base/src/model/**'
+            -f base/src/dependency_graph.rs
+            -e base/src/model/mod.rs
+            -e base/src/model/verify.rs
+          )
+
+          # The globs above are only as good as their spelling: `-f` on a
+          # pattern that matches nothing is not an error, it is silent zero
+          # coverage. (The list this replaces spelled one entry
+          # `base/src/recalc/`, a form cargo-mutants matches no file with, so
+          # the whole journal-and-tracer directory went unmutated without a
+          # word.) So derive what the filter *should* select from the tree and
+          # fail the job on any difference, in either direction.
+          cargo mutants --list-files -p ironcalc_base "${FILTER[@]}" \
+            | sort > /tmp/mutants-selected.txt
+          { ls base/src/recalc/*.rs base/src/model/*.rs; echo base/src/dependency_graph.rs; } \
+            | grep -vE '^base/src/model/(mod|verify)\.rs$' \
+            | sort > /tmp/mutants-expected.txt
+          if ! diff -u /tmp/mutants-expected.txt /tmp/mutants-selected.txt; then
+            echo "::error::the mutation filter no longer selects the engine."
+            echo "'-' lines are engine files nothing will mutate; '+' lines are"
+            echo "files that should not be in scope. Fix FILTER in this step,"
+            echo "or move the exclusion list if a file legitimately left."
+            exit 1
+          fi
+
+          IRONCALC_RECALC=verify cargo mutants --no-shuffle -p ironcalc_base \
+            "${FILTER[@]}" -- --features recalc_verify --lib
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-out
+          path: mutants.out

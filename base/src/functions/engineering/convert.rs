@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 enum Temperature {
@@ -41,7 +41,7 @@ fn convert_temperature(
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // CONVERT(number, from_unit, to_unit)
     pub(crate) fn fn_convert(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 3 {

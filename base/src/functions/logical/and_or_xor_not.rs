@@ -5,10 +5,10 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_not(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.get_boolean(&args[0], cell) {
@@ -85,8 +85,13 @@ impl<'a> Model<'a> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    for row in left.row..(right.row + 1) {
-                        for column in left.column..(right.column + 1) {
+                    let (row1, row2, column1, column2) =
+                        match self.clip_range_to_used(&left, &right, cell) {
+                            Ok(bounds) => bounds,
+                            Err(e) => return e,
+                        };
+                    for row in row1..=row2 {
+                        for column in column1..=column2 {
                             match self.evaluate_cell(CellReferenceIndex {
                                 sheet: left.sheet,
                                 row,

@@ -1,6 +1,20 @@
-import { Model } from "@ironcalc/workbook";
+import { Model, RecalcMode } from "@ironcalc/workbook";
 import i18n from "../i18n";
 import { base64ToBytes, bytesToBase64 } from "./util";
+
+// Engine selection for testing: append ?recalc=incremental to opt the whole
+// session into incremental recalculation. Absent, the engine runs Full.
+const recalcParam = new URLSearchParams(window.location.search).get("recalc");
+export const RECALC_MODE =
+  recalcParam === "incremental"
+    ? RecalcMode.Incremental
+    : recalcParam === "verify" && "Verify" in RecalcMode
+      ? (RecalcMode as unknown as { Verify: RecalcMode }).Verify
+      : undefined;
+if (RECALC_MODE !== undefined) {
+  console.info(`IronCalc engine: ${recalcParam} recalculation enabled`);
+}
+
 
 const MAX_WORKBOOKS = 50;
 
@@ -143,10 +157,10 @@ export function createModelWithSafeTimezone(name: string): Model {
   const localeShort = getShortLocaleCode(locale);
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    return new Model(name, localeShort, tz, language);
+    return new Model(name, localeShort, tz, language, RECALC_MODE);
   } catch (e) {
     console.warn("Failed to get timezone, defaulting to UTC", e);
-    return new Model(name, localeShort, "UTC", language);
+    return new Model(name, localeShort, "UTC", language, RECALC_MODE);
   }
 }
 
@@ -176,7 +190,7 @@ export function loadSelectedModelFromStorage(): Model | null {
       const modelBytesString = localStorage.getItem(uuid);
       const language = getLanguageFromLocale(loadDefaultLocaleFromStorage());
       if (modelBytesString) {
-        return Model.from_bytes(base64ToBytes(modelBytesString), language);
+        return Model.from_bytes(base64ToBytes(modelBytesString), language, RECALC_MODE);
       }
     }
     return null;
@@ -237,7 +251,7 @@ export function selectModelFromStorage(uuid: string): Model | null {
   const modelBytesString = localStorage.getItem(uuid);
   const language = getLanguageFromLocale(loadDefaultLocaleFromStorage());
   if (modelBytesString) {
-    return Model.from_bytes(base64ToBytes(modelBytesString), language);
+    return Model.from_bytes(base64ToBytes(modelBytesString), language, RECALC_MODE);
   }
   return null;
 }
@@ -294,7 +308,7 @@ export function deleteModelByUuid(uuid: string): Model | null {
     const modelBytesString = localStorage.getItem(selectedUuid);
     const language = getLanguageFromLocale(loadDefaultLocaleFromStorage());
     if (modelBytesString) {
-      return Model.from_bytes(base64ToBytes(modelBytesString), language);
+      return Model.from_bytes(base64ToBytes(modelBytesString), language, RECALC_MODE);
     }
   }
 
@@ -322,7 +336,7 @@ export function duplicateModel(uuid: string): Model | null {
   }
 
   const language = originalModel.getLanguage();
-  const duplicatedModel = Model.from_bytes(originalModel.toBytes(), language);
+  const duplicatedModel = Model.from_bytes(originalModel.toBytes(), language, RECALC_MODE);
   const models = getModelsMetadata();
   const originalName = models[uuid].name;
   const existingNames = Object.values(models).map((m) => m.name);

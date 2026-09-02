@@ -9,7 +9,7 @@ use crate::{
         utils::number_to_column,
     },
     get_all_timezones,
-    model::{Model, ParsedDefinedName},
+    model::{eval_ctx::EvalCtx, ParsedDefinedName},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,7 +22,7 @@ fn get_system() -> String {
     "browser".to_string()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_isnumber(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.evaluate_node_in_context(&args[0], cell) {
@@ -272,10 +272,7 @@ impl<'a> Model<'a> {
         match &args[0] {
             Node::DefinedNameKind((name, scope, _)) => {
                 // Let's see if it is a defined name
-                if let Some(defined_name) = self
-                    .parsed_defined_names
-                    .get(&(*scope, name.to_lowercase()))
-                {
+                if let Some(defined_name) = self.defined_name(*scope, &name.to_lowercase()) {
                     match defined_name {
                         ParsedDefinedName::CellReference(reference) => {
                             return CalcResult::Number(reference.sheet as f64 + 1.0)
@@ -303,13 +300,9 @@ impl<'a> Model<'a> {
             }
             Node::TableNameKind(name) => {
                 // Now let's see if it is a table
-                for (table_name, table) in &self.workbook.tables {
-                    if table_name == name {
-                        if let Some(sheet_index) = self.get_sheet_index_by_name(&table.sheet_name) {
-                            return CalcResult::Number(sheet_index as f64 + 1.0);
-                        } else {
-                            break;
-                        }
+                if let Some(sheet_name) = self.table_by_name(name).map(|t| t.sheet_name.clone()) {
+                    if let Some(sheet_index) = self.get_sheet_index_by_name(&sheet_name) {
+                        return CalcResult::Number(sheet_index as f64 + 1.0);
                     }
                 }
             }
@@ -386,7 +379,7 @@ impl<'a> Model<'a> {
                 message: "Sheets function with an argument is not implemented".to_string(),
             };
         }
-        let sheet_count = self.workbook.worksheets.len() as f64;
+        let sheet_count = self.sheet_count() as f64;
         CalcResult::Number(sheet_count)
     }
 
@@ -454,9 +447,9 @@ impl<'a> Model<'a> {
             }
             "CONTENTS" => self.evaluate_cell(reference),
             "FILENAME" => {
-                let workbook_name = &self.workbook.name;
-                let worksheet_name = match self.workbook.worksheet(reference.sheet) {
-                    Ok(ws) => &ws.name,
+                let workbook_name = self.workbook_name().to_string();
+                let worksheet_name = match self.worksheet_name(reference.sheet) {
+                    Ok(name) => name,
                     Err(_) => {
                         return CalcResult::Error {
                             error: Error::VALUE,
@@ -510,7 +503,7 @@ impl<'a> Model<'a> {
             },
 
             // For now we just show the count of sheets in the current workbook
-            "NUMFILE" => CalcResult::Number(self.workbook.worksheets.len() as f64),
+            "NUMFILE" => CalcResult::Number(self.sheet_count() as f64),
 
             // At the moment we always do automatic recalc
             "RECALC" => CalcResult::String("Automatic".to_string()),

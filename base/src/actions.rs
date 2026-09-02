@@ -1,6 +1,7 @@
 use crate::cf_types::{CfRule, Cfvo};
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
+use crate::dependency_graph::Axis;
 use crate::expressions::parser::stringify::{
     to_localized_string, to_string_displaced, DisplaceData,
 };
@@ -12,17 +13,32 @@ use crate::locale::get_default_locale;
 use crate::model::{CellStructure, Model};
 use crate::types::{ArrayKind, Cell, Link, Worksheet};
 
+/// A cell lifted out of a moved row or column, ready to be written back:
+/// target row and column, formula or value, style index, and the CSE
+/// rectangle it anchors, if any.
+type MovedCell = (i32, i32, String, i32, Option<(i32, i32)>);
+
 /// Applies `map` to the (row, column) key of every link in the worksheet, so
 /// that links follow their cells when rows or columns are inserted, deleted or
 /// moved: `Some((row, column))` moves the link there, `None` removes it.
-fn displace_links<F>(worksheet: &mut Worksheet, map: F)
+/// Every moved, added or removed position is journaled: a link is part of the
+/// cell's observable state and its readers must re-run.
+fn displace_links<F>(worksheet: &mut Worksheet, sheet: u32, map: F)
 where
     F: Fn(i32, i32) -> Option<(i32, i32)>,
 {
     let links = std::mem::take(&mut worksheet.links);
     worksheet.links = links
         .into_iter()
-        .filter_map(|((row, column), link)| map(row, column).map(|key| (key, link)))
+        .filter_map(|((row, column), link)| {
+            let new_key = map(row, column);
+            if new_key != Some((row, column)) {
+                worksheet.write_log.push(crate::recalc::Write::Link {
+                    at: (sheet, row, column),
+                });
+            }
+            new_key.map(|key| (key, link))
+        })
         .collect();
 }
 
@@ -303,7 +319,6 @@ impl<'a> Model<'a> {
                 row,
                 column,
             };
-            // FIXME: This is not a very performant way if the formula has changed :S.
             // Both strings must be in the active locale/language: the displaced
             // one is written back through the (localized) parser, and comparing
             // against an English rendering would flag every formula as changed.
@@ -316,7 +331,12 @@ impl<'a> Model<'a> {
                 self.language,
             );
             if formula != formula_displaced {
-                self.update_cell_with_formula(sheet, row, column, format!("={formula_displaced}"))?;
+                // A displacement only shifts references; it does not rewire the
+                // dependency graph, so write the formula without forcing a full
+                // recompute. `record_structural_edit` shifts the existing edges
+                // (and falls back to full for edits the shift cannot model), so
+                // the next pass can run incrementally.
+                self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
             };
         }
         Ok(())
@@ -408,18 +428,75 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// The write half of [`Model::move_cell`].
+    ///
+    /// An array formula rewrites its whole range. A plain formula is written
+    /// graph-neutrally, rather than through `set_user_input` which forces a
+    /// full recompute, so the structural edit's edge shift can keep the next
+    /// pass incremental. A value goes through the normal input path.
+    fn move_cell_write(
+        &mut self,
+        sheet: u32,
+        target_row: i32,
+        target_column: i32,
+        array: Option<(i32, i32)>,
+        formula_or_value: &str,
+    ) -> Result<(), String> {
+        if let Some((width, height)) = array {
+            self.set_user_array_formula(
+                sheet,
+                target_row,
+                target_column,
+                width,
+                height,
+                formula_or_value,
+            )?;
+        } else if let Some(formula) = formula_or_value.strip_prefix('=') {
+            self.write_displaced_formula(sheet, target_row, target_column, format!("={formula}"))?;
+        } else {
+            self.set_user_input(
+                sheet,
+                target_row,
+                target_column,
+                formula_or_value.to_string(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Writes the cells lifted out of a moved row or column back at their new
+    /// positions. Callers wrap it in [`Model::with_cse_guard_suspended`]: the
+    /// rebuild writes the anchor of a CSE array and, right after it, the
+    /// placeholders of the rectangle the anchor has just re-declared.
+    ///
+    /// Deliberately NOT unified with [`Model::move_cell_write`], which it
+    /// resembles. That path writes a plain formula through
+    /// `write_displaced_formula`, which journals `is_formula: false` because
+    /// what it performs is a *rewrite* of text a displacement changed. This
+    /// rebuild re-creates a whole line's cells at positions it lifted them
+    /// away from, so `set_user_input` is the honest entry: the journal sees a
+    /// formula appearing where one may not have been, and the spill and
+    /// quote-prefix preparation that a fresh write needs runs. Each lifted
+    /// cell's style is restored inline too, which `move_cell` leaves to its
+    /// caller.
+    fn rebuild_moved_cells(&mut self, sheet: u32, cells: Vec<MovedCell>) -> Result<(), String> {
+        for (row, column, value, style_index, array) in cells {
+            if let Some((width, height)) = array {
+                self.set_user_array_formula(sheet, row, column, width, height, &value)?;
+            } else {
+                self.set_user_input(sheet, row, column, value)?;
+            }
+            self.workbook
+                .worksheet_mut(sheet)?
+                .set_cell_style(row, column, style_index)?;
+        }
+        Ok(())
+    }
+
     /// Moves the contents of cell (source_row, source_column) to (target_row, target_column).
     ///
     /// It assumes that the caller has already checked that the move is valid
     /// (e.g. it does not split an array formula). And that dynamic array spills have been reset.
-    ///
-    /// # Arguments
-    ///
-    /// * `sheet` - The sheet number to retrieve columns from.
-    /// * `source_row` - The row index of the cell's current location.
-    /// * `source_column` - The column index of the cell's current location.
-    /// * `target_row` - The row index of the cell's new location.
-    /// * `target_column` - The column index of the cell's new location.
     fn move_cell(
         &mut self,
         sheet: u32,
@@ -453,6 +530,9 @@ impl<'a> Model<'a> {
                 // This the spill of an array formula. Because dynamic arrays spills have been deleted
                 // We delete the spill
                 let worksheet = self.workbook.worksheet_mut(sheet)?;
+                // Sanctioned: vacating the source of a cell move. The position is meant
+                // to lose its style too, unlike a footprint teardown.
+                #[allow(clippy::disallowed_methods)]
                 worksheet.remove_cell(source_row, source_column)?;
                 return Ok(());
             }
@@ -485,27 +565,133 @@ impl<'a> Model<'a> {
                 )
             });
 
-        if let Some((width, height)) = array {
-            // We are moving an array formula, we need to move the whole range
-            self.set_user_array_formula(
-                sheet,
-                target_row,
-                target_column,
-                width,
-                height,
-                &formula_or_value,
-            )?;
-        } else {
-            self.set_user_input(sheet, target_row, target_column, formula_or_value)?;
-        }
+        self.with_cse_guard_suspended(|model| {
+            model.move_cell_write(sheet, target_row, target_column, array, &formula_or_value)
+        })?;
 
         let worksheet = self.workbook.worksheet_mut(sheet)?;
         // copy style
         worksheet.set_cell_style(target_row, target_column, style)?;
 
         // delete source cell content and style
+        // Sanctioned: vacating the source of a cell move. The position is meant
+        // to lose its style too, unlike a footprint teardown.
+        #[allow(clippy::disallowed_methods)]
         worksheet.remove_cell(source_row, source_column)?;
         Ok(())
+    }
+
+    /// Replaces every link sitting on the moved line with the ones lifted off
+    /// the source line, discarding whatever the cell rebuild auto-created.
+    ///
+    /// `moved_links` is keyed by the coordinate that is *not* the line: the
+    /// column for a row move, the row for a column move.
+    ///
+    /// Both the discarded positions and the re-attached ones are journaled. A
+    /// link is part of a cell's observable state, so readers of either end must
+    /// re-run. One body for both axes, so the rule cannot be applied to one and
+    /// forgotten on the other.
+    fn reattach_moved_links(
+        &mut self,
+        sheet: u32,
+        axis: Axis,
+        target_line: i32,
+        moved_links: Vec<(i32, Link)>,
+    ) -> Result<(), String> {
+        let on_target = |&(row, column): &(i32, i32)| match axis {
+            Axis::Row => row == target_line,
+            Axis::Column => column == target_line,
+        };
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        let discarded: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .filter(|key| on_target(key))
+            .copied()
+            .collect();
+        for (row, column) in discarded {
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, row, column),
+            });
+        }
+        worksheet.links.retain(|key, _| !on_target(key));
+        for (other, link) in moved_links {
+            let (row, column) = match axis {
+                Axis::Row => (target_line, other),
+                Axis::Column => (other, target_line),
+            };
+            worksheet.links.insert((row, column), link);
+            worksheet.write_log.push(crate::recalc::Write::Link {
+                at: (sheet, row, column),
+            });
+        }
+        Ok(())
+    }
+
+    /// Keeps the dependency graph in step with a structural edit. A row or
+    /// column insert, delete or move shifts stored positions and formula
+    /// `HYPERLINK` results. A cell displacement, which the shift does not model,
+    /// forces a full recompute. The match is exhaustive so a new `DisplaceData`
+    /// variant cannot silently skip graph maintenance.
+    fn record_structural_edit(&mut self, disp: &DisplaceData) {
+        // Inserted or deleted rows and columns add or remove formula cells
+        // without cell writes; recount before the next fanout decision. CSE
+        // rectangles move with their anchors, so the memo is stale too.
+        self.formula_count_stale = true;
+        self.cse_rects = None;
+        match *disp {
+            DisplaceData::Row { sheet, row, delta } => {
+                self.record_band_edit(sheet, Axis::Row, row, delta)
+            }
+            DisplaceData::Column {
+                sheet,
+                column,
+                delta,
+            } => self.record_band_edit(sheet, Axis::Column, column, delta),
+            // One line at a time: `move_rows_action` decomposes a K-row move
+            // into K of these, so `row + delta` is the whole destination.
+            DisplaceData::RowMove { sheet, row, delta } => {
+                self.record_line_move(sheet, Axis::Row, row, row + delta)
+            }
+            DisplaceData::ColumnMove {
+                sheet,
+                column,
+                delta,
+            } => self.record_line_move(sheet, Axis::Column, column, column + delta),
+            DisplaceData::CellHorizontal { .. } | DisplaceData::CellVertical { .. } => {
+                self.graph.force_full();
+            }
+            DisplaceData::None => {}
+        }
+    }
+
+    /// A row/column insert or delete: shift the dynamic links, then the graph.
+    fn record_band_edit(&mut self, sheet: u32, axis: Axis, boundary: i32, delta: i32) {
+        self.shift_dynamic_links(|pos| {
+            crate::dependency_graph::shift_position(sheet, axis, boundary, delta, pos)
+        });
+        self.graph.structural_edit(sheet, axis, boundary, delta);
+    }
+
+    /// A row/column move: shift the dynamic links, then the graph.
+    fn record_line_move(&mut self, sheet: u32, axis: Axis, from: i32, to: i32) {
+        self.shift_dynamic_links(|pos| {
+            crate::dependency_graph::move_position(sheet, axis, from, to, pos)
+        });
+        self.graph.structural_move(sheet, axis, from, to);
+    }
+
+    /// Moves formula `HYPERLINK` results with their cells, by the same rule the
+    /// graph shifts itself by. Worksheet links are displaced separately; this
+    /// map is not on the graph.
+    fn shift_dynamic_links(
+        &mut self,
+        remap: impl Fn(crate::dependency_graph::Position) -> Option<crate::dependency_graph::Position>,
+    ) {
+        self.links = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter_map(|(pos, link)| remap(pos).map(|pos| (pos, link)))
+            .collect();
     }
 
     /// Inserts one or more new columns into the model at the specified index.
@@ -540,9 +726,10 @@ impl<'a> Model<'a> {
                     .to_string(),
             );
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, column)?;
         let worksheet = self.workbook.worksheet(sheet)?;
-        let all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+        let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
+        all_rows.sort_unstable();
         for row in all_rows {
             let sorted_columns = self.get_columns_for_row(sheet, row, true)?;
             for col in sorted_columns {
@@ -556,7 +743,7 @@ impl<'a> Model<'a> {
         }
 
         // Links move with their cells
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if c >= column {
                 Some((r, c + column_count))
             } else {
@@ -572,6 +759,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         // In the list of columns:
         // * Keep all the columns to the left
@@ -631,7 +819,7 @@ impl<'a> Model<'a> {
             );
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, column)?;
         // first column being deleted
         let column_start = column;
         // last column being deleted
@@ -650,13 +838,16 @@ impl<'a> Model<'a> {
                     if col > column_end {
                         self.move_cell(sheet, r, col, r, col - column_count)?;
                     } else {
+                        // Sanctioned: the column itself is being deleted, so its cells lose
+                        // content and style alike.
+                        #[allow(clippy::disallowed_methods)]
                         self.workbook.worksheet_mut(sheet)?.remove_cell(r, col)?;
                     }
                 }
             }
         }
         // Links move with their cells; the links of the deleted columns are removed
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if c < column_start {
                 Some((r, c))
             } else if c <= column_end {
@@ -674,6 +865,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
 
         // deletes all the column styles
@@ -875,7 +1067,7 @@ impl<'a> Model<'a> {
             );
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, row)?;
         // Move cells
         let worksheet = &self.workbook.worksheet(sheet)?;
         let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
@@ -910,7 +1102,7 @@ impl<'a> Model<'a> {
         self.workbook.worksheets[sheet as usize].rows = new_rows;
 
         // Links move with their cells
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if r >= row {
                 Some((r + row_count, c))
             } else {
@@ -926,6 +1118,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
 
         Ok(())
     }
@@ -951,7 +1144,7 @@ impl<'a> Model<'a> {
             return Err("Cannot delete rows because that would break an array formula".to_string());
         }
 
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, row)?;
         // Move cells
         let worksheet = &self.workbook.worksheet(sheet)?;
         let mut all_rows: Vec<i32> = worksheet.sheet_data.keys().copied().collect();
@@ -968,7 +1161,7 @@ impl<'a> Model<'a> {
                     }
                 } else {
                     // remove all cells in row
-                    self.workbook.worksheet_mut(sheet)?.sheet_data.remove(&r);
+                    self.workbook.worksheet_mut(sheet)?.remove_row_data(r);
                 }
             }
         }
@@ -990,7 +1183,7 @@ impl<'a> Model<'a> {
         self.workbook.worksheets[sheet as usize].rows = new_rows;
 
         // Links move with their cells; the links of the deleted rows are removed
-        displace_links(self.workbook.worksheet_mut(sheet)?, |r, c| {
+        displace_links(self.workbook.worksheet_mut(sheet)?, sheet, |r, c| {
             if r < row {
                 Some((r, c))
             } else if r < row + row_count {
@@ -1007,6 +1200,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1026,7 +1220,7 @@ impl<'a> Model<'a> {
             .filter(|(&(_, c), _)| c == column)
             .map(|(&(r, _), link)| (r, link.clone()))
             .collect();
-        displace_links(worksheet, |r, c| {
+        displace_links(worksheet, sheet, |r, c| {
             if c == column {
                 None
             } else if delta > 0 && c > column && c <= target_column {
@@ -1075,6 +1269,9 @@ impl<'a> Model<'a> {
                     // This the spill of an array formula. Because dynamic arrays spills have been deleted
                     // We delete the spill
                     let worksheet = self.workbook.worksheet_mut(sheet)?;
+                    // Sanctioned: vacating the source of a column move. The position is
+                    // meant to lose its style too, unlike a footprint teardown.
+                    #[allow(clippy::disallowed_methods)]
                     worksheet.remove_cell(r.row, column)?;
                     continue;
                 }
@@ -1100,6 +1297,9 @@ impl<'a> Model<'a> {
 
             original_cells.push((r.row, formula_or_value, style_idx, array));
             let ws = self.workbook.worksheet_mut(sheet)?;
+            // Sanctioned: vacating the source of a column move; the cell is
+            // re-created at the target with its captured style.
+            #[allow(clippy::disallowed_methods)]
             ws.remove_cell(r.row, column)?;
         }
         let width = self
@@ -1135,26 +1335,16 @@ impl<'a> Model<'a> {
                     .set_column_width_and_style(c + 1, w, h, s)?;
             }
         }
-        for (r, value, style_idx, array) in original_cells {
-            if let Some(a) = array {
-                self.set_user_array_formula(sheet, r, target_column, a.0, a.1, &value)?;
-            } else {
-                self.set_user_input(sheet, r, target_column, value)?;
-            }
-            self.workbook
-                .worksheet_mut(sheet)?
-                .set_cell_style(r, target_column, style_idx)?;
-        }
+        let rebuilt: Vec<MovedCell> = original_cells
+            .into_iter()
+            .map(|(r, value, style_idx, array)| (r, target_column, value, style_idx, array))
+            .collect();
+        self.with_cse_guard_suspended(|model| model.rebuild_moved_cells(sheet, rebuilt))?;
         self.workbook
             .worksheet_mut(sheet)?
             .set_column_width_and_style(target_column, width, hidden, style)?;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created
-        let worksheet = self.workbook.worksheet_mut(sheet)?;
-        worksheet.links.retain(|&(_, c), _| c != target_column);
-        for (r, link) in moved_links {
-            worksheet.links.insert((r, target_column), link);
-        }
+        self.reattach_moved_links(sheet, Axis::Column, target_column, moved_links)?;
 
         let disp = DisplaceData::ColumnMove {
             sheet,
@@ -1163,6 +1353,7 @@ impl<'a> Model<'a> {
         };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1181,7 +1372,7 @@ impl<'a> Model<'a> {
             .filter(|(&(r, _), _)| r == row)
             .map(|(&(_, c), link)| (c, link.clone()))
             .collect();
-        displace_links(worksheet, |r, c| {
+        displace_links(worksheet, sheet, |r, c| {
             if r == row {
                 None
             } else if delta > 0 && r > row && r <= target_row {
@@ -1220,6 +1411,9 @@ impl<'a> Model<'a> {
                     // This the spill of an array formula. Because dynamic arrays spills have been deleted
                     // We delete the spill
                     let worksheet = self.workbook.worksheet_mut(sheet)?;
+                    // Sanctioned: vacating the source of a row move. The position is meant
+                    // to lose its style too, unlike a footprint teardown.
+                    #[allow(clippy::disallowed_methods)]
                     worksheet.remove_cell(row, *c)?;
                     continue;
                 }
@@ -1244,6 +1438,9 @@ impl<'a> Model<'a> {
             }
             original_cells.push((*c, formula_or_value, style_idx, array));
             let ws = self.workbook.worksheet_mut(sheet)?;
+            // Sanctioned: vacating the source of a row move; the cell is re-created
+            // at the target with its captured style.
+            #[allow(clippy::disallowed_methods)]
             ws.remove_cell(row, *c)?;
         }
         if delta > 0 {
@@ -1261,23 +1458,11 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        for (c, value, style_idx, array) in original_cells {
-            if let Some(array_range) = array {
-                self.set_user_array_formula(
-                    sheet,
-                    target_row,
-                    c,
-                    array_range.0,
-                    array_range.1,
-                    &value,
-                )?;
-            } else {
-                self.set_user_input(sheet, target_row, c, value)?;
-            }
-            self.workbook
-                .worksheet_mut(sheet)?
-                .set_cell_style(target_row, c, style_idx)?;
-        }
+        let rebuilt: Vec<MovedCell> = original_cells
+            .into_iter()
+            .map(|(c, value, style_idx, array)| (target_row, c, value, style_idx, array))
+            .collect();
+        self.with_cse_guard_suspended(|model| model.rebuild_moved_cells(sheet, rebuilt))?;
         let worksheet = &mut self.workbook.worksheet_mut(sheet)?;
         let mut new_rows = Vec::new();
         for r in worksheet.rows.iter() {
@@ -1299,16 +1484,12 @@ impl<'a> Model<'a> {
         }
         worksheet.rows = new_rows;
 
-        // Re-attach the moved links, discarding any link the rebuild auto-created
-        let worksheet = self.workbook.worksheet_mut(sheet)?;
-        worksheet.links.retain(|&(r, _), _| r != target_row);
-        for (c, link) in moved_links {
-            worksheet.links.insert((target_row, c), link);
-        }
+        self.reattach_moved_links(sheet, Axis::Row, target_row, moved_links)?;
 
         let disp = DisplaceData::RowMove { sheet, row, delta };
         self.displace_cells(&disp)?;
         self.displace_cf_ranges(sheet, &disp);
+        self.record_structural_edit(&disp);
         Ok(())
     }
 
@@ -1505,7 +1686,7 @@ impl<'a> Model<'a> {
                 "Cannot move columns because that would split an array formula".to_string(),
             );
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Column, 1)?;
 
         // Move columns in the correct order
         if delta > 0 {
@@ -1548,7 +1729,7 @@ impl<'a> Model<'a> {
         if !self.can_move_rows_action(sheet, row, row_count, delta)? {
             return Err("Cannot move rows because that would split an array formula".to_string());
         }
-        self.reset_dynamic_array_spills(sheet)?;
+        self.reset_dynamic_array_spills(sheet, Axis::Row, 1)?;
 
         // Move rows in the correct order
         if delta > 0 {

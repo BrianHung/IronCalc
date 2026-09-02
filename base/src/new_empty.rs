@@ -1,6 +1,6 @@
 use chrono::DateTime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     calc_result::Range,
@@ -74,6 +74,7 @@ impl<'a> Model<'a> {
             views,
             conditional_formatting: vec![],
             links: HashMap::new(),
+            write_log: crate::recalc::WriteLog::default(),
         }
     }
 
@@ -194,6 +195,8 @@ impl<'a> Model<'a> {
         self.parse_formulas();
         self.parsed_defined_names = HashMap::new();
         self.parse_defined_names();
+        // Reparsing invalidates the dependency graph built on the old parse.
+        self.invalidate_graph();
         self.evaluate();
     }
 
@@ -697,6 +700,21 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            graph: crate::dependency_graph::DependencyGraph::default(),
+            recalc_mode: crate::RecalcMode::from_env(),
+            recompute_scope: None,
+            formula_cell_count: 0,
+            formula_count_stale: false,
+            wrote_array_cells: false,
+            evaluated_array_cells: false,
+            saw_circular_reference: false,
+            cse_rects: None,
+            cse_member_guard: crate::model::cse_guard::CseMemberGuard::default(),
+            read_stack: Vec::new(),
+            read_pool: Vec::new(),
+            changed_cells: crate::model::ChangedCells::All,
+            write_seeds: HashSet::new(),
+            full_pass_run: crate::model::incremental::FullPassRun::default(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

@@ -3,11 +3,12 @@ use statrs::distribution::{ChiSquared, Continuous, ContinuousCDF};
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 const MAX_DEGREES_OF_FREEDOM: f64 = 10_000_000_000.0;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // CHISQ.DIST(x, deg_freedom, cumulative)
     pub(crate) fn fn_chisq_dist(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 3 {
@@ -262,14 +263,38 @@ impl<'a> Model<'a> {
         left: CellReferenceIndex,
         right: CellReferenceIndex,
     ) -> Result<Vec<Option<f64>>, CalcResult> {
+        self.values_from_rect(left.sheet, left.row, right.row, left.column, right.column)
+    }
+
+    /// [`Self::values_from_range`] over the range clipped to the used dimension.
+    ///
+    /// Only for callers that read a *single* range and then drop the `None`s
+    /// that blank cells produce -- there the clip is value-neutral. A caller
+    /// that pairs two ranges positionally must keep using
+    /// [`Self::values_from_range`]: clipping one side and not the other would
+    /// change the lengths it compares.
+    pub(crate) fn values_from_range_clipped(
+        &mut self,
+        left: CellReferenceIndex,
+        right: CellReferenceIndex,
+        cell: CellReferenceIndex,
+    ) -> Result<Vec<Option<f64>>, CalcResult> {
+        let (row1, row2, column1, column2) = self.clip_range_to_used(&left, &right, cell)?;
+        self.values_from_rect(left.sheet, row1, row2, column1, column2)
+    }
+
+    fn values_from_rect(
+        &mut self,
+        sheet: u32,
+        row1: i32,
+        row2: i32,
+        column1: i32,
+        column2: i32,
+    ) -> Result<Vec<Option<f64>>, CalcResult> {
         let mut values = Vec::new();
-        for row_offset in 0..=(right.row - left.row) {
-            for col_offset in 0..=(right.column - left.column) {
-                let cell_ref = CellReferenceIndex {
-                    sheet: left.sheet,
-                    row: left.row + row_offset,
-                    column: left.column + col_offset,
-                };
+        for row in row1..=row2 {
+            for column in column1..=column2 {
+                let cell_ref = CellReferenceIndex { sheet, row, column };
                 let cell_value = self.evaluate_cell(cell_ref);
                 match cell_value {
                     CalcResult::Number(v) => {

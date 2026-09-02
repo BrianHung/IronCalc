@@ -6,7 +6,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     functions::Function,
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 /// Excel has a complicated way of filtering + hidden rows
@@ -32,14 +32,13 @@ pub enum CellTableStatus {
     Filtered,
 }
 
-impl<'a> Model<'a> {
-    fn get_table_for_cell(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let worksheet = match self.workbook.worksheet(sheet_index) {
-            Ok(ws) => ws,
-            Err(_) => return false,
+impl<'a, 'm> EvalCtx<'a, 'm> {
+    fn get_table_for_cell(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
+        let Ok(sheet_name) = self.worksheet_name(sheet_index) else {
+            return false;
         };
-        for table in self.workbook.tables.values() {
-            if worksheet.name != table.sheet_name {
+        for table in self.tables().values() {
+            if sheet_name != table.sheet_name {
                 continue;
             }
             // (column, row, column, row)
@@ -54,19 +53,12 @@ impl<'a> Model<'a> {
     }
 
     fn cell_hidden_status(
-        &self,
+        &mut self,
         sheet_index: u32,
         row: i32,
         column: i32,
     ) -> Result<CellTableStatus, String> {
-        let worksheet = self.workbook.worksheet(sheet_index)?;
-        let mut hidden = false;
-        for row_style in &worksheet.rows {
-            if row_style.r == row {
-                hidden = row_style.hidden;
-                break;
-            }
-        }
+        let hidden = self.row_hidden(sheet_index, row)?;
         if !hidden {
             return Ok(CellTableStatus::Normal);
         }
@@ -79,24 +71,12 @@ impl<'a> Model<'a> {
     }
 
     // FIXME(TD): This is too much
-    fn cell_is_subtotal(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let row_data = match self.workbook.worksheets[sheet_index as usize]
-            .sheet_data
-            .get(&row)
-        {
-            Some(r) => r,
-            None => return false,
-        };
-        let cell = match row_data.get(&column) {
-            Some(c) => c,
-            None => {
-                return false;
-            }
-        };
-
-        match cell.get_formula() {
+    fn cell_is_subtotal(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
+        match self.formula_index_at(sheet_index, row, column) {
             Some(f) => {
-                let node = &self.parsed_formulas[sheet_index as usize][f as usize].0;
+                let Some(node) = self.parsed_formula_node(sheet_index, f) else {
+                    return false;
+                };
                 matches!(
                     node,
                     Node::FunctionKind {
@@ -141,11 +121,10 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 ));
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                self.clip_range_to_used(&left, &right, cell)?;
 
                             for row in row1..=row2 {
                                 let cell_status = self
@@ -389,11 +368,13 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 );
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                match self.clip_range_to_used(&left, &right, cell) {
+                                    Ok(bounds) => bounds,
+                                    Err(e) => return e,
+                                };
 
                             for row in row1..=row2 {
                                 let cell_status = match self
@@ -472,11 +453,13 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 );
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                match self.clip_range_to_used(&left, &right, cell) {
+                                    Ok(bounds) => bounds,
+                                    Err(e) => return e,
+                                };
 
                             for row in row1..=row2 {
                                 let cell_status = match self

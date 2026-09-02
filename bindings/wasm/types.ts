@@ -6,6 +6,17 @@ export interface Area {
   height: number;
 }
 
+export interface CellReferenceIndex {
+  sheet: number;
+  row: number;
+  column: number;
+}
+
+/** Result of `takeChangedCells`. Empty `cells` is not `everything`. */
+export type ChangedSinceRead =
+  | { kind: "everything" }
+  | { kind: "cells"; cells: CellReferenceIndex[] };
+
 export enum BorderType {
   All = "All",
   Inner = "Inner",

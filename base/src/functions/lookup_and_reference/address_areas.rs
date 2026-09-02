@@ -1,12 +1,12 @@
 use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex, utils::quote_name},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 use crate::expressions::utils::number_to_column;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── ADDRESS ───────────────────────────────────────────────────────────────
 
     /// `=ADDRESS(row_num, col_num, [abs_num], [a1], [sheet_text])`

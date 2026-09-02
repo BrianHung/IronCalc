@@ -4,7 +4,7 @@ use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     language::{get_default_language, Functions, Language},
-    model::Model,
+    model::eval_ctx::EvalCtx,
 };
 
 pub(crate) mod binary_search;
@@ -2299,13 +2299,32 @@ impl Function {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn evaluate_function(
         &mut self,
         kind: &Function,
         args: &[Node],
         cell: CellReferenceIndex,
     ) -> CalcResult {
+        match kind {
+            Function::Rand | Function::Randbetween | Function::Randarray => {
+                self.trace_input(crate::recalc::Input::Random);
+            }
+            Function::Now | Function::Today => {
+                self.trace_input(crate::recalc::Input::Clock);
+            }
+            Function::Row | Function::Column if args.is_empty() => {
+                self.trace_input(crate::recalc::Input::OwnCoord((
+                    cell.sheet,
+                    cell.row,
+                    cell.column,
+                )));
+            }
+            Function::Cell | Function::Info => {
+                self.trace_input(crate::recalc::Input::Environment);
+            }
+            _ => {}
+        }
         match kind {
             Function::And => self.fn_and(args, cell),
             Function::False => self.fn_false(args, cell),

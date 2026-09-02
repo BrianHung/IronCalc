@@ -3,10 +3,10 @@ use regex::Regex;
 #[cfg(target_arch = "wasm32")]
 use regex_lite::Regex;
 
-use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error,
+    model::eval_ctx::EvalCtx,
 };
 
 use crate::functions::{
@@ -134,7 +134,7 @@ fn linear_search(
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// `=XMATCH(lookup_value, lookup_array, [match_mode], [search_mode])`
     ///
     /// Returns the relative position (1-based) of an item in a row or column array.
@@ -219,32 +219,10 @@ impl<'a> Model<'a> {
                 }
 
                 // Honour entire-column/row references: clamp to worksheet used range.
-                let mut row2 = right.row;
-                let mut col2 = right.column;
-                if left.row == 1 && row2 == LAST_ROW {
-                    row2 = match self.workbook.worksheet(left.sheet) {
-                        Ok(s) => s.dimension().max_row,
-                        Err(_) => {
-                            return CalcResult::new_error(
-                                Error::ERROR,
-                                cell,
-                                format!("Invalid worksheet index: '{}'", left.sheet),
-                            )
-                        }
-                    };
-                }
-                if left.column == 1 && col2 == LAST_COLUMN {
-                    col2 = match self.workbook.worksheet(left.sheet) {
-                        Ok(s) => s.dimension().max_column,
-                        Err(_) => {
-                            return CalcResult::new_error(
-                                Error::ERROR,
-                                cell,
-                                format!("Invalid worksheet index: '{}'", left.sheet),
-                            )
-                        }
-                    };
-                }
+                let (_, row2, _, col2) = match self.clip_range_to_used(&left, &right, cell) {
+                    Ok(bounds) => bounds,
+                    Err(e) => return e,
+                };
                 let right = CellReferenceIndex {
                     sheet: right.sheet,
                     row: row2,
