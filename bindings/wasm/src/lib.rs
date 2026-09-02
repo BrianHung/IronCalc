@@ -26,6 +26,7 @@ fn to_js_error(error: String) -> JsError {
 /// (the default and original behavior); `Incremental` recomputes only the cells
 /// an edit affects, falling back to full for edits it does not yet model. Chosen
 /// per model at construction and fixed for its lifetime.
+#[cfg(not(feature = "recalc_verify"))]
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum RecalcMode {
@@ -33,11 +34,27 @@ pub enum RecalcMode {
     Incremental,
 }
 
+// `wasm_bindgen` does not honor `cfg` on individual variants, so the enum is
+// defined whole per configuration.
+#[cfg(feature = "recalc_verify")]
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum RecalcMode {
+    Full,
+    Incremental,
+    /// Runs Incremental and asserts every pass against a live recomputation
+    /// and a shadow full pass. Only in builds with the `recalc_verify`
+    /// feature; a divergence aborts loudly instead of returning a wrong cell.
+    Verify,
+}
+
 impl From<RecalcMode> for BaseRecalcMode {
     fn from(mode: RecalcMode) -> Self {
         match mode {
             RecalcMode::Full => BaseRecalcMode::Full,
             RecalcMode::Incremental => BaseRecalcMode::Incremental,
+            #[cfg(feature = "recalc_verify")]
+            RecalcMode::Verify => BaseRecalcMode::Verify,
         }
     }
 }
