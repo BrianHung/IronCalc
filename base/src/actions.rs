@@ -2,9 +2,12 @@ use crate::cf_types::{CfRule, Cfvo};
 use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::cut_paste::cf_sqref_anchor;
 use crate::dependency_graph::Axis;
+use crate::expressions::parser::displace::displace_node;
+use crate::expressions::parser::static_analysis::{run_static_analysis_on_node, StaticResult};
 use crate::expressions::parser::stringify::{
-    to_localized_string, to_string_displaced, DisplaceData,
+    to_localized_string, to_rc_format, to_string_displaced, DisplaceData,
 };
+use crate::expressions::parser::Node;
 use crate::expressions::parser::Parser as ExprParser;
 use crate::expressions::types::CellReferenceRC;
 use crate::expressions::utils;
@@ -307,38 +310,97 @@ impl<'a> Model<'a> {
         column: i32,
         displace_data: &DisplaceData,
     ) -> Result<(), String> {
-        if let Some(f) = self
+        let (formula_index, is_plain_formula) = {
+            let Some(cell) = self.workbook.worksheet(sheet)?.cell(row, column) else {
+                return Ok(());
+            };
+            match cell.get_formula() {
+                Some(f) => (f, matches!(cell, Cell::CellFormula { .. })),
+                None => return Ok(()),
+            }
+        };
+        let node = self.parsed_formulas[sheet as usize][formula_index as usize]
+            .0
+            .clone();
+
+        // Fast path: rewrite the AST directly, avoiding the stringify + reparse
+        // round trip. Only plain formula cells are handled; a reference displaced
+        // off the sheet (#REF!), a malformed reference, or an array/dynamic cell
+        // returns from `displace_node` as `None` and falls back to the exact
+        // string path below.
+        if is_plain_formula {
+            if let Some(new_node) = displace_node(&node, row, column, displace_data) {
+                let new_rc = to_rc_format(&new_node);
+                if new_rc == self.workbook.worksheet(sheet)?.shared_formulas[formula_index as usize]
+                {
+                    return Ok(());
+                }
+                // Imported plain formulas can static-analyze non-Scalar (defined
+                // names, A1:expr, spill). The string path upgrades those to
+                // dynamic; asserting Scalar panics in debug and diverges in release.
+                if matches!(run_static_analysis_on_node(&new_node), StaticResult::Scalar) {
+                    return self.set_displaced_formula(sheet, row, column, new_node, new_rc);
+                }
+            }
+        }
+
+        // Fallback: render the displaced formula and write it back through the
+        // parser. Both strings must be in the active locale/language: the
+        // displaced one is written back through the (localized) parser, and
+        // comparing against an English rendering would flag every formula.
+        let cell_reference = CellReferenceRC {
+            sheet: self.workbook.worksheets[sheet as usize].get_name(),
+            row,
+            column,
+        };
+        let formula = to_localized_string(&node, &cell_reference, self.locale, self.language);
+        let formula_displaced = to_string_displaced(
+            &node,
+            &cell_reference,
+            displace_data,
+            self.locale,
+            self.language,
+        );
+        if formula != formula_displaced {
+            self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
+        }
+        Ok(())
+    }
+
+    /// Stores an already-displaced formula AST for a plain formula cell, reusing
+    /// a matching shared formula or appending a new one.
+    fn set_displaced_formula(
+        &mut self,
+        sheet: u32,
+        row: i32,
+        column: i32,
+        node: Node,
+        rc: String,
+    ) -> Result<(), String> {
+        let static_result = run_static_analysis_on_node(&node);
+        let mut style = self.workbook.worksheet(sheet)?.get_style(row, column);
+        if self.workbook.styles.style_is_quote_prefix(style) {
+            style = self.workbook.styles.get_style_without_quote_prefix(style)?;
+        }
+        let existing = self
             .workbook
             .worksheet(sheet)?
-            .cell(row, column)
-            .and_then(|c| c.get_formula())
-        {
-            let node = &self.parsed_formulas[sheet as usize][f as usize].0.clone();
-            let cell_reference = CellReferenceRC {
-                sheet: self.workbook.worksheets[sheet as usize].get_name(),
-                row,
-                column,
-            };
-            // Both strings must be in the active locale/language: the displaced
-            // one is written back through the (localized) parser, and comparing
-            // against an English rendering would flag every formula as changed.
-            let formula = to_localized_string(node, &cell_reference, self.locale, self.language);
-            let formula_displaced = to_string_displaced(
-                node,
-                &cell_reference,
-                displace_data,
-                self.locale,
-                self.language,
-            );
-            if formula != formula_displaced {
-                // A displacement only shifts references; it does not rewire the
-                // dependency graph, so write the formula without forcing a full
-                // recompute. `record_structural_edit` shifts the existing edges
-                // (and falls back to full for edits the shift cannot model), so
-                // the next pass can run incrementally.
-                self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
-            };
+            .shared_formulas
+            .iter()
+            .position(|f| f == &rc);
+        let index = if let Some(i) = existing {
+            i as i32
+        } else {
+            let worksheet = self.workbook.worksheet_mut(sheet)?;
+            worksheet.shared_formulas.push(rc);
+            (worksheet.shared_formulas.len() as i32) - 1
+        };
+        if existing.is_none() {
+            self.parsed_formulas[sheet as usize].push((node, static_result));
         }
+        self.workbook
+            .worksheet_mut(sheet)?
+            .set_cell_with_formula(row, column, index, style)?;
         Ok(())
     }
     /// This function iterates over all cells in the model and shifts their formulas according to the displacement data.

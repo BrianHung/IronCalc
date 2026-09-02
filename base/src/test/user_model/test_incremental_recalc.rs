@@ -977,6 +977,50 @@ fn spill_hash_of_empty_anchor_sees_later_formula() {
 /// member guard or the placeholder writes error. Full alone is pinned: the
 /// rebuild happens before any recalc.
 #[test]
+fn displace_rounds_numeric_constants_to_excel_precision() {
+    let mut model = new_empty_model();
+    model._set("A2", "0");
+    model._set("B2", "=A2+0.30000000000000004");
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    let mut expected = new_empty_model();
+    expected._set("A3", "0");
+    expected._set("B3", "=A3+0.30000000000000004");
+    expected.evaluate();
+    assert_eq!(
+        model.get_cell_value_by_index(0, 3, 2).unwrap(),
+        expected.get_cell_value_by_index(0, 3, 2).unwrap()
+    );
+}
+
+#[test]
+fn displace_strips_quote_prefix_from_formulas() {
+    let mut model = new_empty_model();
+    model._set("B2", "=A2+1");
+    let style = model.get_cell_style_index(0, 2, 2).unwrap();
+    let quoted = model
+        .workbook
+        .styles
+        .get_style_with_quote_prefix(style)
+        .unwrap();
+    model
+        .workbook
+        .worksheet_mut(0)
+        .unwrap()
+        .set_cell_style(2, 2, quoted)
+        .unwrap();
+    assert!(model
+        .workbook
+        .styles
+        .style_is_quote_prefix(model.get_cell_style_index(0, 2, 2).unwrap()));
+    model.insert_rows(0, 1, 1).unwrap();
+    assert!(!model
+        .workbook
+        .styles
+        .style_is_quote_prefix(model.get_cell_style_index(0, 3, 2).unwrap()));
+}
+
+#[test]
 fn moving_a_column_with_a_cse_anchor_always_succeeds() {
     let mut model = new_empty_model().with_recalc_mode(RecalcMode::Full);
     model

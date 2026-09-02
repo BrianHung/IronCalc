@@ -1,3 +1,4 @@
+mod bench_displace;
 mod bench_incremental;
 mod bench_scenarios;
 mod test_add_delete_sheets;
