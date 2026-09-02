@@ -4,12 +4,15 @@ import { base64ToBytes, bytesToBase64 } from "./util";
 
 // Engine selection for testing: append ?recalc=incremental to opt the whole
 // session into incremental recalculation. Absent, the engine runs Full.
+const recalcParam = new URLSearchParams(window.location.search).get("recalc");
 export const RECALC_MODE =
-  new URLSearchParams(window.location.search).get("recalc") === "incremental"
+  recalcParam === "incremental"
     ? RecalcMode.Incremental
-    : undefined;
+    : recalcParam === "verify" && "Verify" in RecalcMode
+      ? (RecalcMode as unknown as { Verify: RecalcMode }).Verify
+      : undefined;
 if (RECALC_MODE !== undefined) {
-  console.info("IronCalc engine: incremental recalculation enabled");
+  console.info(`IronCalc engine: ${recalcParam} recalculation enabled`);
 }
 
 
