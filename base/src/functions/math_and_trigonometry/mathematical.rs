@@ -2,6 +2,7 @@ use crate::cast::NumberOrArray;
 use crate::constants::EXCEL_PRECISION;
 use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
+use crate::model::range_reduce::{RangeAgg, RangeReducer};
 use crate::number_format::{to_excel_precision, to_precision};
 use crate::single_number_fn;
 use crate::{
@@ -24,27 +25,17 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    let (row1, row2, column1, column2) =
-                        match self.clip_range_to_used(&left, &right, cell) {
-                            Ok(bounds) => bounds,
-                            Err(e) => return e,
-                        };
-                    for row in row1..=row2 {
-                        for column in column1..=column2 {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.min(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.fold_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Min,
+                        RangeAgg::Number(result),
+                    ) {
+                        RangeAgg::Number(value) => result = value,
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {
@@ -89,27 +80,17 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    let (row1, row2, column1, column2) =
-                        match self.clip_range_to_used(&left, &right, cell) {
-                            Ok(bounds) => bounds,
-                            Err(e) => return e,
-                        };
-                    for row in row1..=row2 {
-                        for column in column1..=column2 {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result = value.max(result);
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.fold_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Max,
+                        RangeAgg::Number(result),
+                    ) {
+                        RangeAgg::Number(value) => result = value,
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {
@@ -305,30 +286,17 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                             "Ranges are in different sheets".to_string(),
                         );
                     }
-                    // TODO: We should do this for all functions that run through ranges
-                    // Running cargo test for the ironcalc takes around .8 seconds with this speedup
-                    // and ~ 3.5 seconds without it. Note that once properly in place sheet.dimension should be almost a noop
-                    let (row1, row2, column1, column2) =
-                        match self.clip_range_to_used(&left, &right, cell) {
-                            Ok(bounds) => bounds,
-                            Err(e) => return e,
-                        };
-                    for row in row1..row2 + 1 {
-                        for column in column1..(column2 + 1) {
-                            match self.evaluate_cell(CellReferenceIndex {
-                                sheet: left.sheet,
-                                row,
-                                column,
-                            }) {
-                                CalcResult::Number(value) => {
-                                    result += value;
-                                }
-                                error @ CalcResult::Error { .. } => return error,
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
-                        }
+                    match self.fold_range(
+                        left.sheet,
+                        left.row,
+                        left.column,
+                        right.row,
+                        right.column,
+                        RangeReducer::Sum,
+                        RangeAgg::Number(result),
+                    ) {
+                        RangeAgg::Number(value) => result = value,
+                        RangeAgg::Error(error) => return error,
                     }
                 }
                 CalcResult::Array(array) => {

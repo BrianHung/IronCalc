@@ -704,6 +704,8 @@ impl<'a> Model<'a> {
             recalc_mode: crate::RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
+            range_reduce_cache: HashMap::new(),
+            pass_generation: 0,
             formula_count_stale: false,
             wrote_array_cells: false,
             evaluated_array_cells: false,

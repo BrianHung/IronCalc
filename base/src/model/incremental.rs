@@ -178,6 +178,7 @@ impl Model<'_> {
     /// its dirty set empty; the delta accumulates into `changed_cells` until a
     /// consumer takes it.
     pub(crate) fn evaluate_selective(&mut self) -> EvalPass {
+        self.pass_generation = self.pass_generation.wrapping_add(1);
         let write_seeds = std::mem::take(&mut self.write_seeds);
         // Any leftover flag belongs to a pass that ended in a full rebuild of
         // the array index; only footprint writes from this pass's frontier

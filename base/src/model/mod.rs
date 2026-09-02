@@ -46,6 +46,9 @@ pub(crate) mod eval_ctx;
 // `pub(crate)` for `EvalPass`: the benches report whether a pass stayed
 // incremental or fell back, which is otherwise indistinguishable from outside.
 pub(crate) mod incremental;
+pub(crate) mod range_reduce;
+
+use range_reduce::RangeReduceCache;
 mod unstable_cells;
 #[cfg(feature = "recalc_verify")]
 mod verify;
@@ -258,6 +261,11 @@ pub struct Model<'a> {
     /// recomputes about as much as a full pass but with extra bookkeeping, so it
     /// falls back to full instead.
     pub(crate) formula_cell_count: usize,
+    /// Memoized range reductions for the current pass, keyed by range and reducer.
+    pub(crate) range_reduce_cache: RangeReduceCache,
+    /// Bumped at the start of every `evaluate_full` restart and `evaluate_selective`.
+    /// Range-reduce cache entries from another generation are ignored.
+    pub(crate) pass_generation: u64,
     /// Set by a structural edit: rows or columns of formula cells appeared or
     /// vanished without cell writes, so `formula_cell_count` must be recounted
     /// before the next fanout decision.
@@ -1044,6 +1052,11 @@ impl<'a> Model<'a> {
         result: &CalcResult,
     ) -> Result<(), String> {
         let CellReferenceIndex { sheet, column, row } = cell_reference;
+        // A spill rewrites cells that a range aggregate may already have
+        // summarized this pass (first pass: the area was empty). Drop the memo.
+        if matches!(result, CalcResult::Array(_)) {
+            self.range_reduce_cache.clear();
+        }
         let original_range = match cell {
             Cell::ArrayFormula {
                 r,
@@ -2035,6 +2048,8 @@ impl<'a> Model<'a> {
             recalc_mode: RecalcMode::from_env(),
             recompute_scope: None,
             formula_cell_count: 0,
+            range_reduce_cache: HashMap::new(),
+            pass_generation: 0,
             // Nothing journaled the cells this workbook arrived with, so the
             // count is unknown rather than zero. It cannot ride on the full
             // pass's `collect_array_cells` walk, which is gated on the workbook
@@ -3696,6 +3711,12 @@ impl<'a> Model<'a> {
         self.evaluated_array_cells = false;
         let arrays_were_indexed = !self.graph.arrays.is_empty();
         self.collect_spill_cells();
+        // Range composition is Incremental/Verify only. Default Full skips the
+        // referenced-range walk; `reduce_range` streams into one accumulator
+        // so SUM/COUNT stay bit-identical to pre-composition.
+        if self.recalc_mode != RecalcMode::Full {
+            self.collect_referenced_ranges();
+        }
 
         let n = self.spill_cells.len();
         // Each restart fixes at least one pair; O(N*N) restarts suffice.
@@ -3706,6 +3727,7 @@ impl<'a> Model<'a> {
         while retry && restart_count < max_restarts {
             retry = false;
             self.cells.clear();
+            self.pass_generation = self.pass_generation.wrapping_add(1);
             self.support.clear();
             // dynamic links (HYPERLINK) are rebuilt on every evaluation
             self.links.clear();

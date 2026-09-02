@@ -172,6 +172,97 @@ fn incremental_defined_name_retarget_forces_full() {
 }
 
 #[test]
+fn incremental_sum_over_offset_sees_updated_target() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "10");
+    model._set("D2", "=A1");
+    model._set("A3", "=OFFSET(D1,1,0)");
+    model._set("C1", "=SUM(A1:A3)");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "20");
+    let _ = model.take_changed_cells();
+
+    model._set("A1", "20");
+    model.evaluate();
+    assert_eq!(model._get_text("D2"), "20");
+    assert_eq!(model._get_text("A3"), "20");
+    assert_eq!(model._get_text("C1"), "40");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(3, 1))); // A3 OFFSET
+    assert!(changed.contains(&(1, 3))); // C1 SUM
+}
+
+#[test]
+fn incremental_running_totals_compose_after_offset_and_insert() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A2", "2");
+    model._set("A3", "3");
+    model._set("B1", "=SUM(A1:A1)");
+    model._set("B2", "=SUM(A1:A2)");
+    model._set("B3", "=SUM(A1:A3)");
+    model._set("D2", "=A2");
+    model._set("C1", "=OFFSET(D1,1,0)"); // reads D2
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B2"), "3");
+    assert_eq!(model._get_text("B3"), "6");
+    assert_eq!(model._get_text("C1"), "2");
+
+    model._set("A2", "5");
+    model.evaluate();
+    assert_eq!(model._get_text("B2"), "6");
+    assert_eq!(model._get_text("B3"), "9");
+    assert_eq!(model._get_text("C1"), "5");
+
+    model.insert_rows(0, 2, 1).unwrap();
+    model._set("A2", "4"); // new row must change every prefix that covers it
+    model.evaluate();
+    assert_eq!(model._get_formula("B4"), "=SUM(A1:A4)");
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B3"), "10"); // 1 + 4 + 5
+    assert_eq!(model._get_text("B4"), "13"); // 1 + 4 + 5 + 3
+                                             // Still OFFSET(D1,1,0); D2 is the new blank, and a blank formula result
+                                             // coerces to 0 at the formula boundary, as in Excel and default Full.
+    assert_eq!(model._get_text("C1"), "0");
+}
+
+#[test]
+fn incremental_running_totals_see_offset_inside_range() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "1");
+    model._set("A2", "2");
+    model._set("D2", "3");
+    model._set("A3", "=OFFSET(D1,1,0)"); // inside the running-total range
+    model._set("B1", "=SUM(A1:A1)");
+    model._set("B2", "=SUM(A1:A2)");
+    model._set("B3", "=SUM(A1:A3)");
+    model.evaluate();
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B2"), "3");
+    assert_eq!(model._get_text("B3"), "6");
+    let _ = model.take_changed_cells();
+
+    model._set("D2", "10"); // OFFSET target; A3 and B3 must not read a stale memo
+    model.evaluate();
+    assert_eq!(model._get_text("A3"), "10");
+    assert_eq!(model._get_text("B1"), "1");
+    assert_eq!(model._get_text("B2"), "3");
+    assert_eq!(model._get_text("B3"), "13");
+    let ChangedSinceRead::Cells(cells) = model.take_changed_cells() else {
+        panic!("expected incremental delta");
+    };
+    let changed: std::collections::HashSet<(i32, i32)> =
+        cells.iter().map(|c| (c.row, c.column)).collect();
+    assert!(changed.contains(&(3, 1))); // A3
+    assert!(changed.contains(&(3, 2))); // B3
+}
+
+#[test]
 fn incremental_set_locale_forces_full() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1234.5");
@@ -510,6 +601,59 @@ fn incremental_propagates_error_to_text_transition() {
 }
 
 #[test]
+fn range_composition_does_not_memoize_transient_circ() {
+    // A2's SUM sees A2 mid-cycle (#CIRC → IFERROR → 5). That must not be
+    // cached for B1, which should see A2 after it settles.
+    for incremental in [false, true] {
+        let mut model = if incremental {
+            new_empty_model().with_recalc_mode(incremental_mode())
+        } else {
+            new_empty_model()
+        };
+        model._set("A1", "1");
+        model._set("A2", "=IFERROR(SUM(A1:A2),5)");
+        model._set("B1", "=SUM(A1:A2)");
+        model.evaluate();
+        assert_eq!(model._get_text("A2"), "5", "incremental={incremental}");
+        assert_eq!(model._get_text("B1"), "6", "incremental={incremental}");
+    }
+}
+
+#[test]
+fn full_mode_sum_matches_precomposition_association() {
+    // IRONCALC_RECALC=verify would compose per-row (0.0). This asserts Full isolation.
+    let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Full);
+    model.update_cell_with_number(0, 1, 1, 1e16).unwrap();
+    model.update_cell_with_number(0, 1, 2, 1.0).unwrap();
+    model.update_cell_with_number(0, 2, 1, -1e16).unwrap();
+    model.update_cell_with_number(0, 2, 2, 1.0).unwrap();
+    model._set("C1", "=SUM(A1:B2)");
+    model.evaluate();
+    // Row-major 1e16+1-1e16+1 = 1. Per-row composition yields 0.
+    assert_eq!(
+        model.get_cell_value_by_index(0, 1, 3).unwrap(),
+        crate::cell::CellValue::Number(1.0)
+    );
+}
+
+#[test]
+fn range_composition_does_not_memoize_transient_count_circ() {
+    for incremental in [false, true] {
+        let mut model = if incremental {
+            new_empty_model().with_recalc_mode(incremental_mode())
+        } else {
+            new_empty_model()
+        };
+        model._set("A1", "1");
+        model._set("A2", "=COUNT(A1:A2)");
+        model._set("B1", "=COUNT(A1:A2)");
+        model.evaluate();
+        assert_eq!(model._get_text("A2"), "1", "incremental={incremental}");
+        assert_eq!(model._get_text("B1"), "2", "incremental={incremental}");
+    }
+}
+
+#[test]
 fn incremental_sumifs_reads_resized_criteria() {
     let mut model = new_empty_model().with_recalc_mode(incremental_mode());
     model._set("A1", "1");
@@ -579,6 +723,43 @@ fn incremental_overwrite_spill_anchor_updates_dependents() {
     assert_eq!(model._get_text("A3"), "");
     assert_eq!(model._get_text("C2"), "0");
     assert!(!model.graph.arrays.contains(&(0, 1, 1)));
+}
+
+#[test]
+fn incremental_spill_invalidates_composed_range_cache() {
+    let mut model = new_empty_model().with_recalc_mode(incremental_mode());
+    model._set("A1", "=SEQUENCE(2,1,B1)");
+    model._set("B1", "=SUM(A6:A7)");
+    model._set("A5", "=SEQUENCE(3)");
+    model._set("A9", "=SUM(A6:A7)");
+    model.evaluate();
+    assert_eq!(model._get_text("A9"), "5");
+}
+
+#[test]
+fn min_max_signed_zero_matches_full() {
+    // The ±0 tie-break of `f64::min`/`max` is platform-defined (LLVM folds
+    // constants to +0 on x86_64, runtime minsd picks the first operand), so no
+    // fixed bit pattern is portable. What must hold everywhere is mode parity:
+    // Incremental's composed MIN/MAX returns the same bits as Full's direct
+    // row-major scan on the platform it runs on.
+    let run = |mode: crate::RecalcMode| {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model.update_cell_with_number(0, 1, 1, 0.0).unwrap();
+        model.update_cell_with_number(0, 2, 1, -0.0).unwrap();
+        model._set("A3", "=MIN(A1:A2)");
+        model._set("A4", "=MAX(A1:A2)");
+        model.evaluate();
+        let bits = |row: i32| match model.get_cell_value_by_index(0, row, 1).unwrap() {
+            crate::cell::CellValue::Number(n) => n.to_bits(),
+            other => panic!("expected number, got {other:?}"),
+        };
+        (bits(3), bits(4))
+    };
+    assert_eq!(
+        run(crate::RecalcMode::Full),
+        run(crate::RecalcMode::Incremental)
+    );
 }
 
 #[test]

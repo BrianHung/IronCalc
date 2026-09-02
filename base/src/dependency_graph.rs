@@ -21,10 +21,9 @@ pub enum RecalcMode {
     Full,
     /// Recompute only the cells reachable from the dirty set.
     ///
-    /// Multi-column `SUM` may re-associate by composing per-row subtotals, so
-    /// floating-point order can differ from default Full's left-to-right
-    /// row-major scan. That difference is intentional and isolated to this
-    /// mode and Verify; default Full stays a single accumulator.
+    /// Composed aggregates (`SUM`/`MIN`/`MAX`/`COUNT` over cached range
+    /// prefixes) fold in the same row-major scan order as default Full's
+    /// direct scan, so their results are bit-identical to Full.
     Incremental,
     /// On Incremental passes, run full as well and `assert_eq!` the two agree.
     /// Formula, first-eval, and array/spill fallbacks are Full and are not
@@ -812,6 +811,37 @@ impl Shift for ArrayCells {
     }
 }
 
+/// Ranges referenced by formulas, per sheet. Shifted with the edges so range
+/// composition can reuse a one-row-shorter range after an insert or delete.
+#[derive(Clone, Default)]
+pub(crate) struct ReferencedRanges(HashMap<u32, HashSet<Area>>);
+
+impl ReferencedRanges {
+    pub(crate) fn contains(&self, area: &Area) -> bool {
+        self.0
+            .get(&area.0)
+            .is_some_and(|areas| areas.contains(area))
+    }
+
+    fn replace(&mut self, ranges: HashMap<u32, HashSet<Area>>) {
+        self.0 = ranges;
+    }
+}
+
+impl Shift for ReferencedRanges {
+    fn shift(&mut self, displacement: Displacement) {
+        let mut shifted: HashMap<u32, HashSet<Area>> = HashMap::new();
+        for (_, areas) in self.0.drain() {
+            for area in areas {
+                if let Some(area) = displacement.area(area) {
+                    shifted.entry(area.0).or_default().insert(area);
+                }
+            }
+        }
+        self.0 = shifted;
+    }
+}
+
 /// The forward dependency graph and the pass state derived from it.
 ///
 /// Edges are the reads observed while formulas evaluated, never a static
@@ -853,6 +883,7 @@ pub(crate) struct DependencyGraph {
     /// scheduler tests membership directly to decide the arrays->Full fallback;
     /// `model::array_index` owns what goes into it.
     pub(crate) arrays: ArrayCells,
+    pub(crate) referenced: ReferencedRanges,
     /// Cells whose last result was not a genuine function value, because they
     /// sit on a dependency cycle or downstream of one. A cycle has no fixed
     /// point, so what they hold is an artifact of where the cycle was entered.
@@ -1267,6 +1298,10 @@ impl DependencyGraph {
         self.arrays.replace(cells);
     }
 
+    pub(crate) fn replace_referenced(&mut self, ranges: HashMap<u32, HashSet<Area>>) {
+        self.referenced.replace(ranges);
+    }
+
     /// Direct dependents of `cell`: cells reading it, cells reading a range
     /// that contains it, and cells reading a name that currently resolves to it.
     pub(crate) fn dependents_of(&self, cell: Position) -> Vec<Position> {
@@ -1670,6 +1705,7 @@ impl DependencyGraph {
             precedents,
             state,
             arrays,
+            referenced,
             never_served,
             blocked_array_readers,
             // A fact about the pass that just ran. It holds no coordinates.
@@ -1707,6 +1743,7 @@ impl DependencyGraph {
         precedents.shift(displacement);
         state.shift(displacement);
         arrays.shift(displacement);
+        referenced.shift(displacement);
         never_served.shift(displacement);
         blocked_array_readers.shift(displacement);
         // The two derived facts are re-derived after this rather than shifted
