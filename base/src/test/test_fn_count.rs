@@ -48,6 +48,48 @@ fn test_fn_countif_date_string_criterion() {
     assert_eq!(model._get_text("A6"), *"9");
 }
 
+/// COUNTBLANK clips its walk to the used range like every other aggregate, but
+/// unlike them its answer *is* the cells the clip removes: each one lies past
+/// the used range and so is blank. The clipped walk must therefore add the
+/// removed area back, and add it back once -- rows, columns and both axes at
+/// the same time.
+///
+/// Mutant: "clip without remainder" -- drop the `clipped_away_cells` term and
+/// every case here collapses to the handful of blanks inside the 2x2 used
+/// range. A second mutant it kills is doing the arithmetic in `i32`: a whole
+/// sheet is 1,048,576 x 16,384 = 17,179,869,184 cells, which overflows.
+///
+/// The counts are read from a second sheet so that no formula sits inside the
+/// range it measures, which would make the reference circular and move the
+/// dimension it is asserting about.
+#[test]
+fn countblank_adds_back_the_cells_the_clip_removed() {
+    let mut model = new_empty_model();
+    model.add_sheet("Counts").unwrap();
+    // Sheet1's used range is exactly A1:B2, all four cells non-blank.
+    model._set("A1", "1");
+    model._set("B1", "2");
+    model._set("A2", "3");
+    model._set("B2", "4");
+    // Rows open, columns bounded: three full columns less the four values.
+    model._set("Counts!A1", "=COUNTBLANK(Sheet1!A:C)");
+    // Columns open, rows bounded: two full rows less the four values.
+    model._set("Counts!A2", "=COUNTBLANK(Sheet1!1:2)");
+    // Both axes open: the whole sheet less the four values, past i32.
+    model._set("Counts!A3", "=COUNTBLANK(Sheet1!A:XFD)");
+    model.evaluate();
+
+    assert_eq!(
+        model._get_text("Counts!A1"),
+        (3 * 1_048_576 - 4).to_string()
+    );
+    assert_eq!(model._get_text("Counts!A2"), (2 * 16_384 - 4).to_string());
+    assert_eq!(
+        model._get_text("Counts!A3"),
+        (1_048_576_i64 * 16_384 - 4).to_string()
+    );
+}
+
 #[test]
 fn test_fn_count_minimal() {
     let mut model = new_empty_model();
