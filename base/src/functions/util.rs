@@ -3,11 +3,87 @@ use regex_lite as regex;
 
 use crate::{
     calc_result::CalcResult,
+    constants::{LAST_COLUMN, LAST_ROW},
     expressions::token::{is_english_error_string, Error},
+    expressions::types::CellReferenceIndex,
     formatter::format::parse_date,
     locale::Locale,
+    model::Model,
     number_format::to_excel_precision,
 };
+
+impl<'a> Model<'a> {
+    /// The bounds of `left..=right` clipped to the sheet's used dimension,
+    /// as `(row1, row2, column1, column2)`.
+    ///
+    /// A whole-column reference (`A:A`) spans all `LAST_ROW` rows and a
+    /// whole-row reference (`1:1`) spans all `LAST_COLUMN` columns, but every
+    /// cell past the used range is blank. A function that ignores blanks may
+    /// therefore walk only the clipped rectangle and reach the same answer for
+    /// a fraction of the cost.
+    ///
+    /// The dimension is read only when an axis is actually open, so an
+    /// ordinary range keeps the footprint it has today: a bounded reference
+    /// never starts depending on the sheet's extent.
+    ///
+    /// Walks that must **not** go through this, and why:
+    ///
+    /// * Ranges paired positionally: `SUMX2MY2`/`SUMX2PY2`/`SUMXMY2`
+    ///   (`fn_get_two_matrices`), `COVARIANCE.*`/`CORREL`/`PEARSON`, `PROB`,
+    ///   `T.TEST`, `F.TEST` and `CHISQ.TEST`. Each reads two ranges through
+    ///   [`Model::values_from_range`] and lines the two results up by
+    ///   position, so clipping one side and not the other would change what it
+    ///   compares. That is why the clip lives in
+    ///   [`Model::values_from_range_clipped`] and not in
+    ///   [`Model::values_from_range`] itself. `Z.TEST` reads a single range,
+    ///   but through the same unclipped collector: it is left there rather
+    ///   than split off for one caller.
+    /// * `database.rs`: a database range is a table whose first row is a
+    ///   header, and the walk is indexed off that header rather than being a
+    ///   blank-ignoring aggregate.
+    /// * `LINEST`/`LOGEST`/`TREND` (`linest.rs`): `collect_matrix_from_node`
+    ///   builds a `rows x cols` matrix, and the known-y and known-x matrices
+    ///   have to keep matching shapes.
+    /// * `TEXTSPLIT` (`textsplit.rs`): its delimiter range is materialised by
+    ///   the general `evaluate_range`, which every array function shares, not
+    ///   by an aggregate walk of its own.
+    /// * `COUNTIFS` (`if_ifs.rs`): it interleaves the clip with a remainder
+    ///   for criteria that match a blank, so it needs `max_row` and
+    ///   `max_column` separately rather than the clipped bounds.
+    pub(crate) fn clip_range_to_used(
+        &self,
+        left: &CellReferenceIndex,
+        right: &CellReferenceIndex,
+        cell: CellReferenceIndex,
+    ) -> Result<(i32, i32, i32, i32), CalcResult> {
+        let row1 = left.row;
+        let mut row2 = right.row;
+        let column1 = left.column;
+        let mut column2 = right.column;
+        let open_row = row1 == 1 && row2 == LAST_ROW;
+        let open_column = column1 == 1 && column2 == LAST_COLUMN;
+        if open_row || open_column {
+            let dimension = self
+                .workbook
+                .worksheet(left.sheet)
+                .map_err(|_| {
+                    CalcResult::new_error(
+                        Error::ERROR,
+                        cell,
+                        format!("Invalid worksheet index: '{}'", left.sheet),
+                    )
+                })?
+                .dimension();
+            if open_row {
+                row2 = dimension.max_row;
+            }
+            if open_column {
+                column2 = dimension.max_column;
+            }
+        }
+        Ok((row1, row2, column1, column2))
+    }
+}
 
 /// If `s` looks like a date literal in the given locale, return its Excel
 /// serial number as `f64`. Pure numeric strings are rejected here because the

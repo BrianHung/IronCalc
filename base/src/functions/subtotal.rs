@@ -141,11 +141,10 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 ));
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                self.clip_range_to_used(&left, &right, cell)?;
 
                             for row in row1..=row2 {
                                 let cell_status = self
@@ -389,11 +388,13 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 );
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                match self.clip_range_to_used(&left, &right, cell) {
+                                    Ok(bounds) => bounds,
+                                    Err(e) => return e,
+                                };
 
                             for row in row1..=row2 {
                                 let cell_status = match self
@@ -472,11 +473,13 @@ impl<'a> Model<'a> {
                                     "Ranges are in different sheets".to_string(),
                                 );
                             }
-                            // We are not expecting subtotal to have open ranges
-                            let row1 = left.row;
-                            let row2 = right.row;
-                            let column1 = left.column;
-                            let column2 = right.column;
+                            // SUBTOTAL dispatches to COUNT/COUNTA/SUM/MAX/... and every
+                            // one of them ignores blanks, so an open range clips.
+                            let (row1, row2, column1, column2) =
+                                match self.clip_range_to_used(&left, &right, cell) {
+                                    Ok(bounds) => bounds,
+                                    Err(e) => return e,
+                                };
 
                             for row in row1..=row2 {
                                 let cell_status = match self
