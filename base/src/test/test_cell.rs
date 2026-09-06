@@ -63,6 +63,32 @@ fn cell_is_always_dynamic() {
         Cell::ArrayFormula { kind: ArrayKind::Dynamic, v: FormulaValue::Number(v), .. } if v == 0.0
     ));
 }
+
+/// A formula whose result is a blank cell is stored as the number 0, the value
+/// Excel caches for it. Every reader of that formula must see that same 0, no
+/// matter where the reader sits on the sheet: cells are evaluated in
+/// (row, column) order, so a reader in row 1 reaches C5 before it has been
+/// evaluated and a reader in row 9 reaches it afterwards. If the two disagree,
+/// the answer depends on the reader's position rather than on the formula.
+#[test]
+fn blank_formula_result_reads_as_zero_from_both_sides() {
+    // Z100 is empty, so C5's result is a blank.
+    let cases = [
+        ("=ISBLANK(C5)", "FALSE"),
+        ("=COUNT(C5)", "1"),
+        ("=C5&\"x\"", "0x"),
+    ];
+    for (formula, expected) in cases {
+        for reader in ["A1", "A9"] {
+            let mut model = new_empty_model();
+            model._set("C5", "=Z100");
+            model._set(reader, formula);
+            model.evaluate();
+            assert_eq!(model._get_text(reader), expected, "{reader}: {formula}");
+        }
+    }
+}
+
 #[test]
 fn test_cell_get_text_on_boolean_cell() {
     let mut model = new_empty_model();

@@ -358,7 +358,12 @@ pub(crate) fn stringify_reference(
                 }
                 DisplaceData::None => {}
             }
-            if row < 1 {
+            // A row displaced off either end of the sheet has nowhere to land,
+            // so the reference is `#REF!`. Rendering the out-of-range number
+            // instead leaves text that no longer parses as a reference. The
+            // column below already answers `#REF!` past its own last column;
+            // this is the same answer on the other axis.
+            if !(1..=LAST_ROW).contains(&row) {
                 return "#REF!".to_string();
             }
             let mut row_abs = if absolute_row {
