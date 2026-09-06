@@ -1,4 +1,3 @@
-use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
     calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
@@ -216,11 +215,10 @@ impl<'a> Model<'a> {
         // lookup_array
         match self.evaluate_node_in_context(&args[1], cell) {
             CalcResult::Range { left, right } => {
-                let is_row_vector;
-                if left.row == right.row {
-                    is_row_vector = false;
+                let is_row_vector = if left.row == right.row {
+                    false
                 } else if left.column == right.column {
-                    is_row_vector = true;
+                    true
                 } else {
                     // second argument must be a vector
                     return CalcResult::Error {
@@ -228,7 +226,7 @@ impl<'a> Model<'a> {
                         origin: cell,
                         message: "Second argument must be a vector".to_string(),
                     };
-                }
+                };
                 // return array
                 match self.evaluate_node_in_context(&args[2], cell) {
                     CalcResult::Range {
@@ -245,35 +243,11 @@ impl<'a> Model<'a> {
                                 message: "Arrays must be of the same size".to_string(),
                             };
                         }
-                        let mut row2 = right.row;
-                        let row1 = left.row;
-                        let mut column2 = right.column;
-                        let column1 = left.column;
-
-                        if row1 == 1 && row2 == LAST_ROW {
-                            row2 = match self.workbook.worksheet(left.sheet) {
-                                Ok(s) => s.dimension().max_row,
-                                Err(_) => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        format!("Invalid worksheet index: '{}'", left.sheet),
-                                    );
-                                }
+                        let (row1, row2, column1, column2) =
+                            match self.clip_range_to_used(&left, &right, cell) {
+                                Ok(bounds) => bounds,
+                                Err(e) => return e,
                             };
-                        }
-                        if column1 == 1 && column2 == LAST_COLUMN {
-                            column2 = match self.workbook.worksheet(left.sheet) {
-                                Ok(s) => s.dimension().max_column,
-                                Err(_) => {
-                                    return CalcResult::new_error(
-                                        Error::ERROR,
-                                        cell,
-                                        format!("Invalid worksheet index: '{}'", left.sheet),
-                                    );
-                                }
-                            };
-                        }
                         let left = CellReferenceIndex {
                             sheet: left.sheet,
                             column: column1,
