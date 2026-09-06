@@ -1538,6 +1538,18 @@ impl<'a> Model<'a> {
                     result
                 };
 
+                // A blank result becomes the number 0 at the formula boundary,
+                // the value Excel caches for it and the value
+                // `set_cells_with_result` stores below. Coercing here rather
+                // than only on the way into the cell means a dependent that
+                // reads this formula during the same pass and one that reads
+                // the stored value afterwards observe the same number, so the
+                // answer does not depend on where the reader sits on the sheet.
+                let result = match result {
+                    CalcResult::EmptyCell | CalcResult::EmptyArg => CalcResult::Number(0.0),
+                    r => r,
+                };
+
                 if let Err(e) = self.set_cells_with_result(cell_reference, &original_cell, &result)
                 {
                     self.cells.insert(key, CellState::Evaluated);
@@ -1599,7 +1611,10 @@ impl<'a> Model<'a> {
                                     let message = error.to_localized_error_string(self.language);
                                     CalcResult::new_error(error.clone(), cell_reference, message)
                                 }
-                                ArrayNode::Empty => CalcResult::EmptyCell,
+                                // The same boundary coercion: the cell stores 0
+                                // for an empty node (`array_node_to_formula_value`),
+                                // so in-pass readers must see 0 too.
+                                ArrayNode::Empty => CalcResult::Number(0.0),
                             }
                         }
                     }
