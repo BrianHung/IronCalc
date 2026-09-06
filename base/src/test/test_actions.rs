@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use crate::constants::{DEFAULT_ROW_HEIGHT, LAST_COLUMN, LAST_ROW};
+use crate::expressions::utils::number_to_column;
 use crate::model::Model;
 use crate::test::util::new_empty_model;
 use crate::types::Col;
@@ -797,3 +798,37 @@ fn test_column_move_right_two_updates_intermediate_refs_by_one() {
 
 // A  B  C  D  E  F  G   H  I  J   K   L   M   N   O   P   Q   R
 // 1  2  3  4  5  6  7   8  9  10  11  12  13  14  15  16  17  18
+
+/// A reference displaced past the last row has nowhere to land, so it must
+/// render as `#REF!` -- the answer the column axis already gives for a
+/// reference pushed past the last column. Rendering the out-of-range row number
+/// instead leaves text that no longer parses as a reference: it reads as a name
+/// and values `#NAME?`.
+#[test]
+fn insert_rows_displacing_a_reference_past_the_last_row_yields_ref() {
+    let last_column = number_to_column(LAST_COLUMN).unwrap();
+
+    // Inserting row 1 carries both formulas down a row along with their content.
+    let mut model = new_empty_model();
+    model._set("B1", &format!("=A{LAST_ROW}"));
+    model._set("C1", &format!("=SUM(A1:A{LAST_ROW})"));
+    model.evaluate();
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_formula("B2"), "=#REF!");
+    assert_eq!(model._get_text("B2"), "#REF!");
+    assert_eq!(model._get_formula("C2"), "=SUM(A2:#REF!)");
+    assert_eq!(model._get_text("C2"), "#VALUE!");
+
+    // The same two shapes on the column axis, which already answered this way.
+    let mut model = new_empty_model();
+    model._set("B1", &format!("={last_column}1"));
+    model._set("B2", &format!("=SUM(A1:{last_column}1)"));
+    model.evaluate();
+    model.insert_columns(0, 1, 1).unwrap();
+    model.evaluate();
+    assert_eq!(model._get_formula("C1"), "=#REF!");
+    assert_eq!(model._get_text("C1"), "#REF!");
+    assert_eq!(model._get_formula("C2"), "=SUM(B1:#REF!)");
+    assert_eq!(model._get_text("C2"), "#VALUE!");
+}
