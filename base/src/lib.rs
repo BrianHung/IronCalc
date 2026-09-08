@@ -52,6 +52,7 @@ mod changed_cells;
 mod conditional_formatting;
 mod constants;
 mod cut_paste;
+mod dependency_graph;
 mod eval_ctx;
 mod functions;
 mod implicit_intersection;
@@ -71,9 +72,10 @@ mod test;
 #[cfg(any(test, feature = "mock_time"))]
 pub mod mock_time;
 
-pub use changed_cells::ChangedSinceRead;
+pub use dependency_graph::RecalcMode;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
+pub use model::ChangedSinceRead;
 pub use model::FmtSettings;
 pub use model::Model;
 // Public only because `Worksheet::write_log` is a public field; the type is
