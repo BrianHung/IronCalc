@@ -31,12 +31,14 @@ use std::collections::BTreeMap;
 /// order-dependent.
 const DEFAULT_AVOID_OPS: &str = "ArrayFormula";
 
-/// `SCELL` / `NCELL`: a formula that reads a defined name in scalar context
-/// (`=SCELL+1`) panics the engine outright — "Larger-than-1x1 array reached
-/// scalar-context cell" — as soon as that name is rebound to a multi-cell
-/// range. Deterministic, two ops, and it aborts the scenario before any
-/// comparison happens, so it hides whatever else the seed would have searched.
-const DEFAULT_AVOID_FORMULAS: &str = "SCELL,NCELL";
+/// `SCELL` / `NCELL` / `NRANGE`: a formula that reads a defined name in scalar
+/// context (`=SCELL+1`, or plain `=NRANGE` set before the name exists) panics
+/// the engine outright — "Larger-than-1x1 array reached scalar-context cell" —
+/// as soon as that name is bound or rebound to a multi-cell range. Two ops,
+/// deterministic (seeds 298 and 390 both minimize to exactly this), and it
+/// aborts the scenario before any comparison happens, so it hides whatever
+/// else the seed would have searched.
+const DEFAULT_AVOID_FORMULAS: &str = "SCELL,NCELL,NRANGE";
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
