@@ -74,6 +74,7 @@ impl<'a> Model<'a> {
             views,
             conditional_formatting: vec![],
             links: HashMap::new(),
+            write_log: crate::recalc::WriteLog::default(),
         }
     }
 

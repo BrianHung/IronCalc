@@ -34,6 +34,7 @@ use crate::{
     utils as common,
 };
 
+use crate::recalc::Write;
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 #[cfg(any(test, feature = "mock_time"))]
@@ -2393,7 +2394,11 @@ impl<'a> Model<'a> {
             // Deleting the contents of a cell also removes its link.
             let ws = self.workbook.worksheet_mut(sheet)?;
             ws.cell_clear_contents(row, column)?;
-            ws.links.remove(&(row, column));
+            if ws.links.remove(&(row, column)).is_some() {
+                ws.write_log.push(Write::Link {
+                    at: (sheet, row, column),
+                });
+            }
             return Ok(());
         }
 
@@ -3046,6 +3051,16 @@ impl<'a> Model<'a> {
     /// Phase 2 evaluates every remaining cell in natural order.  Because all spill areas have
     /// already been written, regular cells always read the correct spill values.
     pub fn evaluate(&mut self) {
+        self.drain_write_journal();
+        // Storing a formula result is not a user edit, so the journal stays
+        // paused for the whole pass. The guard restores it however the pass
+        // ends, `?` and unwinding included.
+        let mut evaluating = self.pause_journal();
+        evaluating.evaluate_workbook();
+    }
+
+    /// Recomputes every cell. The caller holds the journal pause.
+    fn evaluate_workbook(&mut self) {
         self.collect_spill_cells();
 
         let n = self.spill_cells.len();
@@ -3102,6 +3117,55 @@ impl<'a> Model<'a> {
         self.evaluate_conditional_formatting();
     }
 
+    /// Empties every sheet's write journal.
+    ///
+    /// Called at the head of [`Model::evaluate`], before the pass pauses
+    /// recording, so a pass never sees the edits it is about to recompute
+    /// and the log stays bounded by the edits between two passes.
+    pub(crate) fn drain_write_journal(&mut self) {
+        for worksheet in &mut self.workbook.worksheets {
+            let _ = worksheet.write_log.drain();
+        }
+    }
+
+    /// Rewrites a formula after a structural displacement.
+    ///
+    /// Journaled as `is_formula: false`: a displacement is not a user formula
+    /// edit, it is the same formula re-rendered against moved coordinates, and
+    /// a consumer that treats a new formula specially must not be told one
+    /// arrived here.
+    pub(crate) fn write_displaced_formula(
+        &mut self,
+        sheet: u32,
+        row: i32,
+        column: i32,
+        formula: String,
+    ) -> Result<(), String> {
+        let was_formula = self
+            .workbook
+            .worksheet(sheet)?
+            .cell(row, column)
+            .and_then(Cell::get_formula)
+            .is_some();
+        let result = {
+            // The raw write would be journaled as a formula edit. Substitute
+            // our own entry below instead of suppressing it.
+            let mut paused = self.pause_journal_for_sheet(sheet);
+            paused.update_cell_with_formula(sheet, row, column, formula)
+        };
+        if result.is_ok() {
+            self.workbook.worksheets[sheet as usize]
+                .write_log
+                .push(Write::Cell {
+                    row,
+                    column,
+                    was_formula,
+                    is_formula: false,
+                });
+        }
+        result
+    }
+
     /// Removes the content of every cell in the range but leaves the style.
     ///
     /// See also:
@@ -3155,13 +3219,26 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        // Deleting the contents of a cell also removes its link
-        ws.links.retain(|&(row, column), _| {
-            row < range.row
-                || row >= range.row + range.height
-                || column < range.column
-                || column >= range.column + range.width
-        });
+        // Deleting the contents of a cell also removes its link. Each removal is
+        // journaled on its own: a link can sit at a position with no cell, so
+        // the cell clears above do not cover it.
+        let removed_links: Vec<(i32, i32)> = ws
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= range.row
+                    && row < range.row + range.height
+                    && column >= range.column
+                    && column < range.column + range.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            ws.links.remove(&(row, column));
+            ws.write_log.push(Write::Link {
+                at: (range.sheet, row, column),
+            });
+        }
         Ok(())
     }
 
@@ -3238,44 +3315,54 @@ impl<'a> Model<'a> {
         }
         let worksheet = self.workbook.worksheet_mut(area.sheet)?;
 
-        let sheet_data = &mut worksheet.sheet_data;
         let mut cells_to_clear = Vec::new();
         for row in area.row..area.row + area.height {
-            if let Some(row_data) = sheet_data.get_mut(&row) {
-                for column in area.column..area.column + area.width {
-                    // If it is part of a dynamic array we need to clear the spill
-                    if let Some(Cell::ArrayFormula {
-                        r,
-                        kind: ArrayKind::Dynamic,
-                        ..
-                    }) = row_data.get(&column)
-                    {
-                        // clear the spill of the dynamic formula
-                        let (width, height) = r;
-                        for r in row..row + height {
-                            for c in column..column + width {
-                                cells_to_clear.push((r, c));
-                            }
+            for column in area.column..area.column + area.width {
+                // If it is part of a dynamic array we need to clear the spill
+                if let Some(Cell::ArrayFormula {
+                    r,
+                    kind: ArrayKind::Dynamic,
+                    ..
+                }) = worksheet.cell(row, column)
+                {
+                    // clear the spill of the dynamic formula
+                    let (width, height) = *r;
+                    for r in row..row + height {
+                        for c in column..column + width {
+                            cells_to_clear.push((r, c));
                         }
                     }
-                    row_data.remove(&column);
                 }
-                if row_data.is_empty() {
-                    sheet_data.remove(&row);
-                };
+                // Through `remove_cell` rather than `sheet_data` directly, so
+                // the removal is journaled. It drops the whole entry, style
+                // included, which is what clearing "all" means here.
+                worksheet.remove_cell(row, column)?;
             }
         }
         for (row, column) in cells_to_clear {
             // we ignore errors here because the cell might have already been cleared as part of an array formula
             let _ = worksheet.cell_clear_contents(row, column);
         }
-        // Deleting the cells also removes their links
-        worksheet.links.retain(|&(row, column), _| {
-            row < area.row
-                || row >= area.row + area.height
-                || column < area.column
-                || column >= area.column + area.width
-        });
+        // Deleting the cells also removes their links. Each removal is
+        // journaled on its own: a link can sit at a position with no cell, so
+        // the cell removals above do not cover it.
+        let removed_links: Vec<(i32, i32)> = worksheet
+            .links
+            .keys()
+            .copied()
+            .filter(|&(row, column)| {
+                row >= area.row
+                    && row < area.row + area.height
+                    && column >= area.column
+                    && column < area.column + area.width
+            })
+            .collect();
+        for (row, column) in removed_links {
+            worksheet.links.remove(&(row, column));
+            worksheet.write_log.push(Write::Link {
+                at: (area.sheet, row, column),
+            });
+        }
         Ok(())
     }
 

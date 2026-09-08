@@ -55,6 +55,7 @@ mod functions;
 mod implicit_intersection;
 pub mod links;
 mod model;
+mod recalc;
 mod styles;
 mod tz;
 mod units;
@@ -72,6 +73,10 @@ pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
 pub use model::FmtSettings;
 pub use model::Model;
+// Public only because `Worksheet::write_log` is a public field; the type is
+// an implementation detail of the write journal, not API.
+#[doc(hidden)]
+pub use recalc::WriteLog;
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
 pub use user_model::UserModel;
