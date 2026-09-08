@@ -48,6 +48,7 @@ pub use crate::constants::ROW_HEIGHT_FACTOR;
 mod actions;
 mod arithmetic;
 mod cast;
+mod changed_cells;
 mod conditional_formatting;
 mod constants;
 mod cut_paste;
@@ -56,6 +57,7 @@ mod functions;
 mod implicit_intersection;
 pub mod links;
 mod model;
+mod recalc;
 mod styles;
 mod tz;
 mod units;
@@ -69,10 +71,15 @@ mod test;
 #[cfg(any(test, feature = "mock_time"))]
 pub mod mock_time;
 
+pub use changed_cells::ChangedSinceRead;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
 pub use model::FmtSettings;
 pub use model::Model;
+// Public only because `Worksheet::write_log` is a public field; the type is
+// an implementation detail of the write journal, not API.
+#[doc(hidden)]
+pub use recalc::WriteLog;
 pub use user_model::BorderArea;
 pub use user_model::ClipboardData;
 pub use user_model::UserModel;

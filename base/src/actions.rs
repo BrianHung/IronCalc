@@ -316,7 +316,7 @@ impl<'a> Model<'a> {
                 self.language,
             );
             if formula != formula_displaced {
-                self.update_cell_with_formula(sheet, row, column, format!("={formula_displaced}"))?;
+                self.write_displaced_formula(sheet, row, column, format!("={formula_displaced}"))?;
             };
         }
         Ok(())
@@ -523,6 +523,10 @@ impl<'a> Model<'a> {
         column: i32,
         column_count: i32,
     ) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if column_count <= 0 {
             return Err("Cannot add a negative number of cells :)".to_string());
         }
@@ -616,6 +620,10 @@ impl<'a> Model<'a> {
         column: i32,
         column_count: i32,
     ) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if column_count <= 0 {
             return Err("Please use insert columns instead".to_string());
         }
@@ -859,6 +867,10 @@ impl<'a> Model<'a> {
     /// * `row` - The index at which the new rows should be inserted.
     /// * `row_count` - The number of rows to insert.
     pub fn insert_rows(&mut self, sheet: u32, row: i32, row_count: i32) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if row_count <= 0 {
             return Err("Cannot add a negative number of cells :)".to_string());
         }
@@ -938,6 +950,10 @@ impl<'a> Model<'a> {
     /// * `row` - The index of the first row to delete.
     /// * `row_count` - The number of rows to delete.
     pub fn delete_rows(&mut self, sheet: u32, row: i32, row_count: i32) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if row_count <= 0 {
             return Err("Please use insert rows instead".to_string());
         }
@@ -1487,6 +1503,10 @@ impl<'a> Model<'a> {
         column_count: i32,
         delta: i32,
     ) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if column_count <= 0 || delta == 0 {
             return Ok(());
         }
@@ -1534,6 +1554,10 @@ impl<'a> Model<'a> {
         row_count: i32,
         delta: i32,
     ) -> Result<(), String> {
+        // Structural: renumbers cells rather than editing them, so the change
+        // delta reports a full repaint. Marked ahead of the checks on purpose;
+        // see `Model::record_everything_changed`.
+        self.record_everything_changed();
         if row_count <= 0 || delta == 0 {
             return Ok(());
         }

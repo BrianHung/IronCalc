@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     constants::{LAST_COLUMN, LAST_ROW},
+    recalc::Write,
     types::{Color, Link},
     Model,
 };
@@ -103,10 +104,13 @@ impl Model<'_> {
         link: Link,
     ) -> Result<(), String> {
         check_valid_cell(row, column)?;
-        self.workbook
-            .worksheet_mut(sheet)?
-            .links
-            .insert((row, column), link);
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        worksheet.links.insert((row, column), link);
+        // A link is part of the cell's observable state, so attaching one is a
+        // write like any other.
+        worksheet.write_log.push(Write::Link {
+            at: (sheet, row, column),
+        });
         Ok(())
     }
 
@@ -114,10 +118,12 @@ impl Model<'_> {
     /// if the cell has no link.
     pub fn delete_cell_link(&mut self, sheet: u32, row: i32, column: i32) -> Result<(), String> {
         check_valid_cell(row, column)?;
-        self.workbook
-            .worksheet_mut(sheet)?
-            .links
-            .remove(&(row, column));
+        let worksheet = self.workbook.worksheet_mut(sheet)?;
+        if worksheet.links.remove(&(row, column)).is_some() {
+            worksheet.write_log.push(Write::Link {
+                at: (sheet, row, column),
+            });
+        }
         Ok(())
     }
 
