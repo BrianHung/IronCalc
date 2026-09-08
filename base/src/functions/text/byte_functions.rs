@@ -6,11 +6,11 @@
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::Node, types::CellReferenceIndex},
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_findb(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         self.fn_find(args, cell)
     }

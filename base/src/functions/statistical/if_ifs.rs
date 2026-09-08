@@ -3,9 +3,9 @@ use crate::expressions::types::CellReferenceIndex;
 use crate::functions::util::build_criteria;
 use crate::{
     calc_result::{CalcResult, Range},
+    eval_ctx::EvalCtx,
     expressions::parser::{ArrayNode, Node},
     expressions::token::Error,
-    model::Model,
 };
 
 /// A compiled criterion predicate, as returned by `build_criteria`.
@@ -27,7 +27,7 @@ fn array_node_to_calc_result(node: &ArrayNode, cell: CellReferenceIndex) -> Calc
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_countif(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 2 {
             let arguments = vec![args[0].clone(), args[1].clone()];
@@ -89,7 +89,7 @@ impl<'a> Model<'a> {
             }
         }
         for criterion in criteria.iter() {
-            fn_criteria.push(build_criteria(criterion, self.locale));
+            fn_criteria.push(build_criteria(criterion, self.locale()));
         }
 
         let mut total = 0.0;
@@ -99,8 +99,8 @@ impl<'a> Model<'a> {
         let right_row = first_range.right.row;
         let right_column = first_range.right.column;
 
-        let dimension = match self.workbook.worksheet(first_range.left.sheet) {
-            Ok(s) => s.dimension(),
+        let dimension = match self.sheet_dimension(first_range.left.sheet) {
+            Ok(dimension) => dimension,
             Err(_) => {
                 return CalcResult::new_error(
                     Error::ERROR,
@@ -240,7 +240,7 @@ impl<'a> Model<'a> {
             }
         }
         for criterion in criteria.iter() {
-            fn_criteria.push(build_criteria(criterion, self.locale));
+            fn_criteria.push(build_criteria(criterion, self.locale()));
         }
 
         self.run_ifs(&sum_range, ranges.as_slice(), &fn_criteria, cell, apply)
@@ -250,7 +250,7 @@ impl<'a> Model<'a> {
     /// cell in each criteria range satisfies the matching criterion. `ranges` and
     /// `fn_criteria` are parallel (one criteria range and one predicate per case).
     ///
-    /// Shared by [`Model::apply_ifs`] and the array-criteria path of SUMIF.
+    /// Shared by [`EvalCtx::apply_ifs`] and the array-criteria path of SUMIF.
     pub(crate) fn run_ifs<F>(
         &mut self,
         sum_range: &Range,
@@ -391,7 +391,7 @@ impl<'a> Model<'a> {
         for criteria_row in &criteria_grid {
             let mut out_row: Vec<ArrayNode> = Vec::with_capacity(criteria_row.len());
             for criterion in criteria_row {
-                let fn_criteria = [build_criteria(criterion, self.locale)];
+                let fn_criteria = [build_criteria(criterion, self.locale())];
                 let mut total = 0.0;
                 let node = match self.run_ifs(
                     &sum_range,

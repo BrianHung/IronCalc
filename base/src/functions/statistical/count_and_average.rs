@@ -4,10 +4,11 @@ use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::functions::util::clipped_away_cells;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, eval_ctx::EvalCtx, expressions::parser::Node,
+    expressions::token::Error,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn for_each_value<F>(
         &mut self,
         args: &[Node],

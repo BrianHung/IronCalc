@@ -3,13 +3,13 @@ use chrono::Datelike;
 use crate::{
     calc_result::CalcResult,
     constants::{MAXIMUM_DATE_SERIAL_NUMBER, MINIMUM_DATE_SERIAL_NUMBER},
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
     formatter::dates::from_excel_date,
-    model::Model,
 };
 
 mod accrint;
@@ -200,7 +200,7 @@ fn compute_ppmt(
 // All, except for rate are easily solvable in terms of the others.
 // In these formulas the payment (pmt) is normally negative
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_array_of_numbers_generic(
         &mut self,
         arg: &Node,

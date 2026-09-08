@@ -2,11 +2,11 @@
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::ArrayNode, parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// ARRAYTOTEXT(array, [format])
     /// format=0 (default, concise): values joined with "," (columns) and ";" (rows)
     /// format=1 (strict): same but wrapped in {} and strings are quoted

@@ -1,9 +1,10 @@
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, eval_ctx::EvalCtx, expressions::parser::Node,
+    expressions::token::Error,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // Helper to collect numeric values from the 2nd argument of RANK.*
     fn collect_rank_values(
         &mut self,

@@ -5,15 +5,15 @@ use regex_lite::Regex;
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// REGEXEXTRACT(text, regular_expression, [return_all])
     ///
     /// Returns the first substring of `text` that matches `regular_expression`.

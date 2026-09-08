@@ -1,13 +1,13 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::format::parse_formatted_number,
-    Model,
 };
 
 use super::util::{compare_values, from_wildcard_to_regex, result_matches_regex};
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // =DAVERAGE(database, field, criteria)
     pub(crate) fn fn_daverage(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() != 3 {
@@ -765,7 +765,7 @@ impl<'a> Model<'a> {
             }
         }
 
-        let formatted_number = parse_formatted_number(&criteria, &[], self.locale);
+        let formatted_number = parse_formatted_number(&criteria, &[], self.locale());
 
         match op {
             ">" | ">=" | "<" | "<=" => {

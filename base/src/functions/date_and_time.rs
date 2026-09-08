@@ -191,10 +191,10 @@ use crate::number_format::to_precision;
 use crate::{
     calc_result::CalcResult,
     constants::EXCEL_DATE_BASE,
+    eval_ctx::EvalCtx,
     expressions::parser::{ArrayNode, Node},
     expressions::token::Error,
     formatter::dates::from_excel_date,
-    model::Model,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -578,7 +578,7 @@ pub(crate) fn parse_datevalue_text(value: &str) -> Result<i32, String> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_date_serial(
         &mut self,
         node: &Node,
@@ -1161,7 +1161,7 @@ impl<'a> Model<'a> {
                 };
                 &tz_owned
             }
-            None => &self.tz,
+            None => self.tz(),
         };
         match crate::tz::excel_serial_for_now(tz) {
             Some(serial) => CalcResult::Number(serial.floor()),
@@ -1201,7 +1201,7 @@ impl<'a> Model<'a> {
                 };
                 &tz_owned
             }
-            None => &self.tz,
+            None => self.tz(),
         };
         match crate::tz::excel_serial_for_now(tz) {
             Some(serial) => CalcResult::Number(serial),

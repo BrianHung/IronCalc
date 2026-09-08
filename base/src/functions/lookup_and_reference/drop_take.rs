@@ -1,14 +1,14 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── TAKE ──────────────────────────────────────────────────────────────────
 
     /// `=TAKE(array, rows, [cols])`

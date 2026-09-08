@@ -1,12 +1,12 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{parse_range, Node},
         token::Error,
         types::CellReferenceIndex,
     },
     functions::Function,
-    model::Model,
 };
 
 /// Excel has a complicated way of filtering + hidden rows
@@ -32,14 +32,14 @@ pub enum CellTableStatus {
     Filtered,
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_table_for_cell(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let worksheet = match self.workbook.worksheet(sheet_index) {
-            Ok(ws) => ws,
+        let sheet_name = match self.worksheet_name(sheet_index) {
+            Ok(name) => name,
             Err(_) => return false,
         };
-        for table in self.workbook.tables.values() {
-            if worksheet.name != table.sheet_name {
+        for table in self.tables().values() {
+            if sheet_name != table.sheet_name {
                 continue;
             }
             // (column, row, column, row)
@@ -59,15 +59,7 @@ impl<'a> Model<'a> {
         row: i32,
         column: i32,
     ) -> Result<CellTableStatus, String> {
-        let worksheet = self.workbook.worksheet(sheet_index)?;
-        let mut hidden = false;
-        for row_style in &worksheet.rows {
-            if row_style.r == row {
-                hidden = row_style.hidden;
-                break;
-            }
-        }
-        if !hidden {
+        if !self.row_hidden(sheet_index, row)? {
             return Ok(CellTableStatus::Normal);
         }
         // The row is hidden we need to know if the table has filters
@@ -80,23 +72,11 @@ impl<'a> Model<'a> {
 
     // FIXME(TD): This is too much
     fn cell_is_subtotal(&self, sheet_index: u32, row: i32, column: i32) -> bool {
-        let row_data = match self.workbook.worksheets[sheet_index as usize]
-            .sheet_data
-            .get(&row)
-        {
-            Some(r) => r,
-            None => return false,
-        };
-        let cell = match row_data.get(&column) {
-            Some(c) => c,
-            None => {
-                return false;
-            }
-        };
-
-        match cell.get_formula() {
+        match self.formula_index_at(sheet_index, row, column) {
             Some(f) => {
-                let node = &self.parsed_formulas[sheet_index as usize][f as usize].0;
+                let Some(node) = self.parsed_formula_node(sheet_index, f) else {
+                    return false;
+                };
                 matches!(
                     node,
                     Node::FunctionKind {

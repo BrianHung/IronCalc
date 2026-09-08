@@ -2,9 +2,9 @@ use std::array::IntoIter;
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     language::{get_default_language, Functions, Language},
-    model::Model,
 };
 
 pub(crate) mod binary_search;
@@ -2299,7 +2299,7 @@ impl Function {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn evaluate_function(
         &mut self,
         kind: &Function,

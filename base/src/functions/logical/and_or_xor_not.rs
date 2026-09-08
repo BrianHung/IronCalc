@@ -1,14 +1,14 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_not(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.get_boolean(&args[0], cell) {

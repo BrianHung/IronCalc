@@ -1,13 +1,13 @@
 use crate::{
     calc_result::CalcResult,
     cast::{array_node_to_string, NumberOrArray, StringOrArray, ValueOrArray},
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::{Error, OpCompare},
         types::CellReferenceIndex,
     },
     functions::util::compare_values,
-    model::Model,
 };
 
 /// Maps an output index `i` back to the source array index, applying Excel's
@@ -37,7 +37,7 @@ fn to_f64(value: &ArrayNode) -> Result<f64, Error> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Applies `op` element‐wise for arrays/numbers.
     pub(crate) fn handle_arithmetic(
         &mut self,
