@@ -1,12 +1,12 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{parse_range, Node},
         token::Error,
         types::CellReferenceIndex,
     },
     functions::Function,
-    model::Model,
 };
 
 /// Excel has a complicated way of filtering + hidden rows
@@ -32,7 +32,7 @@ pub enum CellTableStatus {
     Filtered,
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_table_for_cell(&self, sheet_index: u32, row: i32, column: i32) -> bool {
         let sheet_name = match self.worksheet_name(sheet_index) {
             Ok(name) => name,

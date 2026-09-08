@@ -1,18 +1,18 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
 fn log_factorial(n: u64) -> f64 {
     (1..=n).map(|i| (i as f64).ln()).sum()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── MULTINOMIAL ───────────────────────────────────────────────────────────
 
     /// `=MULTINOMIAL(number1, [number2], ...)`

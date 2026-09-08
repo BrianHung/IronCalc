@@ -1,16 +1,16 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{NamedVariable, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
 use super::r#let::assign_variable_ids;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Evaluates the body of a named lambda with the given call-site argument nodes.
     /// Optional parameters not covered by call_args receive EmptyArg.
     pub(crate) fn call_lambda(

@@ -2,6 +2,7 @@ use crate::{
     arithmetic::bcast_idx,
     calc_result::CalcResult,
     cast::{array_node_to_string, calc_result_to_array_node},
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
@@ -12,7 +13,6 @@ use crate::{
         text::util::{substitute, text_after, text_before, Case},
         util::from_wildcard_to_regex,
     },
-    model::Model,
     number_format::to_precision,
 };
 
@@ -200,7 +200,7 @@ fn search(search_for: &str, text: &str, start: usize) -> Option<i32> {
     None
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_concat(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let mut result = "".to_string();
         for arg in args {
@@ -291,7 +291,7 @@ impl<'a> Model<'a> {
                     Ok(s) => s,
                     Err(e) => return e,
                 };
-                let locale = self.locale;
+                let locale = self.locale();
                 let mut output = Vec::with_capacity(arr.len());
                 for row in arr {
                     let mut data_row = Vec::with_capacity(row.len());
@@ -343,7 +343,7 @@ impl<'a> Model<'a> {
                     Ok(s) => s,
                     Err(s) => return s,
                 };
-                let d = format_number(value, &format_code, self.locale);
+                let d = format_number(value, &format_code, self.locale());
                 if let Some(_e) = d.error {
                     return CalcResult::Error {
                         error: Error::VALUE,
@@ -1160,7 +1160,7 @@ impl<'a> Model<'a> {
         match self.evaluate_node_in_context(&args[0], cell) {
             CalcResult::String(text) => {
                 let currencies = vec!["$", "€"];
-                if let Ok((value, _)) = parse_formatted_number(&text, &currencies, self.locale) {
+                if let Ok((value, _)) = parse_formatted_number(&text, &currencies, self.locale()) {
                     return CalcResult::Number(value);
                 };
                 CalcResult::Error {

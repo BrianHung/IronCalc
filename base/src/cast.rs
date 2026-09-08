@@ -1,5 +1,6 @@
 use crate::{
     calc_result::{CalcResult, Range},
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
@@ -7,7 +8,6 @@ use crate::{
     },
     formatter::format::parse_formatted_number,
     locale::Locale,
-    model::Model,
 };
 
 pub(crate) enum NumberOrArray {
@@ -78,9 +78,9 @@ pub(crate) fn cast_number_with_locale(s: &str, locale: &Locale) -> Option<f64> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn cast_number(&self, s: &str) -> Option<f64> {
-        cast_number_with_locale(s, self.locale)
+        cast_number_with_locale(s, self.locale())
     }
 
     pub(crate) fn get_number_or_array(

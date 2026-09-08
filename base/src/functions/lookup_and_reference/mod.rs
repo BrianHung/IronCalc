@@ -5,8 +5,8 @@ use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::implicit_intersection::implicit_intersection;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
-    utils::ParsedReference,
+    calc_result::CalcResult, eval_ctx::EvalCtx, expressions::parser::Node,
+    expressions::token::Error, utils::ParsedReference,
 };
 
 use super::binary_search::binary_search_on_array;
@@ -197,7 +197,7 @@ fn index_from_array(
     CalcResult::Array(result)
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// Materializes a value that is expected to be a vector (a single row or a
     /// single column) into a flat list of values. Accepts both range references
     /// and in-formula array literals. Used by the vector-based lookup functions
@@ -894,7 +894,7 @@ impl<'a> Model<'a> {
                 let parsed_reference = ParsedReference::parse_reference_formula(
                     Some(cell.sheet),
                     &s,
-                    self.locale,
+                    self.locale(),
                     |name| self.get_sheet_index_by_name(name),
                 );
 

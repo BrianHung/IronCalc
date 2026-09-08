@@ -1,13 +1,13 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // ── TRANSPOSE ─────────────────────────────────────────────────────────────
 
     /// `=TRANSPOSE(array)`

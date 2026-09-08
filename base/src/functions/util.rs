@@ -4,15 +4,15 @@ use regex_lite as regex;
 use crate::{
     calc_result::CalcResult,
     constants::{LAST_COLUMN, LAST_ROW},
+    eval_ctx::EvalCtx,
     expressions::token::{is_english_error_string, Error},
     expressions::types::CellReferenceIndex,
     formatter::format::parse_date,
     locale::Locale,
-    model::Model,
     number_format::to_excel_precision,
 };
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// The bounds of `left..=right` clipped to the sheet's used dimension,
     /// as `(row1, row2, column1, column2)`.
     ///

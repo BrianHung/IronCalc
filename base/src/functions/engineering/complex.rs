@@ -2,13 +2,13 @@ use std::fmt;
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         lexer::util::get_tokens,
         parser::Node,
         token::{Error, OpSum, TokenType},
         types::CellReferenceIndex,
     },
-    model::Model,
     number_format::to_precision,
 };
 
@@ -182,7 +182,7 @@ fn parse_complex_number(s: &str) -> Result<(f64, f64, Suffix), String> {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     fn get_complex_number(
         &mut self,
         node: &Node,

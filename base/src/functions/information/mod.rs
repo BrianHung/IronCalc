@@ -2,6 +2,7 @@ mod isomitted;
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
@@ -9,7 +10,6 @@ use crate::{
         utils::number_to_column,
     },
     get_all_timezones,
-    model::Model,
     model::ParsedDefinedName,
 };
 
@@ -23,7 +23,7 @@ fn get_system() -> String {
     "browser".to_string()
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_isnumber(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.len() == 1 {
             match self.evaluate_node_in_context(&args[0], cell) {

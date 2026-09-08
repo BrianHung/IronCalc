@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     functions::Function,
-    model::Model,
 };
 
 /// Recursively walks `node`, replacing every `NamedVariableKind { name, id: None }` whose
@@ -90,7 +90,7 @@ pub(super) fn assign_variable_ids(node: &mut Node, target: &str, id: u32) {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_let(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         // LET requires an odd number of args >= 3: name1, value1, [name2, value2, ...], body
         if args.len() < 3 || args.len().is_multiple_of(2) {

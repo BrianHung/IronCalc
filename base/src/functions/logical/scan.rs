@@ -1,7 +1,7 @@
 use crate::{
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{parser::ArrayNode, parser::Node, token::Error, types::CellReferenceIndex},
-    model::Model,
 };
 
 fn array_node_to_calc_result(node: &ArrayNode, cell: CellReferenceIndex) -> CalcResult {
@@ -29,7 +29,7 @@ fn calc_result_to_array_node(result: CalcResult) -> ArrayNode {
     }
 }
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     /// `=SCAN([initial_value], array, lambda)`
     ///
     /// Like REDUCE but returns an array of all intermediate accumulated values

@@ -3,9 +3,9 @@ use chrono::{Datelike, Months, NaiveDate};
 use crate::{
     calc_result::CalcResult,
     constants::EXCEL_DATE_BASE,
+    eval_ctx::EvalCtx,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::dates::from_excel_date,
-    model::Model,
 };
 
 // ============================================================
@@ -731,7 +731,7 @@ fn parse_coupon_args(
 // EvalCtx implementations
 // ============================================================
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     // DURATION(settlement, maturity, coupon, yld, frequency, [basis])
     pub(crate) fn fn_duration(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let arg_count = args.len();

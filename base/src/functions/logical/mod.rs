@@ -9,12 +9,12 @@ mod switch;
 use crate::{
     arithmetic::bcast_idx,
     calc_result::CalcResult,
+    eval_ctx::EvalCtx,
     expressions::{
         parser::{ArrayNode, Node},
         token::Error,
         types::CellReferenceIndex,
     },
-    model::Model,
 };
 
 // ── IF array helpers ──────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ fn array_node_to_bool(node: &ArrayNode) -> Result<bool, ArrayNode> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_true(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         if args.is_empty() {
             CalcResult::Boolean(true)

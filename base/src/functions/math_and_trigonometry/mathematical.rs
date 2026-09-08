@@ -5,11 +5,12 @@ use crate::expressions::types::CellReferenceIndex;
 use crate::number_format::{to_excel_precision, to_precision};
 use crate::single_number_fn;
 use crate::{
-    calc_result::CalcResult, expressions::parser::Node, expressions::token::Error, model::Model,
+    calc_result::CalcResult, eval_ctx::EvalCtx, expressions::parser::Node,
+    expressions::token::Error,
 };
 use std::f64::consts::PI;
 
-impl<'a> Model<'a> {
+impl<'a, 'm> EvalCtx<'a, 'm> {
     pub(crate) fn fn_min(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         let mut result = f64::NAN;
         for arg in args {
