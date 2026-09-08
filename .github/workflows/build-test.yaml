@@ -39,6 +39,25 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Rust Tests
         run: make test-rust
+      # One random operation stream driven through two models that were built
+      # the same way, compared cell by cell after every evaluate. They differ in
+      # nothing, so a divergence is nondeterminism inside the engine -- an
+      # evaluation order that follows hash-map iteration, an accumulator with no
+      # fixed association. `make test-rust` above already runs this at its 8x40
+      # default; this step is the wider sweep, and it is bounded (no minimizing,
+      # 40 seeds x 120 steps) so a failure lands as a raw repro instead of
+      # spending the job's time shrinking one.
+      #
+      # ubuntu-latest is x86_64 and macos-latest is arm64, so signed-zero and
+      # other IEEE quirks are compared on both. Structural ops (insert / delete /
+      # move rows and columns, sheet CRUD) and save/load round-trips are in:
+      # they are where most historical bugs lived.
+      #
+      # Two generator classes are parked by default because they reproduce bugs
+      # that are already on main; the list, and the reason for each entry, live
+      # in DEFAULT_AVOID_OPS / DEFAULT_AVOID_FORMULAS in the test itself.
+      - name: Bounded differential fuzz
+        run: FUZZ_NO_MINIMIZE=1 FUZZ_SEEDS=40 FUZZ_STEPS=120 cargo test -p ironcalc_base --test fuzz_differential -- --nocapture
   test-js:
     runs-on: ubuntu-latest
     steps:
