@@ -38,6 +38,15 @@ const DEFAULT_AVOID_OPS: &str = "ArrayFormula";
 /// engine's to answer for.
 const DEFAULT_AVOID_FORMULAS: &str = "SCELL,NCELL,NRANGE";
 
+/// Known deep-soak residual, not parked (it needs no generator class and does
+/// not affect a bare `cargo test` or the CI config): at 400x400, seed 320
+/// produces a delta *over-report* — after a volatile cell is overwritten with a
+/// static value and a column is then inserted, `take_changed_cells` names the
+/// shifted cell though its value never moved. It is a repaint-too-much, not a
+/// wrong value (the Verify oracle, which compares values, is clean on it), and
+/// the path is identical to the reference engine. Tracked as a separate fix;
+/// documented here so a soak that hits it is not mistaken for a new divergence.
+
 fn env_list(name: &str, default: &str) -> Vec<&'static str> {
     std::env::var(name)
         .unwrap_or_else(|_| default.to_string())
