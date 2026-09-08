@@ -15,6 +15,10 @@ readme = "README.md"
 # crates can test volatile functions (NOW, TODAY, ...) deterministically.
 mock_time = []
 
+# Enables `RecalcMode::Verify`, the differential oracle that runs incremental
+# then full and asserts they agree. Test/CI only; never enabled in production.
+recalc_verify = []
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 ryu = "1.0"

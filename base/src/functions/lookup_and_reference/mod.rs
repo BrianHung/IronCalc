@@ -910,11 +910,24 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
                 };
 
                 match parsed_reference {
-                    ParsedReference::CellReference(reference) => CalcResult::Range {
-                        left: reference,
-                        right: reference,
-                    },
-                    ParsedReference::Range(left, right) => CalcResult::Range { left, right },
+                    ParsedReference::CellReference(reference) => {
+                        // No rect: a 1x1 rectangle is the same edge as the cell
+                        // read the reader records for it, and recording it as a
+                        // range instead only makes a delete of that row rebuild
+                        // the graph where a cell edge would have been dropped.
+                        // The range branch below does need its rect -- see
+                        // `indirect_records_its_resolved_extent_not_the_walk`.
+                        self.trace_input(crate::recalc::Input::Computed);
+                        CalcResult::Range {
+                            left: reference,
+                            right: reference,
+                        }
+                    }
+                    ParsedReference::Range(left, right) => {
+                        self.trace_input(crate::recalc::Input::Computed);
+                        self.trace_rect(left.sheet, left.row, left.column, right.row, right.column);
+                        CalcResult::Range { left, right }
+                    }
                 }
             }
             Err(v) => v,
@@ -1032,6 +1045,8 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
             row: row_end,
             column: column_end,
         };
+        self.trace_input(crate::recalc::Input::Computed);
+        self.trace_rect(left.sheet, left.row, left.column, right.row, right.column);
         CalcResult::Range { left, right }
     }
 

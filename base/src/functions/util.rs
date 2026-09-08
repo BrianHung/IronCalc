@@ -52,7 +52,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
     ///   for criteria that match a blank, so it needs `max_row` and
     ///   `max_column` separately rather than the clipped bounds.
     pub(crate) fn clip_range_to_used(
-        &self,
+        &mut self,
         left: &CellReferenceIndex,
         right: &CellReferenceIndex,
         cell: CellReferenceIndex,

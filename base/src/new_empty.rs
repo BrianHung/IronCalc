@@ -1,6 +1,6 @@
 use chrono::DateTime;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     calc_result::Range,
@@ -194,7 +194,6 @@ impl<'a> Model<'a> {
     /// editing them, so the change delta reports a full repaint from here
     /// rather than at each call site.
     pub(crate) fn reset_parsed_structures(&mut self) {
-        self.record_everything_changed();
         let defined_names = self.workbook.get_defined_names_with_scope();
         self.parser
             .set_worksheets_and_names(self.workbook.get_worksheet_names(), defined_names);
@@ -202,6 +201,8 @@ impl<'a> Model<'a> {
         self.parse_formulas();
         self.parsed_defined_names = HashMap::new();
         self.parse_defined_names();
+        // Reparsing invalidates the dependency graph built on the old parse.
+        self.invalidate_graph();
         self.evaluate();
     }
 
@@ -705,7 +706,21 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
-            changed_cells: crate::changed_cells::ChangedCells::Untracked,
+            graph: crate::dependency_graph::DependencyGraph::default(),
+            recalc_mode: crate::RecalcMode::from_env(),
+            recompute_scope: None,
+            formula_cell_count: 0,
+            formula_count_stale: false,
+            wrote_array_cells: false,
+            evaluated_array_cells: false,
+            saw_circular_reference: false,
+            cse_rects: None,
+            cse_member_guard: crate::model::cse_guard::CseMemberGuard::default(),
+            read_stack: Vec::new(),
+            read_pool: Vec::new(),
+            changed_cells: crate::model::ChangedCells::All,
+            write_seeds: HashSet::new(),
+            full_pass_run: crate::model::incremental::FullPassRun::default(),
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

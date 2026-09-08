@@ -301,13 +301,9 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
             }
             Node::TableNameKind(name) => {
                 // Now let's see if it is a table
-                for (table_name, table) in self.tables() {
-                    if table_name == name {
-                        if let Some(sheet_index) = self.get_sheet_index_by_name(&table.sheet_name) {
-                            return CalcResult::Number(sheet_index as f64 + 1.0);
-                        } else {
-                            break;
-                        }
+                if let Some(sheet_name) = self.table_by_name(name).map(|t| t.sheet_name.clone()) {
+                    if let Some(sheet_index) = self.get_sheet_index_by_name(&sheet_name) {
+                        return CalcResult::Number(sheet_index as f64 + 1.0);
                     }
                 }
             }
@@ -452,7 +448,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
             }
             "CONTENTS" => self.evaluate_cell(reference),
             "FILENAME" => {
-                let workbook_name = self.workbook_name();
+                let workbook_name = self.workbook_name().to_string();
                 let worksheet_name = match self.worksheet_name(reference.sheet) {
                     Ok(name) => name,
                     Err(_) => {

@@ -50,6 +50,12 @@ impl Worksheet {
         self.sheet_data.get(&row)?.get(&column)
     }
 
+    /// Read-only view of the sheet's cells. Mutations must go through
+    /// `update_cell` / `remove_cell` so they are journaled.
+    pub fn sheet_data(&self) -> &SheetData {
+        &self.sheet_data
+    }
+
     pub(crate) fn cell_mut(&mut self, row: i32, column: i32) -> Option<&mut Cell> {
         self.sheet_data.get_mut(&row)?.get_mut(&column)
     }
@@ -402,6 +408,41 @@ impl Worksheet {
         self.update_cell(row, column, cell)
     }
 
+    /// Tears down the footprint of an array formula: the `width` x `height`
+    /// rectangle spanned from its anchor at (`row`, `column`). With
+    /// `keep_anchor` the anchor cell itself is skipped, for callers that have
+    /// already rewritten the anchor in place.
+    ///
+    /// This is the one primitive for footprint teardown. Every cell goes
+    /// through the style-preserving [`Worksheet::cell_clear_contents`], which
+    /// materializes an `EmptyCell` holding the style: a footprint can reach
+    /// cells outside the area a user selected, and `remove_cell` would drop
+    /// their style (enforced for `range_clear_all` by the grep-gate
+    /// `range_clear_all_spill_teardown_preserves_style`). Errors are ignored:
+    /// part of the footprint may already be gone.
+    ///
+    /// The evaluation-time respill in `model/mod.rs` is deliberately not a
+    /// caller: it may only clear cells proven to be the anchor's own
+    /// `SpillCell`s, because any other content must survive to block the
+    /// spill on re-evaluation.
+    pub(crate) fn clear_array_footprint(
+        &mut self,
+        row: i32,
+        column: i32,
+        width: i32,
+        height: i32,
+        keep_anchor: bool,
+    ) {
+        for r in row..row + height {
+            for c in column..column + width {
+                if keep_anchor && r == row && c == column {
+                    continue;
+                }
+                let _ = self.cell_clear_contents(r, c);
+            }
+        }
+    }
+
     pub fn set_frozen_rows(&mut self, frozen_rows: i32) -> Result<(), String> {
         if frozen_rows < 0 {
             return Err("Frozen rows cannot be negative".to_string());
@@ -708,6 +749,10 @@ impl Worksheet {
                 });
             }
         }
+        // `sheet_data` is a hash map: sort so callers that rewrite the column
+        // cell by cell, such as a column move, do it in the same order every
+        // run. Matches the ascending order of `Model::get_columns_for_row`.
+        column_cell_references.sort_unstable_by_key(|r| r.row);
         Ok(column_cell_references)
     }
 
@@ -732,6 +777,43 @@ impl Worksheet {
             });
         }
         Ok(())
+    }
+
+    /// Drops a whole row's cells at once, journaling each removal that is one.
+    /// The same removals [`Worksheet::remove_cell`] would journal one at a time,
+    /// which is why both ask [`removal_is_an_edit`].
+    pub(crate) fn remove_row_data(&mut self, row: i32) {
+        if let Some(row_data) = self.sheet_data.remove(&row) {
+            for (column, cell) in row_data {
+                if removal_is_an_edit(&cell) {
+                    self.write_log.push(Write::Cell {
+                        row,
+                        column,
+                        was_formula: cell.get_formula().is_some(),
+                        is_formula: false,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Reinstates a row's cells wholesale, replacing whatever is there, and
+    /// journals every position it writes. Undo's counterpart to
+    /// [`Worksheet::remove_row_data`]: unlike a removal, a restore is an edit
+    /// at every position, because the row it replaces is not this one.
+    pub(crate) fn restore_row(&mut self, row: i32, data: HashMap<i32, Cell>) {
+        for (column, cell) in &data {
+            self.write_log.push(Write::Cell {
+                row,
+                column: *column,
+                was_formula: self
+                    .cell(row, *column)
+                    .and_then(Cell::get_formula)
+                    .is_some(),
+                is_formula: cell.get_formula().is_some(),
+            });
+        }
+        self.sheet_data.insert(row, data);
     }
 
     /// Returns the height of a row in pixels
