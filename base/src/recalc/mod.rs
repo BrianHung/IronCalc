@@ -8,9 +8,12 @@
 
 /// The write journal: what a user edit records for the next pass to consume.
 pub mod journal;
+/// The read tracer: what one formula observed while it evaluated.
+pub(crate) mod trace;
 
 pub(crate) use journal::Write;
 pub use journal::WriteLog;
+pub(crate) use trace::{area_contains, Input, ReadSet};
 
 /// A cell address that carries its sheet: `(sheet index, row, column)`.
 ///

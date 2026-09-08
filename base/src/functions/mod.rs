@@ -2307,6 +2307,25 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
         cell: CellReferenceIndex,
     ) -> CalcResult {
         match kind {
+            Function::Rand | Function::Randbetween | Function::Randarray => {
+                self.trace_input(crate::recalc::Input::Random);
+            }
+            Function::Now | Function::Today => {
+                self.trace_input(crate::recalc::Input::Clock);
+            }
+            Function::Row | Function::Column if args.is_empty() => {
+                self.trace_input(crate::recalc::Input::OwnCoord((
+                    cell.sheet,
+                    cell.row,
+                    cell.column,
+                )));
+            }
+            Function::Cell | Function::Info => {
+                self.trace_input(crate::recalc::Input::Environment);
+            }
+            _ => {}
+        }
+        match kind {
             Function::And => self.fn_and(args, cell),
             Function::False => self.fn_false(args, cell),
             Function::If => self.fn_if(args, cell),

@@ -33,7 +33,7 @@ pub enum CellTableStatus {
 }
 
 impl<'a, 'm> EvalCtx<'a, 'm> {
-    fn get_table_for_cell(&self, sheet_index: u32, row: i32, column: i32) -> bool {
+    fn get_table_for_cell(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
         let sheet_name = match self.worksheet_name(sheet_index) {
             Ok(name) => name,
             Err(_) => return false,
@@ -54,7 +54,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
     }
 
     fn cell_hidden_status(
-        &self,
+        &mut self,
         sheet_index: u32,
         row: i32,
         column: i32,
@@ -71,7 +71,7 @@ impl<'a, 'm> EvalCtx<'a, 'm> {
     }
 
     // FIXME(TD): This is too much
-    fn cell_is_subtotal(&self, sheet_index: u32, row: i32, column: i32) -> bool {
+    fn cell_is_subtotal(&mut self, sheet_index: u32, row: i32, column: i32) -> bool {
         match self.formula_index_at(sheet_index, row, column) {
             Some(f) => {
                 let Some(node) = self.parsed_formula_node(sheet_index, f) else {

@@ -337,7 +337,7 @@ pub struct ConditionalFormattingView {
 // ---------------------------------------------------------------------------
 
 /// The winning CF result for a cell, stored in Model::cf_cache after evaluate().
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CfCellResult {
     /// A dxf-based rule matched; dxf_id indexes into styles.dxfs.
     Dxf(u32),

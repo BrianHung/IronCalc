@@ -3,9 +3,22 @@
 use crate::expressions::types::{Area, CellReferenceIndex};
 use crate::model::Model;
 use crate::types::Cell;
+use crate::RecalcMode;
 
 pub fn new_empty_model<'a>() -> Model<'a> {
     Model::new_empty("model", "en", "UTC", "en").unwrap()
+}
+
+/// Incremental, or Verify when `IRONCALC_RECALC=verify` so value tests hit the
+/// incremental-vs-full oracle instead of opting out of it.
+pub fn incremental_mode() -> RecalcMode {
+    #[cfg(feature = "recalc_verify")]
+    {
+        if RecalcMode::from_env() == RecalcMode::Verify {
+            return RecalcMode::Verify;
+        }
+    }
+    RecalcMode::Incremental
 }
 
 impl<'a> Model<'a> {
