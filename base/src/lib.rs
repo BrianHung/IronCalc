@@ -48,6 +48,7 @@ pub use crate::constants::ROW_HEIGHT_FACTOR;
 mod actions;
 mod arithmetic;
 mod cast;
+mod changed_cells;
 mod conditional_formatting;
 mod constants;
 mod cut_paste;
@@ -69,6 +70,7 @@ mod test;
 #[cfg(any(test, feature = "mock_time"))]
 pub mod mock_time;
 
+pub use changed_cells::ChangedSinceRead;
 pub use locale::get_supported_locales;
 pub use model::get_milliseconds_since_epoch;
 pub use model::FmtSettings;

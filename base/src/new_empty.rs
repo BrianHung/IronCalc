@@ -187,7 +187,14 @@ impl<'a> Model<'a> {
     }
 
     /// Reparses all formulas and defined names
+    ///
+    /// This is the funnel for every change of workbook shape -- adding,
+    /// deleting, renaming, duplicating or reordering a sheet, and editing a
+    /// defined name. All of them renumber or re-resolve cells rather than
+    /// editing them, so the change delta reports a full repaint from here
+    /// rather than at each call site.
     pub(crate) fn reset_parsed_structures(&mut self) {
+        self.record_everything_changed();
         let defined_names = self.workbook.get_defined_names_with_scope();
         self.parser
             .set_worksheets_and_names(self.workbook.get_worksheet_names(), defined_names);
@@ -698,6 +705,7 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            changed_cells: crate::changed_cells::ChangedCells::Untracked,
         };
         model.parse_formulas();
         model.evaluate_conditional_formatting();

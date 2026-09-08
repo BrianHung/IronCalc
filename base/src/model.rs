@@ -34,6 +34,7 @@ use crate::{
     utils as common,
 };
 
+use crate::changed_cells::ChangedCells;
 use crate::recalc::Write;
 use crate::{cf_types::CfCellResult, tz::Tz};
 
@@ -226,6 +227,9 @@ pub struct Model<'a> {
     pub(crate) cf_cache: HashMap<(u32, i32, i32), Vec<CfCellResult>>,
     /// Dynamic links: links created by formulas like HYPERLINK
     pub(crate) links: HashMap<(u32, i32, i32), Link>,
+    /// What has changed since the last [`Model::take_changed_cells`]. Starts
+    /// `Untracked`, so a model whose delta is never read records nothing.
+    pub(crate) changed_cells: ChangedCells,
 }
 
 // FIXME: Maybe this should be the same as CellReference
@@ -1738,6 +1742,7 @@ impl<'a> Model<'a> {
             support: HashMap::new(),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
+            changed_cells: ChangedCells::Untracked,
         };
 
         model.parse_formulas();
@@ -3052,11 +3057,21 @@ impl<'a> Model<'a> {
     /// already been written, regular cells always read the correct spill values.
     pub fn evaluate(&mut self) {
         self.drain_write_journal();
-        // Storing a formula result is not a user edit, so the journal stays
-        // paused for the whole pass. The guard restores it however the pass
-        // ends, `?` and unwinding included.
-        let mut evaluating = self.pause_journal();
-        evaluating.evaluate_workbook();
+        // The snapshot is taken *after* the drain, so a cell the user just
+        // edited is already at its new content here and the diff below leaves
+        // it to the journal. `None` while nobody is reading the delta, which
+        // is what makes an unread pass cost nothing.
+        let before = self.change_keys_before_pass();
+        {
+            // Storing a formula result is not a user edit, so the journal stays
+            // paused for the whole pass. The guard restores it however the pass
+            // ends, `?` and unwinding included.
+            let mut evaluating = self.pause_journal();
+            evaluating.evaluate_workbook();
+        }
+        if let Some(before) = before {
+            self.record_evaluated_changes(&before);
+        }
     }
 
     /// Recomputes every cell. The caller holds the journal pause.
@@ -3122,9 +3137,33 @@ impl<'a> Model<'a> {
     /// Called at the head of [`Model::evaluate`], before the pass pauses
     /// recording, so a pass never sees the edits it is about to recompute
     /// and the log stays bounded by the edits between two passes.
+    ///
+    /// While the delta is being tracked, the drained entries are the edited
+    /// half of it: the pass that follows recomputes from them, so it cannot
+    /// see them itself.
     pub(crate) fn drain_write_journal(&mut self) {
-        for worksheet in &mut self.workbook.worksheets {
-            let _ = worksheet.write_log.drain();
+        let ChangedCells::Delta(delta) = &mut self.changed_cells else {
+            // Nobody is reading the delta, or the next read is a full repaint
+            // either way: drain and forget.
+            for worksheet in &mut self.workbook.worksheets {
+                let _ = worksheet.write_log.drain();
+            }
+            return;
+        };
+        for (index, worksheet) in self.workbook.worksheets.iter_mut().enumerate() {
+            for write in worksheet.write_log.drain() {
+                match write {
+                    Write::Cell { row, column, .. } => {
+                        delta.insert((index as u32, row, column));
+                    }
+                    Write::Link { at } => {
+                        delta.insert(at);
+                    }
+                    // Row and column visibility is sheet geometry, not cell
+                    // content. See `Model::take_changed_cells`.
+                    Write::Hidden { .. } => {}
+                }
+            }
         }
     }
 
@@ -3926,6 +3965,9 @@ impl<'a> Model<'a> {
         self.parser.set_locale(locale);
         self.locale = locale;
         self.workbook.settings.locale = locale_id.to_string();
+        // Every formatted value is re-rendered, including the ones that did
+        // not move, so no list of cells describes this.
+        self.record_everything_changed();
         self.evaluate();
         Ok(())
     }
@@ -3938,6 +3980,8 @@ impl<'a> Model<'a> {
         };
         self.tz = tz;
         self.workbook.settings.tz = timezone.to_string();
+        // Every date and time is re-rendered against the new zone.
+        self.record_everything_changed();
         self.evaluate();
         Ok(())
     }
@@ -3950,6 +3994,8 @@ impl<'a> Model<'a> {
         };
         self.parser.set_language(language);
         self.language = language;
+        // Every formula and error text is re-rendered in the new language.
+        self.record_everything_changed();
         Ok(())
     }
 
