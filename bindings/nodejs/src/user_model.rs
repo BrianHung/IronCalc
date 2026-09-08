@@ -23,6 +23,8 @@ struct NamedStyleEntry {
 /// A workbook model implementing the "user" API: the same high level API used
 /// by the IronCalc web application. Every action evaluates the model, keeps
 /// undo/redo history and produces diffs for collaboration.
+/// Incremental recalculation and `takeChangedCells` are Rust/wasm-only;
+/// this binding always uses full recalculation.
 #[napi]
 pub struct UserModel {
   model: BaseModel<'static>,
