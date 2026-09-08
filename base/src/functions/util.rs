@@ -32,11 +32,11 @@ impl<'a> Model<'a> {
     /// * Ranges paired positionally: `SUMX2MY2`/`SUMX2PY2`/`SUMXMY2`
     ///   (`fn_get_two_matrices`), `COVARIANCE.*`/`CORREL`/`PEARSON`, `PROB`,
     ///   `T.TEST`, `F.TEST` and `CHISQ.TEST`. Each reads two ranges through
-    ///   [`Model::values_from_range`] and lines the two results up by
+    ///   [`EvalCtx::values_from_range`] and lines the two results up by
     ///   position, so clipping one side and not the other would change what it
     ///   compares. That is why the clip lives in
-    ///   [`Model::values_from_range_clipped`] and not in
-    ///   [`Model::values_from_range`] itself. `Z.TEST` reads a single range,
+    ///   [`EvalCtx::values_from_range_clipped`] and not in
+    ///   [`EvalCtx::values_from_range`] itself. `Z.TEST` reads a single range,
     ///   but through the same unclipped collector: it is left there rather
     ///   than split off for one caller.
     /// * `database.rs`: a database range is a table whose first row is a
@@ -64,17 +64,13 @@ impl<'a> Model<'a> {
         let open_row = row1 == 1 && row2 == LAST_ROW;
         let open_column = column1 == 1 && column2 == LAST_COLUMN;
         if open_row || open_column {
-            let dimension = self
-                .workbook
-                .worksheet(left.sheet)
-                .map_err(|_| {
-                    CalcResult::new_error(
-                        Error::ERROR,
-                        cell,
-                        format!("Invalid worksheet index: '{}'", left.sheet),
-                    )
-                })?
-                .dimension();
+            let dimension = self.sheet_dimension(left.sheet).map_err(|_| {
+                CalcResult::new_error(
+                    Error::ERROR,
+                    cell,
+                    format!("Invalid worksheet index: '{}'", left.sheet),
+                )
+            })?;
             if open_row {
                 row2 = dimension.max_row;
             }
@@ -86,7 +82,7 @@ impl<'a> Model<'a> {
     }
 }
 
-/// How many cells [`Model::clip_range_to_used`] dropped from `left..=right`.
+/// How many cells [`EvalCtx::clip_range_to_used`] dropped from `left..=right`.
 ///
 /// Every dropped cell lies past the sheet's used range and so is blank by
 /// definition. `COUNTBLANK` adds this count back so that the clipped walk

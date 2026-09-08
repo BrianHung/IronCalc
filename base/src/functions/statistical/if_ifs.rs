@@ -99,8 +99,8 @@ impl<'a> Model<'a> {
         let right_row = first_range.right.row;
         let right_column = first_range.right.column;
 
-        let dimension = match self.workbook.worksheet(first_range.left.sheet) {
-            Ok(s) => s.dimension(),
+        let dimension = match self.sheet_dimension(first_range.left.sheet) {
+            Ok(dimension) => dimension,
             Err(_) => {
                 return CalcResult::new_error(
                     Error::ERROR,
@@ -250,7 +250,7 @@ impl<'a> Model<'a> {
     /// cell in each criteria range satisfies the matching criterion. `ranges` and
     /// `fn_criteria` are parallel (one criteria range and one predicate per case).
     ///
-    /// Shared by [`Model::apply_ifs`] and the array-criteria path of SUMIF.
+    /// Shared by [`EvalCtx::apply_ifs`] and the array-criteria path of SUMIF.
     pub(crate) fn run_ifs<F>(
         &mut self,
         sum_range: &Range,

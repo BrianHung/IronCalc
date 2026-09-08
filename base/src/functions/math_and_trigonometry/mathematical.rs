@@ -533,7 +533,7 @@ impl<'a> Model<'a> {
     /// if sum_range is missing then criteria_range will be used.
     ///
     /// The `criteria` argument may be a single value, a range or an array; in the
-    /// latter two cases SUMIF spills one sum per criterion (see [`Model::sumif`]).
+    /// latter two cases SUMIF spills one sum per criterion (see [`EvalCtx::sumif`]).
     pub(crate) fn fn_sumif(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
         // When sum_range is missing, criteria_range doubles as the sum_range.
         let (criteria_range, criteria, sum_range) = match args.len() {

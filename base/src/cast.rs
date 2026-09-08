@@ -6,6 +6,7 @@ use crate::{
         types::CellReferenceIndex,
     },
     formatter::format::parse_formatted_number,
+    locale::Locale,
     model::Model,
 };
 
@@ -40,7 +41,7 @@ pub(crate) fn calc_result_to_array_node(result: CalcResult) -> ArrayNode {
 }
 
 /// Converts a single array element to a string using the same rules as
-/// [`Model::cast_to_string`]. Errors propagate.
+/// [`EvalCtx::cast_to_string`]. Errors propagate.
 pub(crate) fn array_node_to_string(node: &ArrayNode) -> Result<String, Error> {
     match node {
         ArrayNode::Number(f) => Ok(format!("{f}")),
@@ -55,25 +56,33 @@ pub(crate) fn array_node_to_string(node: &ArrayNode) -> Result<String, Error> {
     }
 }
 
-impl<'a> Model<'a> {
-    pub(crate) fn cast_number(&self, s: &str) -> Option<f64> {
-        match s.trim().parse::<f64>() {
-            Ok(f) => Some(f),
-            _ => {
-                let currency = &self.locale.currency.symbol;
-                let mut currencies = vec!["$", "€"];
-                if !currencies.iter().any(|e| *e == currency) {
-                    currencies.push(currency);
-                }
-                // Try to parse as a formatted number (e.g., dates, currencies, percentages)
-                if let Ok((v, _number_format)) = parse_formatted_number(s, &currencies, self.locale)
-                {
-                    return Some(v);
-                }
-                None
+/// Parses `s` as a number, falling back to `locale`'s formatted-number rules.
+///
+/// A free function so that `Model`, which is not an evaluation receiver, can
+/// reach it too.
+pub(crate) fn cast_number_with_locale(s: &str, locale: &Locale) -> Option<f64> {
+    match s.trim().parse::<f64>() {
+        Ok(f) => Some(f),
+        _ => {
+            let currency = &locale.currency.symbol;
+            let mut currencies = vec!["$", "€"];
+            if !currencies.iter().any(|e| *e == currency) {
+                currencies.push(currency);
             }
+            // Try to parse as a formatted number (e.g., dates, currencies, percentages)
+            if let Ok((v, _number_format)) = parse_formatted_number(s, &currencies, locale) {
+                return Some(v);
+            }
+            None
         }
     }
+}
+
+impl<'a> Model<'a> {
+    pub(crate) fn cast_number(&self, s: &str) -> Option<f64> {
+        cast_number_with_locale(s, self.locale)
+    }
+
     pub(crate) fn get_number_or_array(
         &mut self,
         node: &Node,

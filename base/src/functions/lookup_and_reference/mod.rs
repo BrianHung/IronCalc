@@ -68,7 +68,7 @@ impl LookupTable {
     /// Callers must ensure the offsets are within bounds.
     fn get(
         &self,
-        model: &mut Model,
+        model: &mut EvalCtx,
         row: i32,
         column: i32,
         cell: CellReferenceIndex,
@@ -86,14 +86,14 @@ impl LookupTable {
     }
 
     /// Materializes the first row of the table (the search vector for HLOOKUP).
-    fn first_row(&self, model: &mut Model, cell: CellReferenceIndex) -> Vec<CalcResult> {
+    fn first_row(&self, model: &mut EvalCtx, cell: CellReferenceIndex) -> Vec<CalcResult> {
         (0..self.columns())
             .map(|column| self.get(model, 0, column, cell))
             .collect()
     }
 
     /// Materializes the first column of the table (the search vector for VLOOKUP).
-    fn first_column(&self, model: &mut Model, cell: CellReferenceIndex) -> Vec<CalcResult> {
+    fn first_column(&self, model: &mut EvalCtx, cell: CellReferenceIndex) -> Vec<CalcResult> {
         (0..self.rows())
             .map(|row| self.get(model, row, 0, cell))
             .collect()
@@ -739,7 +739,7 @@ impl<'a> Model<'a> {
                 tooltip: None,
             },
         };
-        self.links.insert((cell.sheet, cell.row, cell.column), link);
+        self.set_link((cell.sheet, cell.row, cell.column), link);
         display
     }
 

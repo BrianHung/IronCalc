@@ -111,7 +111,7 @@ impl<'a> Model<'a> {
                 _ => {
                     // Remove only the ids introduced by this LET frame.
                     for id in bound_ids {
-                        self.variable_stack.remove(&id);
+                        self.clear_variable(id);
                     }
                     return CalcResult::new_error(
                         Error::VALUE,
@@ -143,7 +143,7 @@ impl<'a> Model<'a> {
             // CalcResult::Range stores only bounds (no cell data), so range bindings are
             // effectively lazy — values are only read when a consuming function iterates the range.
             let val = self.evaluate_node_in_context(&cloned[2 * i + 1], cell);
-            self.variable_stack.insert(raw_id, val);
+            self.set_variable(raw_id, val);
         }
 
         // Evaluate the body with all bindings in scope.
@@ -151,7 +151,7 @@ impl<'a> Model<'a> {
 
         // Remove only the ids introduced by this LET frame.
         for id in bound_ids {
-            self.variable_stack.remove(&id);
+            self.clear_variable(id);
         }
 
         result

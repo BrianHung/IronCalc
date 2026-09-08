@@ -1161,7 +1161,7 @@ impl<'a> Model<'a> {
                 };
                 &tz_owned
             }
-            None => &self.tz,
+            None => self.tz(),
         };
         match crate::tz::excel_serial_for_now(tz) {
             Some(serial) => CalcResult::Number(serial.floor()),
@@ -1201,7 +1201,7 @@ impl<'a> Model<'a> {
                 };
                 &tz_owned
             }
-            None => &self.tz,
+            None => self.tz(),
         };
         match crate::tz::excel_serial_for_now(tz) {
             Some(serial) => CalcResult::Number(serial),

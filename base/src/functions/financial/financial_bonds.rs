@@ -687,7 +687,7 @@ where
 // ============================================================
 
 fn parse_coupon_args(
-    model: &mut Model<'_>,
+    model: &mut EvalCtx<'_, '_>,
     args: &[Node],
     cell: CellReferenceIndex,
 ) -> Result<(i64, i64, u32, u32), CalcResult> {
@@ -728,7 +728,7 @@ fn parse_coupon_args(
 }
 
 // ============================================================
-// Model implementations
+// EvalCtx implementations
 // ============================================================
 
 impl<'a> Model<'a> {

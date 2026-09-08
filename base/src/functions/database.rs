@@ -2,7 +2,7 @@ use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     formatter::format::parse_formatted_number,
-    Model,
+    model::Model,
 };
 
 use super::util::{compare_values, from_wildcard_to_regex, result_matches_regex};

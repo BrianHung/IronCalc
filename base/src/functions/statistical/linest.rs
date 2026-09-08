@@ -664,7 +664,7 @@ impl<'a> Model<'a> {
 /// Evaluate an optional boolean argument, returning `default` when the argument
 /// is absent or an empty cell/arg (which Excel treats as omitted).
 fn eval_optional_bool(
-    model: &mut Model<'_>,
+    model: &mut EvalCtx<'_, '_>,
     arg: Option<&Node>,
     cell: CellReferenceIndex,
     default: bool,
