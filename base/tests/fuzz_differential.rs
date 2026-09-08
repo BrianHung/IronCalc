@@ -1,44 +1,14 @@
-//! Differential fuzz: identical random operation sequences on two independently
-//! built models, comparing every cell after every `evaluate()`.
-//!
-//! Both sides are built by the same constructor, so the models differ in
-//! nothing: same code, same input, same order. A divergence is therefore
-//! nondeterminism inside the engine — an evaluation order that follows hash-map
-//! iteration, a traversal that depends on insertion history, an accumulator with
-//! no fixed association. The comparator is constructor-agnostic (see
-//! `common::ModelKind`), so what a run means is decided by which two
-//! constructors it is given, not by the harness.
+//! Differential fuzz: identical random operation sequences on a Full model and an
+//! Incremental model (plus a Verify model when `recalc_verify` is on), comparing
+//! every cell after every `evaluate()`, and checking the incremental delta.
 //!
 //! CI runs a bounded seed set (defaults: 8 seeds × 40 steps). Override with
-//! `FUZZ_SEEDS`, `FUZZ_STEPS`, `FUZZ_START`.
+//! `FUZZ_SEEDS`, `FUZZ_STEPS`, `FUZZ_START`. The x86_64 job is `ubuntu-latest`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
 use common::*;
 use std::collections::BTreeMap;
-
-/// Generator classes parked by default because they reproduce bugs that are
-/// already on `main` and that this test does not fix. Parking them here rather
-/// than in the CI invocation keeps a bare `cargo test` green and keeps the list
-/// next to the reason for it. Setting the matching env var — to a shorter list,
-/// or to the empty string — searches them again, which is how each entry was
-/// found and how it should be checked once its bug is fixed.
-///
-/// `ArrayFormula`: a CSE array displaced by a column insert materializes a
-/// phantom cell one column past its extent on one model and not on the other,
-/// and downstream that turns into a spurious `#SPILL!`. Two models built the
-/// same way disagree about it, so the extent bookkeeping is reading something
-/// order-dependent.
-const DEFAULT_AVOID_OPS: &str = "ArrayFormula";
-
-/// `SCELL` / `NCELL` / `NRANGE`: a formula that reads a defined name in scalar
-/// context (`=SCELL+1`, or plain `=NRANGE` set before the name exists) panics
-/// the engine outright — "Larger-than-1x1 array reached scalar-context cell" —
-/// as soon as that name is bound or rebound to a multi-cell range. Two ops,
-/// deterministic (seeds 298 and 390 both minimize to exactly this), and it
-/// aborts the scenario before any comparison happens, so it hides whatever
-/// else the seed would have searched.
-const DEFAULT_AVOID_FORMULAS: &str = "SCELL,NCELL,NRANGE";
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -46,6 +16,27 @@ fn env_usize(name: &str, default: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
+
+/// Generator classes parked by default because they reproduce bugs that
+/// predate this slice and that it does not fix. Parking them here rather than
+/// in the CI invocation keeps a bare `cargo test` green and keeps the list next
+/// to the reason for it. Setting the matching env var — to a shorter list, or
+/// to the empty string — searches them again, which is how each entry was found
+/// and how it should be checked once its bug is fixed.
+///
+/// `ArrayFormula`: a CSE array displaced by a column insert materializes a
+/// phantom cell one column past its extent on one model and not on the other,
+/// and downstream that turns into a spurious `#SPILL!`.
+const DEFAULT_AVOID_OPS: &str = "ArrayFormula";
+
+/// `SCELL` / `NCELL` / `NRANGE`: a formula that reads a defined name in scalar
+/// context (`=SCELL+1`, or plain `=NRANGE` set before the name exists) hits the
+/// substrate guard — "Larger-than-1x1 array reached scalar-context cell" — as
+/// soon as that name is bound or rebound to a multi-cell range. The guard is a
+/// deliberate `debug_assert!` in this tree's evaluation boundary, so parking the
+/// generator keeps the differential run away from a panic that is not the
+/// engine's to answer for.
+const DEFAULT_AVOID_FORMULAS: &str = "SCELL,NCELL,NRANGE";
 
 fn env_list(name: &str, default: &str) -> Vec<&'static str> {
     std::env::var(name)
@@ -57,18 +48,26 @@ fn env_list(name: &str, default: &str) -> Vec<&'static str> {
 }
 
 #[test]
-fn differential_same_engine_twice() {
+fn differential_full_vs_incremental() {
     install_quiet_hook();
     let seeds = env_usize("FUZZ_SEEDS", 8) as u64;
     let start = env_usize("FUZZ_START", 1) as u64;
     let steps = env_usize("FUZZ_STEPS", 40);
     let max_findings = env_usize("FUZZ_MAX_FINDINGS", 20);
     let no_minimize = std::env::var("FUZZ_NO_MINIMIZE").is_ok();
+    let check_verify = cfg!(feature = "recalc_verify") && std::env::var("FUZZ_NO_VERIFY").is_err();
     let avoid_formulas = env_list("FUZZ_AVOID_FORMULAS", DEFAULT_AVOID_FORMULAS);
     let avoid_ops = env_list("FUZZ_AVOID_OPS", DEFAULT_AVOID_OPS);
 
     let mut findings: BTreeMap<String, (u64, Failure, Vec<Op>)> = BTreeMap::new();
     let mut total = Stats::default();
+    // The delta-coverage floor is computed over the seeds that plant no
+    // volatiles. A planted volatile re-rolls on every pass, so a volatile seed's
+    // passes report `Everything` by construction; folding them into the
+    // denominator measures `VOLATILE_SEED_EVERY` rather than incremental
+    // coverage, and at enough seeds it drives the ratio under the floor on its
+    // own (40 seeds x 40 steps landed at 662/1384).
+    let mut floor = Stats::default();
     let mut failing_seeds = Vec::new();
     for seed in start..start + seeds {
         let cfg = GenConfig {
@@ -79,14 +78,20 @@ fn differential_same_engine_twice() {
         };
         let ops = generate(seed, cfg);
         set_quiet(true);
-        let result = run_scenario(&ops);
+        let result = run_scenario(&ops, true, check_verify);
         set_quiet(false);
         match result {
             Ok(stats) => {
                 total.evaluates += stats.evaluates;
+                total.cells_deltas += stats.cells_deltas;
+                total.everything_deltas += stats.everything_deltas;
                 total.ops_applied += stats.ops_applied;
                 total.ops_rejected += stats.ops_rejected;
                 total.reloads += stats.reloads;
+                if !seed_plants_volatiles(seed) {
+                    floor.evaluates += stats.evaluates;
+                    floor.cells_deltas += stats.cells_deltas;
+                }
             }
             Err(f) => {
                 failing_seeds.push(seed);
@@ -94,13 +99,9 @@ fn differential_same_engine_twice() {
                 let (min_ops, min_f) = if no_minimize {
                     (ops.clone(), f.clone())
                 } else {
-                    minimize(&ops, &f.kind)
+                    minimize(&ops, &f.kind, true, check_verify)
                 };
-                // A nondeterminism finding is by nature intermittent: replaying
-                // the same ops need not fail again. Tagging it says so, keeps a
-                // flaky signature from being read as a stable wrong answer, and
-                // tells the reader how strong the repro is.
-                let clean = clean_runs(&min_ops, 6);
+                let clean = clean_runs(&min_ops, true, check_verify, 6);
                 let sig = if clean > 0 {
                     format!("FLAKY({clean}/6 clean)|{}", signature(&min_f))
                 } else {
@@ -119,13 +120,17 @@ fn differential_same_engine_twice() {
         }
     }
     let summary = format!(
-        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} ops_applied={} ops_rejected={} reloads={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?}",
+        "==== differential fuzz summary: seeds {}..{} x {steps} steps; evaluates={} cells_deltas={} everything_deltas={} ops_applied={} ops_rejected={} reloads={} non_volatile_evaluates={} non_volatile_cells_deltas={} failing_seeds={:?} avoid_formulas={avoid_formulas:?} avoid_ops={avoid_ops:?} verify={check_verify}",
         start,
         start + seeds - 1,
         total.evaluates,
+        total.cells_deltas,
+        total.everything_deltas,
         total.ops_applied,
         total.ops_rejected,
         total.reloads,
+        floor.evaluates,
+        floor.cells_deltas,
         failing_seeds
     );
     eprintln!("\n{summary}");
@@ -149,5 +154,16 @@ fn differential_same_engine_twice() {
             ));
         }
         panic!("{} distinct divergence(s):{report}", findings.len());
+    }
+    // A statistical guard, not a correctness one: short smoke runs (the 8x40
+    // default, or a single structural-heavy seed) legitimately sit near 50%
+    // because structural edits force Full passes, so only enforce the floor
+    // on a sample large enough for the ratio to mean something. Volatile seeds
+    // are out of the sample entirely; see `floor` above.
+    if floor.evaluates >= 1000 && floor.cells_deltas < floor.evaluates / 2 {
+        panic!(
+            "fuzz Incremental coverage collapsed: cells_deltas={} of evaluates={} on the non-volatile seeds (need at least half Incremental)",
+            floor.cells_deltas, floor.evaluates
+        );
     }
 }

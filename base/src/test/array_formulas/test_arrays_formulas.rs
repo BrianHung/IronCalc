@@ -84,3 +84,30 @@ fn delete_full_array_formula() {
     assert_eq!(model._get_text_at(0, 6, 1), "");
     assert_eq!(model._get_text_at(0, 6, 2), "");
 }
+
+/// Seeds 5/126/53: a user write into a CSE member position must be rejected --
+/// the anchor owns the whole declared rectangle and would silently refill it on
+/// the next evaluation, destroying the input. That holds for a member position
+/// whose *cell* a structural delete has dropped: the anchor still declares it.
+/// Mode-independent, so both are pinned; the guard runs before any recalc.
+#[test]
+fn writes_into_cse_members_are_rejected() {
+    for mode in [crate::RecalcMode::Full, crate::RecalcMode::Incremental] {
+        let mut model = new_empty_model().with_recalc_mode(mode);
+        model
+            .set_user_array_formula(0, 4, 8, 1, 2, "=A1:A3+1")
+            .unwrap();
+        model.evaluate();
+        // H5 is a member of the CSE array anchored at H4.
+        assert!(model.set_user_input(0, 5, 8, "99".to_string()).is_err());
+        // Delete a column: the array moves to G4 and the member cell at G5 is
+        // dropped, but the position is still inside the anchor's rectangle.
+        model.delete_columns(0, 7, 1).unwrap();
+        assert!(
+            model.set_user_input(0, 5, 7, "99".to_string()).is_err(),
+            "write into a displaced CSE member was accepted"
+        );
+        model.evaluate();
+        assert_eq!(model._get_text_at(0, 5, 7), "1");
+    }
+}

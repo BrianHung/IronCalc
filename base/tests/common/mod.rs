@@ -1,25 +1,13 @@
-//! Shared differential-fuzz harness: runs one identical, randomly generated
-//! operation sequence on two independently built models and compares every
-//! populated cell after every `evaluate()`.
-//!
-//! The comparator is constructor-agnostic: it drives whatever two models a pair
-//! of [`ModelKind`]s hands it and never names their kind, so what a run means is
-//! decided entirely by which two constructors it is given. Here both sides are
-//! [`FULL`], so the two models differ in nothing at all — same code, same input,
-//! same order. Any divergence between them is therefore nondeterminism *inside*
-//! the engine (hash-map iteration order reaching an evaluation order, a
-//! traversal that depends on insertion history, an accumulator whose association
-//! is not fixed), which is a bug class this project has hit before and which no
-//! single-model test can see.
-//!
-//! There is deliberately no floating-point tolerance in [`diff_snapshots`]: two
-//! runs of the same code over the same input must agree bit for bit, and
-//! association noise between them *is* the finding, not an excuse for one.
+//! Shared differential-fuzz harness: runs an identical operation sequence on a
+//! `RecalcMode::Full` model and a `RecalcMode::Incremental` model (and, with the
+//! `recalc_verify` feature, a `RecalcMode::Verify` model), comparing every
+//! populated cell after every `evaluate()`, and checking the incremental
+//! changed-cells delta for completeness and soundness.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use ironcalc_base::expressions::types::Area;
 use ironcalc_base::types::{CellType, Color, Style};
-use ironcalc_base::Model;
+use ironcalc_base::{Model, RecalcMode};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -51,42 +39,6 @@ impl Lcg {
     pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         &items[self.below(items.len() as u64) as usize]
     }
-}
-
-// ---------------------------------------------------------------------------
-// Model constructors
-// ---------------------------------------------------------------------------
-
-/// How to build one side of the comparison, and how to rebuild it from bytes.
-///
-/// `reload` exists because [`Op::SaveLoad`] has to put the model back the way a
-/// caller who opened that file would have got it. Anything that distinguishes
-/// one side from the other lives in these two functions and nowhere else, so
-/// the harness itself stays agnostic to what it is comparing.
-#[derive(Clone, Copy)]
-pub struct ModelKind {
-    pub label: &'static str,
-    pub new: fn() -> Result<Model<'static>, String>,
-    pub reload: fn(&[u8]) -> Result<Model<'static>, String>,
-}
-
-fn new_full() -> Result<Model<'static>, String> {
-    Model::new_empty("fuzz", "en", "UTC", "en")
-}
-
-fn reload_full(bytes: &[u8]) -> Result<Model<'static>, String> {
-    Model::from_bytes(bytes, "en")
-}
-
-/// A plain model: the engine as every caller gets it.
-pub const FULL: ModelKind = ModelKind {
-    label: "Full",
-    new: new_full,
-    reload: reload_full,
-};
-
-pub fn fresh(kind: ModelKind) -> Model<'static> {
-    (kind.new)().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -216,16 +168,15 @@ pub enum Op {
         area: AreaTuple,
     },
     /// Serialize every model with `to_bytes` and replace it by `from_bytes` of
-    /// its own bytes. The sequence continues on the reloaded models.
+    /// its own bytes, keeping its recalc mode. The sequence continues on the
+    /// reloaded models.
     ///
     /// This is the only op that reaches the deserialization path. Every other op
     /// builds state through the journaled API, so without this the harness could
     /// not construct the model a loaded workbook *is*: cells with no journal
-    /// behind them, an unknown formula count, an array index that has never been
-    /// walked. What that state settles into on the first post-load pass is only
-    /// reachable here — and a reload is also the point where two runs that have
-    /// so far agreed can start to disagree, because the encoder walks the same
-    /// collections the evaluator does.
+    /// behind them, a `MustRebuild` graph, an unknown formula count, an array
+    /// index that has never been walked, and no `never_served` set. What that
+    /// state settles into on the first post-load pass is only reachable here.
     SaveLoad,
     Evaluate,
 }
@@ -257,6 +208,41 @@ impl Op {
             Op::ClearAll { .. } => "ClearAll",
             Op::SaveLoad => "SaveLoad",
             Op::Evaluate => "Evaluate",
+        }
+    }
+
+    /// Cells this op writes as a plain value (incremental "seeds").
+    ///
+    /// `SaveLoad` writes no cell, so it seeds nothing: it is neither a value
+    /// edit nor a visibility edit. What it does relax is stated once, at the
+    /// delta check in `Harness::step`.
+    pub fn value_seed(&self) -> Option<(u32, i32, i32)> {
+        match self {
+            // A quote-prefixed write ('7) is a user edit like any other, and
+            // I6.1 reports a user edit even when its own value did not move.
+            // Excluding it here made a legitimate delta entry look unsound
+            // whenever the write changed state the observable does not carry.
+            // Excusing a true no-op is not a risk: the engine suppresses those
+            // itself (I2.1), so one never reaches the delta to be excused.
+            Op::Set {
+                sheet,
+                row,
+                col,
+                value,
+            } if !value.is_empty() => Some((*sheet, *row, *col)),
+            Op::SetNumber {
+                sheet, row, col, ..
+            }
+            | Op::SetText {
+                sheet, row, col, ..
+            }
+            | Op::SetBool {
+                sheet, row, col, ..
+            }
+            | Op::ArrayFormula {
+                sheet, row, col, ..
+            } => Some((*sheet, *row, *col)),
+            _ => None,
         }
     }
 
@@ -403,10 +389,14 @@ fn area(t: AreaTuple) -> Area {
 
 /// Applies one op to a model. `Evaluate` calls `evaluate()`.
 ///
-/// `kind` is the model's own constructor, needed only by `Op::SaveLoad`: how a
-/// workbook comes back from bytes is the one thing that belongs to the side
-/// rather than to the operation.
-pub fn apply(model: &mut Model<'static>, kind: ModelKind, op: &Op) -> Result<(), String> {
+/// `mode` is the model's own recalc mode, needed only by `Op::SaveLoad`: the
+/// mode lives on the model, not in the workbook, so a reload has to be told
+/// which one to come back as. `Model::with_recalc_mode` composes with
+/// `from_bytes` exactly as it does with `new_empty` — it sets the mode and
+/// forces the graph full, and a freshly decoded workbook is already
+/// `MustRebuild`, so the reloaded model is in the same state a caller who
+/// opened the file in that mode would get.
+pub fn apply(model: &mut Model<'static>, mode: RecalcMode, op: &Op) -> Result<(), String> {
     match op {
         Op::Set {
             sheet,
@@ -493,7 +483,7 @@ pub fn apply(model: &mut Model<'static>, kind: ModelKind, op: &Op) -> Result<(),
         Op::ClearAll { area: a } => model.range_clear_all(&area(*a)),
         Op::SaveLoad => {
             let bytes = model.to_bytes();
-            *model = (kind.reload)(&bytes)?;
+            *model = Model::from_bytes(&bytes, "en")?.with_recalc_mode(mode);
             Ok(())
         }
         Op::Evaluate => {
@@ -518,7 +508,8 @@ pub struct CellKey {
     pub formatted: String,
     pub formula: Option<String>,
     /// `Debug` of the cell's link (static or dynamic HYPERLINK), if any. Part of
-    /// the observable state (a URL can move under a fixed label).
+    /// the observable state the delta must report (a URL can move under a
+    /// fixed label).
     pub link: String,
 }
 
@@ -570,7 +561,8 @@ pub fn snapshot(model: &Model<'_>) -> Snapshot {
             let pos = (s, view.row, view.column);
             // A linked position with no cell reads exactly like an EmptyCell
             // through the public API (value None, type Number), so synthesize
-            // the same key.
+            // the same key; a style write that materializes the EmptyCell is
+            // not an observable change and is not journaled.
             let entry = cells.entry(pos).or_insert_with(|| CellKey {
                 value: "Ok(None)".to_string(),
                 ty: format!("{:?}", Ok::<CellType, String>(CellType::Number)),
@@ -589,15 +581,44 @@ pub fn snapshot(model: &Model<'_>) -> Snapshot {
     }
 }
 
-/// Whether `formula` mentions a volatile (non-sheet) input. Used by the
-/// generator to decide whether a seed plants volatiles at all; see `ZOO`, where
-/// every volatile template is written to have a *deterministic value* so that
-/// two models can still be compared cell for cell.
+/// Whether `formula` mentions a volatile (non-sheet) input. Volatility in the
+/// engine is *observed*, not static: a volatile call that a short circuit never
+/// reaches is not an input of that formula. So this is only ever used to *skip*
+/// a check, never to demand one; see `ALWAYS_VOLATILE` for the other direction.
 pub fn is_volatile_formula(formula: &str) -> bool {
     let upper = formula.to_uppercase();
     ["RAND(", "RANDBETWEEN(", "RANDARRAY(", "NOW(", "TODAY("]
         .iter()
         .any(|name| upper.contains(name))
+}
+
+/// Zoo formulas whose volatile call is reached on every evaluation: no
+/// arguments that can error, no branch that can skip it, and no references, so
+/// a displacement leaves the text alone. A cell holding one of these must be
+/// re-run and reported on every incremental pass. The zoo keeps volatile
+/// *values* deterministic (the two models roll their own RNG and could never be
+/// compared otherwise), so this delta membership is the only observable trace
+/// that the always-dirty set is still firing.
+pub const ALWAYS_VOLATILE: &[&str] = &[
+    "=RAND()*0",
+    "=INT(RAND())",
+    "=RANDBETWEEN(1,1)",
+    "=TODAY()*0",
+    "=NOW()*0",
+];
+
+/// Numbers that differ only by floating-point association noise are not a
+/// divergence per the documented `RecalcMode::Incremental` contract.
+fn fp_noise(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Option<f64> {
+        s.strip_prefix("Ok(Number(")
+            .and_then(|s| s.strip_suffix("))"))
+            .and_then(|s| s.parse::<f64>().ok())
+    };
+    match (parse(a), parse(b)) {
+        (Some(x), Some(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -614,9 +635,6 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// Compares two snapshots exactly. There is no numeric tolerance: the two sides
-/// ran the same code over the same input, so a difference of any size is a
-/// difference the engine had no licence to produce.
 pub fn diff_snapshots(
     label_a: &str,
     a: &Snapshot,
@@ -633,6 +651,7 @@ pub fn diff_snapshots(
         ));
     }
     let keys: BTreeSet<&Pos> = a.cells.keys().chain(b.cells.keys()).collect();
+    let mut fp_only: Option<String> = None;
     for pos in keys {
         let ka = a.cells.get(pos);
         let kb = b.cells.get(pos);
@@ -646,6 +665,13 @@ pub fn diff_snapshots(
         match (ka, kb) {
             (Some(x), Some(y)) => {
                 if x.value != y.value || x.ty != y.ty {
+                    if fp_noise(&x.value, &y.value) && x.ty == y.ty {
+                        fp_only.get_or_insert(format!(
+                            "fp-noise at {pos:?} ({formula}): {label_a}={} {label_b}={}",
+                            x.value, y.value
+                        ));
+                        continue;
+                    }
                     return Some((
                         "value-divergence".into(),
                         format!(
@@ -664,6 +690,9 @@ pub fn diff_snapshots(
                     ));
                 }
                 if x.formatted != y.formatted {
+                    if fp_noise(&x.value, &y.value) {
+                        continue;
+                    }
                     return Some((
                         "format-divergence".into(),
                         format!(
@@ -703,6 +732,7 @@ pub fn diff_snapshots(
             ),
         ));
     }
+    let _ = fp_only;
     None
 }
 
@@ -713,6 +743,8 @@ pub fn diff_snapshots(
 #[derive(Default, Debug, Clone)]
 pub struct Stats {
     pub evaluates: usize,
+    pub cells_deltas: usize,
+    pub everything_deltas: usize,
     pub ops_applied: usize,
     pub ops_rejected: usize,
     /// `Op::SaveLoad` steps. Reported so a run can be read for whether it
@@ -720,77 +752,256 @@ pub struct Stats {
     pub reloads: usize,
 }
 
-/// Two models, one op stream, compared after every pass.
 pub struct Harness {
-    pub a: Model<'static>,
-    pub b: Model<'static>,
-    kind_a: ModelKind,
-    kind_b: ModelKind,
-    label_a: String,
-    label_b: String,
+    pub full: Model<'static>,
+    pub incr: Model<'static>,
+    #[cfg(feature = "recalc_verify")]
+    pub verify: Option<Model<'static>>,
+    pub check_delta: bool,
+    pub check_verify: bool,
+    seeds: BTreeSet<Pos>,
+    visibility_edit: bool,
+    /// A `SaveLoad` has happened and its first `Evaluate` has not been read yet.
+    reloaded: bool,
+    last: Snapshot,
     pub stats: Stats,
 }
 
-/// Distinguishable names for the two sides. Comparing a kind against itself is
-/// the normal case here, so the labels have to survive it.
-fn labels(a: ModelKind, b: ModelKind) -> (String, String) {
-    if a.label == b.label {
-        (format!("{}#1", a.label), format!("{}#2", b.label))
-    } else {
-        (a.label.to_string(), b.label.to_string())
-    }
+fn fresh(mode: RecalcMode) -> Model<'static> {
+    Model::new_empty("fuzz", "en", "UTC", "en")
+        .unwrap()
+        .with_recalc_mode(mode)
 }
 
 impl Harness {
-    pub fn new(kind_a: ModelKind, kind_b: ModelKind) -> Self {
-        let (label_a, label_b) = labels(kind_a, kind_b);
+    pub fn new(check_delta: bool, check_verify: bool) -> Self {
+        let incr = fresh(RecalcMode::Incremental);
+        let last = snapshot(&incr);
         Harness {
-            a: fresh(kind_a),
-            b: fresh(kind_b),
-            kind_a,
-            kind_b,
-            label_a,
-            label_b,
+            full: fresh(RecalcMode::Full),
+            incr,
+            #[cfg(feature = "recalc_verify")]
+            verify: if check_verify {
+                Some(fresh(RecalcMode::Verify))
+            } else {
+                None
+            },
+            check_delta,
+            check_verify,
+            seeds: BTreeSet::new(),
+            visibility_edit: false,
+            reloaded: false,
+            last,
             stats: Stats::default(),
         }
     }
 
-    /// Applies `op` to both models and, on `Evaluate`, compares them.
+    /// Applies `op` to every model and, on `Evaluate`, compares them.
     pub fn step(&mut self, index: usize, op: &Op) -> Result<(), Failure> {
-        let r_a = apply(&mut self.a, self.kind_a, op);
-        let r_b = apply(&mut self.b, self.kind_b, op);
-        if r_a.is_ok() != r_b.is_ok() {
+        let r_full = apply(&mut self.full, RecalcMode::Full, op);
+        let r_incr = apply(&mut self.incr, RecalcMode::Incremental, op);
+        if r_full.is_ok() != r_incr.is_ok() {
             return Err(Failure {
                 step: index,
                 kind: "result-mismatch".into(),
-                detail: format!(
-                    "op {op:?}: {}={r_a:?} {}={r_b:?}",
-                    self.label_a, self.label_b
-                ),
+                detail: format!("op {op:?}: full={r_full:?} incr={r_incr:?}"),
             });
         }
-        if r_a.is_err() {
+        #[cfg(feature = "recalc_verify")]
+        if let Some(v) = self.verify.as_mut() {
+            let r_verify = apply(v, RecalcMode::Verify, op);
+            if r_verify.is_ok() != r_full.is_ok() {
+                return Err(Failure {
+                    step: index,
+                    kind: "result-mismatch".into(),
+                    detail: format!("op {op:?}: full={r_full:?} verify={r_verify:?}"),
+                });
+            }
+        }
+        if r_full.is_err() {
             self.stats.ops_rejected += 1;
             return Ok(());
         }
         self.stats.ops_applied += 1;
+        if let Some(seed) = op.value_seed() {
+            self.seeds.insert(seed);
+        }
+        if matches!(op, Op::HideRow { .. } | Op::HideCol { .. }) {
+            self.visibility_edit = true;
+        }
         if matches!(op, Op::SaveLoad) {
+            self.reloaded = true;
             self.stats.reloads += 1;
+            // The reload contract, first half: a read taken *at the load*,
+            // before any pass has run, is `Everything`. This is the order a
+            // consumer that opens a file and asks what changed before drawing
+            // it takes, and only `from_workbook` starting the record at
+            // `ChangedCells::All` answers it -- there is no pass yet to have
+            // said anything. Nothing else in the suite does: changing that
+            // initializer to an empty `Delta` leaves the lib suite green in all
+            // three modes and every other check in this harness silent, because
+            // the second half below is answered by the full pass instead.
+            //
+            // Reading here also separates the two halves, which is the point of
+            // doing it: it takes `from_workbook`'s answer off the table, so the
+            // read after the first pass is left testing that pass alone.
+            if self.check_delta {
+                use ironcalc_base::ChangedSinceRead;
+                if let ChangedSinceRead::Cells(cells) = self.incr.take_changed_cells() {
+                    return Err(Failure {
+                        step: index,
+                        kind: "reload-delta-not-everything".into(),
+                        detail: format!(
+                            "read taken at the load, before any pass, reported {} cells instead of Everything: {cells:?}",
+                            cells.len()
+                        ),
+                    });
+                }
+            }
         }
         if !matches!(op, Op::Evaluate) {
             return Ok(());
         }
         self.stats.evaluates += 1;
-        let snap_a = snapshot(&self.a);
-        let snap_b = snapshot(&self.b);
-        if let Some((kind, detail)) = diff_snapshots(&self.label_a, &snap_a, &self.label_b, &snap_b)
-        {
+        let full = snapshot(&self.full);
+        let incr = snapshot(&self.incr);
+        if let Some((kind, detail)) = diff_snapshots("Full", &full, "Incremental", &incr) {
             return Err(Failure {
                 step: index,
                 kind,
                 detail,
             });
         }
+        #[cfg(feature = "recalc_verify")]
+        if let Some(v) = self.verify.as_ref() {
+            let verify = snapshot(v);
+            if let Some((kind, detail)) = diff_snapshots("Full", &full, "Verify", &verify) {
+                return Err(Failure {
+                    step: index,
+                    kind: format!("verify-{kind}"),
+                    detail,
+                });
+            }
+        }
+        // BEGIN-DELTA
+        if self.check_delta {
+            use ironcalc_base::ChangedSinceRead;
+            match self.incr.take_changed_cells() {
+                ChangedSinceRead::Everything => self.stats.everything_deltas += 1,
+                ChangedSinceRead::Cells(cells) => {
+                    // The reload contract, second half: the first read after the
+                    // first post-load pass is `Everything` too. The load-point
+                    // read in `step` already took `from_workbook`'s `All`, so
+                    // this one is answered by the pass alone: the decoded graph
+                    // is `MustRebuild`, so that pass is full, and a full pass
+                    // records `All`.
+                    //
+                    // Why both halves say `Everything` is the same reason. A
+                    // delta states what moved *since the consumer last looked*,
+                    // and a consumer who has just opened a file has never
+                    // looked -- every cell in it is new to them, so there is no
+                    // list to give.
+                    //
+                    // This is the one thing a reload relaxes, and it relaxes it
+                    // for exactly one read: the delta's completeness and
+                    // soundness clauses below cannot be checked against a `last`
+                    // snapshot taken before the load, so they are not -- but
+                    // only because the stronger answer is asserted in their
+                    // place. From the next read the ordinary rules apply again,
+                    // against a `last` that is now post-load.
+                    if self.reloaded {
+                        return Err(Failure {
+                            step: index,
+                            kind: "reload-delta-not-everything".into(),
+                            detail: format!(
+                                "first read after the first post-load pass reported {} cells instead of Everything: {cells:?}",
+                                cells.len()
+                            ),
+                        });
+                    }
+                    self.stats.cells_deltas += 1;
+                    let delta: BTreeSet<Pos> =
+                        cells.iter().map(|c| (c.sheet, c.row, c.column)).collect();
+                    // A style-only write creates an empty cell; that is not a value change.
+                    let observable = |k: Option<&CellKey>| {
+                        k.filter(|k| k.value != "Ok(None)" || !k.link.is_empty())
+                            .map(|k| (k.value.clone(), k.ty.clone(), k.link.clone()))
+                    };
+                    let keys: BTreeSet<&Pos> =
+                        self.last.cells.keys().chain(incr.cells.keys()).collect();
+                    for pos in keys {
+                        let before = observable(self.last.cells.get(pos));
+                        let after = observable(incr.cells.get(pos));
+                        let changed = before != after;
+                        if changed && !delta.contains(pos) {
+                            let formula = incr
+                                .cells
+                                .get(pos)
+                                .and_then(|k| k.formula.clone())
+                                .unwrap_or_default();
+                            return Err(Failure {
+                                step: index,
+                                kind: "delta-missing".into(),
+                                detail: format!(
+                                    "cell {pos:?} formula={formula:?} changed {before:?} -> {after:?} but delta={delta:?}"
+                                ),
+                            });
+                        }
+                    }
+                    for pos in &delta {
+                        let before = observable(self.last.cells.get(pos));
+                        let after = observable(incr.cells.get(pos));
+                        if before != after || self.seeds.contains(pos) {
+                            continue;
+                        }
+                        let formula = incr
+                            .cells
+                            .get(pos)
+                            .and_then(|k| k.formula.clone())
+                            .unwrap_or_default();
+                        if self.visibility_edit && formula.to_uppercase().contains("SUBTOTAL") {
+                            continue;
+                        }
+                        // A volatile re-runs every pass and is reported whether
+                        // or not its value moved; that is the contract, not a
+                        // spurious report.
+                        if is_volatile_formula(&formula) {
+                            continue;
+                        }
+                        return Err(Failure {
+                            step: index,
+                            kind: "delta-unsound".into(),
+                            detail: format!(
+                                "cell {pos:?} formula={formula:?} is in the delta but did not change (value {after:?}); seeds={:?}",
+                                self.seeds
+                            ),
+                        });
+                    }
+                    // Liveness: an unconditional volatile re-runs on every
+                    // pass, so the incremental delta must name it every time.
+                    for (pos, key) in &incr.cells {
+                        let Some(formula) = &key.formula else {
+                            continue;
+                        };
+                        if !ALWAYS_VOLATILE.contains(&formula.as_str()) || delta.contains(pos) {
+                            continue;
+                        }
+                        return Err(Failure {
+                            step: index,
+                            kind: "volatile-not-reported".into(),
+                            detail: format!(
+                                "volatile cell {pos:?} formula={formula:?} was not reported; delta={delta:?}"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        // END-DELTA
+        self.seeds.clear();
+        self.visibility_edit = false;
+        self.reloaded = false;
+        self.last = incr;
         Ok(())
     }
 }
@@ -823,14 +1034,9 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Runs a scenario on a fresh pair of models; the first failure (or panic) is
-/// returned.
-pub fn run_scenario_with(
-    kind_a: ModelKind,
-    kind_b: ModelKind,
-    ops: &[Op],
-) -> Result<Stats, Failure> {
-    let mut h = Harness::new(kind_a, kind_b);
+/// Runs a scenario on fresh models; the first failure (or panic) is returned.
+pub fn run_scenario(ops: &[Op], check_delta: bool, check_verify: bool) -> Result<Stats, Failure> {
+    let mut h = Harness::new(check_delta, check_verify);
     let mut current = 0usize;
     let result = catch_unwind(AssertUnwindSafe(|| {
         for (i, op) in ops.iter().enumerate() {
@@ -843,39 +1049,54 @@ pub fn run_scenario_with(
         Ok(r) => r,
         Err(payload) => {
             let msg = panic_message(payload);
-            // Distinguish panics by their message so distinct crashes do not
-            // collapse into one bucket during minimization.
-            let first = msg.lines().next().unwrap_or("");
-            let head: String = first.chars().take(40).collect();
+            let kind = if msg.contains("diverged") {
+                "verify-panic-diverged"
+            } else if msg.contains("missing from the delta") {
+                "verify-panic-delta-missing"
+            } else if msg.contains("did not change") {
+                "verify-panic-delta-unsound"
+            } else {
+                // Distinguish panics by their message so distinct crashes do not
+                // collapse into one bucket during minimization.
+                let first = msg.lines().next().unwrap_or("");
+                let head: String = first.chars().take(40).collect();
+                return Err(Failure {
+                    step: current,
+                    kind: format!("panic:{head}"),
+                    detail: format!("op {:?}: {}", ops.get(current), msg.replace('\n', " | ")),
+                });
+            };
             Err(Failure {
                 step: current,
-                kind: format!("panic:{head}"),
+                kind: kind.into(),
                 detail: format!("op {:?}: {}", ops.get(current), msg.replace('\n', " | ")),
             })
         }
     }
 }
 
-/// The default pairing: the engine against itself.
-pub fn run_scenario(ops: &[Op]) -> Result<Stats, Failure> {
-    run_scenario_with(FULL, FULL, ops)
-}
-
 /// Reruns a scenario `tries` times and returns how many runs were clean. A
-/// non-zero count on a failing scenario means the failure does not reproduce
-/// every time, which is itself evidence of nondeterminism rather than of a
-/// stable wrong answer.
-pub fn clean_runs(ops: &[Op], tries: usize) -> usize {
+/// non-zero count on a failing scenario means the engine is nondeterministic.
+pub fn clean_runs(ops: &[Op], check_delta: bool, check_verify: bool, tries: usize) -> usize {
     set_quiet(true);
-    let n = (0..tries).filter(|_| run_scenario(ops).is_ok()).count();
+    let n = (0..tries)
+        .filter(|_| run_scenario(ops, check_delta, check_verify).is_ok())
+        .count();
     set_quiet(false);
     n
 }
 
 /// Shrinks `ops` to a (locally) minimal sequence that still fails with the same
 /// failure kind. Delta-debugging by chunk removal, then single-op removal.
-pub fn minimize(ops: &[Op], kind: &str) -> (Vec<Op>, Failure) {
-    minimize_by(ops, kind, |cand| run_scenario(cand).map(|_| ()))
+pub fn minimize(
+    ops: &[Op],
+    kind: &str,
+    check_delta: bool,
+    check_verify: bool,
+) -> (Vec<Op>, Failure) {
+    minimize_by(ops, kind, |cand| {
+        run_scenario(cand, check_delta, check_verify).map(|_| ())
+    })
 }
 
 /// Generic minimizer: `run` replays a candidate and returns its first failure.
@@ -959,11 +1180,10 @@ impl Default for GenConfig {
 /// One in this many seeds plants volatiles (see `Generator::volatiles`).
 pub const VOLATILE_SEED_EVERY: u64 = 5;
 
-/// Whether `seed` is one of the volatile-planting seeds. Volatiles are kept to a
-/// slice of the seeds rather than sprinkled everywhere so that the two shapes a
-/// workbook can have — one where every pass re-runs something, one where nothing
-/// is forced — are both searched, instead of every seed collapsing onto the
-/// first.
+/// Whether `seed` is one of the volatile-planting seeds. The delta-coverage
+/// floor has to know: a planted volatile re-rolls on every pass, so those runs
+/// sit near all-`Everything` by construction and measure the planting rate
+/// rather than incremental coverage.
 pub fn seed_plants_volatiles(seed: u64) -> bool {
     seed.is_multiple_of(VOLATILE_SEED_EVERY)
 }
@@ -1099,11 +1319,15 @@ pub const ZOO: &[&str] = &[
     "={D}!{C}{R}",
     "=MAX({D}!A1:A12)+MIN(A1:A12)",
     "=SUM({D}!A:A)",
-    // Whole-column and whole-row reads on the *data* columns. Every aggregate
-    // here clips to the used range, so all of them cost about the same per
-    // evaluate; unclipped, COUNTA, COUNTBLANK, COUNT, SUBTOTAL and AVERAGE walk
-    // all 1,048,576 rows and price themselves out of the generator. COUNT(1:5)
-    // is the whole-*row* form: its column axis is the one that clips.
+    // Whole-column and whole-row reads on the *data* columns. Their text does
+    // not change under an insert or delete, so the displacement journal never
+    // rewrites them: the range half of `mark_structural_dependents` and the
+    // used-range clip (`Input::SheetStructure`) are all that connect them.
+    // Every aggregate here clips to the used range, so all of them cost about
+    // the same per evaluate; unclipped, COUNTA, COUNTBLANK, COUNT, SUBTOTAL and
+    // AVERAGE walk all 1,048,576 rows and price themselves out of the
+    // generator. COUNT(1:5) is the whole-*row* form: its column axis is the one
+    // that clips.
     "=SUM(A:A)",
     "=SUM(A:C)",
     "=COUNTA(A:A)",
@@ -1119,14 +1343,14 @@ pub const ZOO: &[&str] = &[
     "=COUNTA(A1:B{R})",
     "=ROWS(A1:A{R})",
     // Computed targets whose formula text is displacement-stable (absolute
-    // anchor, literal offset), so only a re-resolution moves them.
+    // anchor, literal offset), so only `Input::Computed` re-resolves them.
     "=OFFSET($C$1,{S},0)",
     "=OFFSET($A$1,{S},{N})",
     "=SUM(OFFSET($A$1,{S},0,4,2))",
     "=INDIRECT(\"C\"&{S})",
     "=SUM(INDIRECT(\"A1:B\"&{S}))",
     // A computed extent wide enough that the reader's per-cell walk is clipped
-    // to the used range.
+    // to the used range: only the recorded rectangle connects a write below it.
     "=SUM(INDIRECT(\"A:A\"))",
     "=COUNTA(INDIRECT(\"{C}:{C}\"))",
     "=OFFSET($A$1,ROW()-1,0)",
@@ -1210,13 +1434,13 @@ pub const ZOO: &[&str] = &[
     "=TRUE",
     "=\"text\"",
     "=42",
-    // volatiles. Every one of these has a *deterministic value* on purpose: the
-    // two models roll their own RNG and read their own clock, so a live RAND or
-    // NOW could never be compared across them. What they are here for is the
-    // volatile *machinery* — the always-dirty set, the re-run on every pass —
-    // which they exercise while still landing on a value both sides must agree
-    // on. The composed forms put a volatile inside ranges, criteria and
-    // branches. Only one seed in `VOLATILE_SEED_EVERY` plants them.
+    // volatiles. Every one of these has a *deterministic value* on purpose:
+    // the two models roll their own RNG, so a live RAND could never be
+    // compared across them. What the fuzzer checks instead is that the
+    // incremental pass keeps reporting them; the ref-free, unconditional ones
+    // are listed in `ALWAYS_VOLATILE` and carry that check, the composed ones
+    // are here to put a volatile inside ranges, criteria and branches. Only
+    // one seed in `VOLATILE_SEED_EVERY` plants them.
     "=RAND()*0",
     "=INT(RAND())",
     "=RANDBETWEEN(1,1)",
@@ -1315,7 +1539,10 @@ pub struct Generator {
     pub ops: Vec<Op>,
     /// Set once the shadow model panicked; generation stops there.
     pub panicked: bool,
-    /// Whether this seed plants volatile formulas.
+    /// Whether this seed plants volatile formulas. One volatile cell makes
+    /// every Full pass report `Everything` (a full re-rolls it), which would
+    /// wash out the delta coverage of the whole run, so only a slice of the
+    /// seeds carries them.
     pub volatiles: bool,
 }
 
@@ -1324,7 +1551,7 @@ impl Generator {
         Generator {
             rng: Lcg::new(seed),
             cfg,
-            shadow: fresh(FULL),
+            shadow: fresh(RecalcMode::Full),
             ops: Vec::new(),
             panicked: false,
             volatiles: seed_plants_volatiles(seed),
@@ -1400,10 +1627,12 @@ impl Generator {
             return;
         }
         set_quiet(true);
-        let r = catch_unwind(AssertUnwindSafe(|| apply(&mut self.shadow, FULL, &op)));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            apply(&mut self.shadow, RecalcMode::Full, &op)
+        }));
         set_quiet(false);
         if r.is_err() {
-            // The engine panicked applying this op to a plain model. Stop
+            // The engine panicked applying this op to a plain Full model. Stop
             // generating; the scenario ends here so the driver reports it.
             self.panicked = true;
         }
@@ -1824,10 +2053,11 @@ impl Generator {
             }
         } else if roll < 885 {
             // A save/load round-trip: the only way into the deserialization
-            // path. Deliberately rare -- a reload rebuilds both models from
-            // scratch, so a common one would cost wall time without adding
-            // proportionate search. 1.5% is about one and a half per 100 steps,
-            // enough that a 400-seed run plants a few thousand of them.
+            // path. Deliberately rare -- a reload rebuilds three graphs from
+            // scratch and forces the next pass full on all of them, so a common
+            // one would both cost wall time and wash out the delta coverage the
+            // rest of the run measures. 1.5% is about one and a half per 100
+            // steps, enough that a 200-seed run plants a few hundred of them.
             Op::SaveLoad
         } else {
             // redundant evaluate
@@ -1877,7 +2107,7 @@ pub fn signature(f: &Failure) -> String {
 /// Asserts a scenario runs clean; panics with the failure and the op list
 /// otherwise (used by repro tests).
 pub fn assert_clean(ops: &[Op]) {
-    if let Err(f) = run_scenario(ops) {
+    if let Err(f) = run_scenario(ops, true, cfg!(feature = "recalc_verify")) {
         panic!("{f}\nops:\n{}", ops_to_rust(ops));
     }
 }
