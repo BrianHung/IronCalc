@@ -371,3 +371,125 @@ mod tests {
         assert!(compare(&model1, &model2).is_err());
     }
 }
+
+/// At most this many input cells of a file are edited, spread evenly over all
+/// of them, so that a large file costs about as much as a small one.
+const MAX_EDITED_INPUTS: usize = 120;
+
+/// A value a user can type into a cell that is not a formula.
+#[derive(Clone)]
+enum Input {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+}
+
+fn input_cells(model: &Model) -> Vec<(u32, i32, i32, Input)> {
+    let mut inputs = Vec::new();
+    for (sheet, worksheet) in model.workbook.worksheets.iter().enumerate() {
+        for (row, column, cell) in worksheet.sheet_data.cells() {
+            let input = match &*cell {
+                Cell::NumberCell { v, .. } => Input::Number(*v),
+                Cell::BooleanCell { v, .. } => Input::Boolean(*v),
+                Cell::SharedString { si, .. } => {
+                    match model.workbook.shared_strings.get(*si as usize) {
+                        Some(text) => Input::Text(text.clone()),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            inputs.push((sheet as u32, row, column, input));
+        }
+    }
+    inputs.sort_by_key(|&(sheet, row, column, _)| (sheet, row, column));
+    if inputs.len() > MAX_EDITED_INPUTS {
+        let stride = inputs.len().div_ceil(MAX_EDITED_INPUTS);
+        inputs = inputs.into_iter().step_by(stride).collect();
+    }
+    inputs
+}
+
+fn write_input(
+    model: &mut Model,
+    (sheet, row, column): (u32, i32, i32),
+    input: Option<&Input>,
+) -> Result<(), String> {
+    match input {
+        Some(Input::Number(v)) => model.update_cell_with_number(sheet, row, column, *v),
+        Some(Input::Boolean(v)) => model.update_cell_with_bool(sheet, row, column, *v),
+        Some(Input::Text(v)) => model.update_cell_with_text(sheet, row, column, v),
+        None => model.range_clear_contents(&ironcalc_base::expressions::types::Area {
+            sheet,
+            row,
+            column,
+            width: 1,
+            height: 1,
+        }),
+    }
+}
+
+fn reads_random(model: &Model) -> bool {
+    model.get_all_cells().iter().any(|cell| {
+        matches!(
+            model.get_cell_formula(cell.index, cell.row, cell.column),
+            Ok(Some(formula)) if formula.to_uppercase().contains("RAND")
+        )
+    })
+}
+
+/// Tests that incremental recalculation agrees with full recalculation on the
+/// file in file_path, and that after the edits are undone it agrees with Excel.
+///
+/// Every input cell (up to `MAX_EDITED_INPUTS`) is changed, then cleared, then
+/// restored, one at a time. Each edit is applied to a model in incremental
+/// mode and to one in full mode, and after every evaluation the two must hold
+/// the same values. A first evaluation is always full, so without edits the
+/// incremental scheduler would never run on these files at all.
+pub fn test_file_incremental(file_path: &str) -> Result<(), String> {
+    use ironcalc_base::RecalcMode;
+
+    let model1 = load_from_xlsx(file_path, "en", "UTC", "en").unwrap();
+    let locale = get_workbook_metadata(&model1);
+    #[cfg(feature = "mock_time")]
+    set_mock_time_from_metadata(&model1);
+    let excel = load_from_xlsx(file_path, &locale, "UTC", "en").unwrap();
+    if reads_random(&excel) {
+        // Full and incremental each draw their own random numbers.
+        return Ok(());
+    }
+    let mut full = load_from_xlsx(file_path, &locale, "UTC", "en").unwrap();
+    let mut incremental = load_from_xlsx(file_path, &locale, "UTC", "en")
+        .unwrap()
+        .with_recalc_mode(RecalcMode::Incremental);
+    full.evaluate();
+    incremental.evaluate();
+
+    let sheet_names = excel.workbook.get_worksheet_names();
+    for (sheet, row, column, original) in input_cells(&excel) {
+        let changed = match &original {
+            Input::Number(v) => Input::Number(v + 1.0),
+            Input::Boolean(v) => Input::Boolean(!v),
+            Input::Text(v) => Input::Text(format!("{v}x")),
+        };
+        let position = (sheet, row, column);
+        for (step, input) in [
+            ("changed", Some(&changed)),
+            ("cleared", None),
+            ("restored", Some(&original)),
+        ] {
+            write_input(&mut full, position, input)?;
+            write_input(&mut incremental, position, input)?;
+            full.evaluate();
+            incremental.evaluate();
+            compare_models(&full, &incremental).map_err(|diff| {
+                let name = &sheet_names[sheet as usize];
+                let column = number_to_column(column).unwrap_or_default();
+                format!("Incremental differs from full after {name}!{column}{row} was {step}.\n(Excel = full, IronCalc = incremental)\n{diff}")
+            })?;
+        }
+    }
+    compare_models(&excel, &incremental).map_err(|diff| {
+        format!("After every edit was undone, incremental differs from Excel.\n{diff}")
+    })
+}
