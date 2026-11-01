@@ -47,6 +47,7 @@ use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 use crate::model::Model;
+use crate::recalc::{RecalcMode, Rect};
 use crate::types::{ArrayKind, Cell, Worksheet};
 
 /// The hasher of the maps the evaluation keeps about positions. Their keys are
@@ -425,6 +426,9 @@ pub(crate) struct Evaluation {
     /// restart, the cells stay on `stack`, still `Evaluating`, to be run again
     /// from the top once the recursion has unwound.
     pub(crate) unwinding: bool,
+    /// The formulas the current evaluation runs, when it runs only some of
+    /// them (`recalc`). Any other formula is read as it was stored.
+    pub(crate) scope: Option<HashSet<CellKey, KeyBuild>>,
 }
 
 /// How deep the recursion may go when nobody has said otherwise, in formulas
@@ -476,6 +480,7 @@ impl Default for Evaluation {
             max_stack: DEFAULT_MAX_STACK,
             stack_base: 0,
             unwinding: false,
+            scope: None,
         }
     }
 }
@@ -517,6 +522,10 @@ impl<'a> Model<'a> {
     /// `#CIRC!` and keeps no spill cells: its stale cells are dropped when it
     /// is marked, so there is nothing of it to read or to contradict.
     pub fn evaluate(&mut self) {
+        if self.recalc.mode != RecalcMode::Full && self.evaluate_incrementally() {
+            return;
+        }
+        self.evaluation.scope = None;
         let Survey {
             formulas,
             dynamic_anchors,
@@ -549,6 +558,7 @@ impl<'a> Model<'a> {
             self.restore_dynamic_spills(&spills_before);
         }
         self.evaluation.restarts_in_last_evaluation = log.restarts;
+        self.after_full_evaluation();
         self.evaluate_conditional_formatting();
     }
 
@@ -744,6 +754,52 @@ impl<'a> Model<'a> {
         restart
     }
 
+    /// A pass over the formulas of `scope` alone, `roots` being the same
+    /// formulas in natural order (see `recalc`). The others are read as they
+    /// were stored, and so are the cells of any array: a scope never holds an
+    /// anchor, so nothing spills and nothing is put on record for spills.
+    /// Returns `false` if the pass had to be abandoned all the same; then
+    /// only a full evaluation can say what the sheet holds.
+    pub(crate) fn run_scoped_pass(
+        &mut self,
+        roots: Vec<CellReferenceIndex>,
+        scope: HashSet<CellKey, KeyBuild>,
+    ) -> bool {
+        let state = &mut self.evaluation;
+        state.cells.clear();
+        state.stack.clear();
+        state.seen.clear();
+        state.seen_ranges.clear();
+        state.restart = None;
+        state.depth = 0;
+        state.unwinding = false;
+        state.circular.clear();
+        state.in_pass = true;
+        state.record_reads = false;
+        state.scope = Some(scope);
+        state.restarts_in_last_evaluation = 0;
+        self.clear_variable_stack();
+        self.clear_lambdas();
+        for cell in roots {
+            self.evaluation.root = Some(cell);
+            self.evaluate_cell(cell);
+            if self.evaluation.restart.is_some() {
+                break;
+            }
+        }
+        self.evaluation.in_pass = false;
+        self.evaluation.root = None;
+        self.evaluation.restart.take().is_none()
+    }
+
+    /// Whether the formula at `key` is left out of the current evaluation.
+    fn out_of_scope(&self, key: CellKey) -> bool {
+        self.evaluation
+            .scope
+            .as_ref()
+            .is_some_and(|scope| !scope.contains(&key))
+    }
+
     /// The value of a cell, evaluating it first if it is a formula that has
     /// not been evaluated in this pass. Reads are performed on behalf of the
     /// cell on top of the stack.
@@ -754,6 +810,7 @@ impl<'a> Model<'a> {
             // on record: a read that was not made is nobody's dependency.
             return CalcResult::EmptyCell;
         }
+        self.trace_cell(key(cell_reference));
         // The cell is looked at, not cloned: what is needed of it is copied
         // out, and the sheet is free again before anything else is evaluated.
         enum Found {
@@ -807,7 +864,12 @@ impl<'a> Model<'a> {
             self.record_seen(cell_reference, Seen::Empty);
             return CalcResult::EmptyCell;
         };
-        let anchor_state = self.evaluation.cells.get(&key(anchor_reference)).copied();
+        // An anchor the evaluation does not run wrote its cells before.
+        let anchor_state = if self.out_of_scope(key(anchor_reference)) {
+            Some(CellState::Evaluated)
+        } else {
+            self.evaluation.cells.get(&key(anchor_reference)).copied()
+        };
         match (kind, anchor_state) {
             // Written by the anchor in this pass.
             (_, Some(CellState::Evaluated)) => self.stored_value(cell_reference),
@@ -859,6 +921,7 @@ impl<'a> Model<'a> {
                 return circular_reference(cell_reference);
             }
             Some(CellState::Evaluated) => return self.stored_value(cell_reference),
+            None if self.out_of_scope(key) => return self.stored_value(cell_reference),
             None => {}
         }
         self.evaluation.cells.insert(key, CellState::Evaluating);
@@ -945,13 +1008,16 @@ impl<'a> Model<'a> {
             self.links.remove(&key);
         }
         self.evaluation.depth += 1;
-        let result = if self.evaluation.circular.contains(&key) {
-            circular_reference(cell_reference)
-        } else {
+        let computed = !self.evaluation.circular.contains(&key);
+        self.begin_reads();
+        let result = if computed {
             self.compute_formula(cell_reference, cell.f)
+        } else {
+            circular_reference(cell_reference)
         };
         self.evaluation.depth -= 1;
         if self.evaluation.unwinding {
+            self.end_reads();
             return CalcResult::EmptyCell;
         }
         // The cell may have been found on a cycle while it ran.
@@ -966,6 +1032,7 @@ impl<'a> Model<'a> {
         } else {
             self.set_cells_with_result(cell_reference, cell, &result)
         };
+        let reads = self.end_reads();
         self.evaluation.stack.pop();
         if let Err(message) = stored {
             // Not expected to happen; keep the cell from being evaluated again.
@@ -974,6 +1041,13 @@ impl<'a> Model<'a> {
         }
         if self.evaluation.restart.is_some() {
             return CalcResult::EmptyCell;
+        }
+        if let Some(mut reads) = reads {
+            // A cell already known to be circular did not run and read
+            // nothing, yet an edit can end its being circular: it is
+            // evaluated every time until it runs again.
+            reads.beyond_cells |= !computed;
+            self.commit_reads(key, reads);
         }
         self.evaluation.cells.insert(key, CellState::Evaluated);
         // Return what was stored, so that a dependent evaluated in this pass
@@ -1057,6 +1131,13 @@ impl<'a> Model<'a> {
         row2: i32,
         column2: i32,
     ) {
+        self.trace_rect(Rect {
+            sheet,
+            row1,
+            column1,
+            row2,
+            column2,
+        });
         if !self.evaluation.in_pass
             || !self.evaluation.record_reads
             || row1 > row2
@@ -1090,6 +1171,14 @@ impl<'a> Model<'a> {
         row2: i32,
         column2: i32,
     ) -> Result<(i32, i32), String> {
+        // The walk reads the range, cell by cell: one record for all of it.
+        self.trace_rect(Rect {
+            sheet,
+            row1,
+            column1,
+            row2,
+            column2,
+        });
         let whole_rows = row1 == 1 && row2 == LAST_ROW;
         let whole_columns = column1 == 1 && column2 == LAST_COLUMN;
         if !whole_rows && !whole_columns {
