@@ -142,6 +142,16 @@ fn main() {
 
         for (fn_suffix, file_path) in files {
             let fn_name = format!("{}_{}", cfg.prefix, fn_suffix);
+            writeln!(
+                code,
+                r#"#[allow(non_snake_case)]
+#[test]
+fn {fn_name}_incremental() {{
+    ironcalc::compare::test_file_incremental("{file_path}").unwrap_or_else(|e| panic!("{{}}", e));
+}}
+"#
+            )
+            .unwrap();
 
             if cfg.test_save {
                 writeln!(
