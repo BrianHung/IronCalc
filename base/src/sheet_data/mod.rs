@@ -41,5 +41,6 @@ mod row;
 mod saved;
 #[cfg(test)]
 mod test;
+mod writes;
 
 pub use chunks::SheetData;
