@@ -40,6 +40,7 @@ use crate::{
 };
 
 use crate::evaluation::{CellKey, Evaluation, FormulaCell, Seen};
+use crate::recalc::{Recalc, RecalcMode, Rect};
 use crate::{cf_types::CfCellResult, tz::Tz};
 
 #[cfg(any(test, feature = "mock_time"))]
@@ -340,6 +341,8 @@ pub struct Model<'a> {
     pub(crate) last_lambda_id: usize,
     /// Everything the evaluation algorithm needs besides the workbook. See `evaluation.rs`.
     pub(crate) evaluation: Evaluation,
+    /// What incremental recalculation keeps between evaluations. See `recalc`.
+    pub(crate) recalc: Recalc,
     /// Evaluated CF results per cell, keyed by (sheet_index, row, column).
     /// Rebuilt from scratch on every call to evaluate_conditional_formatting().
     pub(crate) cf_cache: HashMap<(u32, i32, i32), Vec<CfCellResult>>,
@@ -1121,6 +1124,15 @@ impl<'a> Model<'a> {
             }
             let array_width = array[0].len() as i32;
             let array_height = array.len() as i32;
+            // Whatever is in the area the array would fill decides whether it
+            // spills: the formula depends on it.
+            self.trace_rect(Rect {
+                sheet,
+                row1: row,
+                column1: column,
+                row2: row + array_height - 1,
+                column2: column + array_width - 1,
+            });
 
             match original_range {
                 Some((true, old_area)) => {
@@ -1694,6 +1706,7 @@ impl<'a> Model<'a> {
         left: CellReferenceIndex,
         right: CellReferenceIndex,
     ) -> Vec<Vec<ArrayNode>> {
+        self.trace_rect(Rect::between(left, right));
         let width = (right.column - left.column + 1).max(0) as usize;
         let height = (right.row - left.row + 1).max(0) as usize;
         let mut result = Vec::with_capacity(height);
@@ -1721,6 +1734,7 @@ impl<'a> Model<'a> {
         left: CellReferenceIndex,
         right: CellReferenceIndex,
     ) -> Option<Vec<f64>> {
+        self.trace_rect(Rect::between(left, right));
         let width = (right.column - left.column + 1).max(0) as usize;
         let height = (right.row - left.row + 1).max(0) as usize;
         let mut numbers = Vec::with_capacity(width * height);
@@ -1986,6 +2000,7 @@ impl<'a> Model<'a> {
             lambdas: HashMap::new(),
             last_lambda_id: 0,
             evaluation: Evaluation::default(),
+            recalc: Recalc::new(RecalcMode::initial()),
             cf_cache: HashMap::new(),
             links: HashMap::new(),
         };

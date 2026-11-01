@@ -2316,6 +2316,9 @@ impl<'a> Model<'a> {
         args: &[Node],
         cell: CellReferenceIndex,
     ) -> CalcResult {
+        if reads_beyond_cells(kind) {
+            self.trace_beyond_cells();
+        }
         match kind {
             Function::And => self.fn_and(args, cell),
             Function::False => self.fn_false(args, cell),
@@ -2816,6 +2819,25 @@ impl<'a> Model<'a> {
             Function::Small => self.fn_small(args, cell),
         }
     }
+}
+
+/// Whether a function reads something no write to a cell announces: the
+/// clock, random numbers, the environment, or what is in a cell rather than
+/// its value. A formula that calls one is evaluated every time (see `recalc`).
+fn reads_beyond_cells(kind: &Function) -> bool {
+    matches!(
+        kind,
+        Function::Rand
+            | Function::Randbetween
+            | Function::Randarray
+            | Function::Now
+            | Function::Today
+            | Function::Cell
+            | Function::Info
+            | Function::Isformula
+            | Function::Formulatext
+            | Function::Subtotal
+    )
 }
 
 #[cfg(test)]
