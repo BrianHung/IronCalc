@@ -47,7 +47,7 @@ use crate::constants::{LAST_COLUMN, LAST_ROW};
 use crate::expressions::token::Error;
 use crate::expressions::types::CellReferenceIndex;
 use crate::model::Model;
-use crate::recalc::{RecalcMode, Rect};
+use crate::recalc::{Rect, Scope};
 use crate::types::{ArrayKind, Cell, Worksheet};
 
 /// The hasher of the maps the evaluation keeps about positions. Their keys are
@@ -426,9 +426,9 @@ pub(crate) struct Evaluation {
     /// restart, the cells stay on `stack`, still `Evaluating`, to be run again
     /// from the top once the recursion has unwound.
     pub(crate) unwinding: bool,
-    /// The formulas the current evaluation runs, when it runs only some of
-    /// them (`recalc`). Any other formula is read as it was stored.
-    pub(crate) scope: Option<HashSet<CellKey, KeyBuild>>,
+    /// The formulas the evaluation runs, when it runs only some of them
+    /// (see `recalc`). Any other formula is read as it was stored.
+    pub(crate) scope: Option<Scope>,
 }
 
 /// How deep the recursion may go when nobody has said otherwise, in formulas
@@ -514,24 +514,49 @@ struct Survey {
 }
 
 impl<'a> Model<'a> {
-    /// Evaluates every formula in the workbook.
+    /// Evaluates the workbook: every formula, or the formulas the edits since
+    /// the last evaluation can have changed. `recalc` decides which.
+    pub fn evaluate(&mut self) {
+        self.evaluation.scope = self.plan();
+        loop {
+            let areas = self.run();
+            let Some(mut scope) = self.evaluation.scope.take() else {
+                break;
+            };
+            let grew = self.grow_scope(&mut scope, &areas);
+            self.evaluation.scope = Some(scope);
+            if !grew {
+                break;
+            }
+        }
+        self.after_evaluation();
+        self.evaluate_conditional_formatting();
+    }
+
+    /// Evaluates the formulas of the scope, every formula if there is none.
     ///
     /// Runs passes until one completes without a restart. `RestartLog` learns
     /// from each restart, reorders the anchors and marks what it proves
     /// circular; see there for why the loop ends. A marked anchor stores
     /// `#CIRC!` and keeps no spill cells: its stale cells are dropped when it
     /// is marked, so there is nothing of it to read or to contradict.
-    pub fn evaluate(&mut self) {
-        if self.recalc.mode != RecalcMode::Full && self.evaluate_incrementally() {
-            return;
-        }
-        self.evaluation.scope = None;
+    ///
+    /// Returns the dynamic anchors that were evaluated, with the area each
+    /// filled before.
+    pub(crate) fn run(&mut self) -> Vec<(CellKey, (i32, i32))> {
         let Survey {
             formulas,
             dynamic_anchors,
             dynamic_spills,
         } = self.survey();
         self.sync_anchor_order(dynamic_anchors);
+        let areas = dynamic_spills
+            .iter()
+            .filter_map(|(position, cell)| match cell {
+                Cell::ArrayFormula { r, .. } => Some((key(*position), *r)),
+                _ => None,
+            })
+            .collect();
         // Every pass starts from the same sheet: what an abandoned pass wrote
         // is undone. This is what makes a pass a function of the anchor order.
         // The only changes to that sheet within an evaluation are the dropping
@@ -558,8 +583,7 @@ impl<'a> Model<'a> {
             self.restore_dynamic_spills(&spills_before);
         }
         self.evaluation.restarts_in_last_evaluation = log.restarts;
-        self.after_full_evaluation();
-        self.evaluate_conditional_formatting();
+        areas
     }
 
     /// Sets how many formulas deep the evaluation may recurse. A formula that
@@ -614,8 +638,31 @@ impl<'a> Model<'a> {
     /// what `dynamic_spills` finds. On a sheet of a million constants the
     /// walk costs more than the formulas do, so it is made once, not three
     /// times.
+    ///
+    /// With a scope, the formulas are the ones in it and the anchors and
+    /// their cells are those of the anchors in it, found one by one: the
+    /// sheet is not walked.
     fn survey(&self) -> Survey {
         let mut survey = Survey::default();
+        if let Some(scope) = &self.evaluation.scope {
+            let mut positions: Vec<CellKey> = scope.iter().copied().collect();
+            positions.sort_unstable();
+            for (sheet, row, column) in positions {
+                let position = CellReferenceIndex { sheet, row, column };
+                match self.fetch_cell(position).as_deref() {
+                    Some(Cell::CellFormula { .. }) => survey.formulas.push(position),
+                    Some(Cell::ArrayFormula { kind, .. }) => {
+                        survey.formulas.push(position);
+                        if matches!(kind, ArrayKind::Dynamic) {
+                            survey.dynamic_anchors.push(position);
+                            survey.dynamic_spills.extend(self.array_cells(position));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return survey;
+        }
         for (sheet, worksheet) in self.sheets_with_formulas() {
             for (row, column, cell) in worksheet.sheet_data.cells() {
                 let position = CellReferenceIndex { sheet, row, column };
@@ -642,6 +689,16 @@ impl<'a> Model<'a> {
     /// are now, in natural order, which is the order the sheets give their
     /// cells in.
     fn dynamic_spills(&self) -> Vec<(CellReferenceIndex, Cell)> {
+        if self.evaluation.scope.is_some() {
+            // Only the anchors of the scope are evaluated: only they write.
+            return self
+                .evaluation
+                .anchor_order
+                .iter()
+                .filter(|anchor| !self.out_of_scope(key(**anchor)))
+                .flat_map(|anchor| self.array_cells(*anchor))
+                .collect();
+        }
         let mut found = Vec::new();
         for (sheet, worksheet) in self.sheets_with_formulas() {
             for (row, column, cell) in worksheet.sheet_data.cells() {
@@ -651,6 +708,41 @@ impl<'a> Model<'a> {
                 let position = CellReferenceIndex { sheet, row, column };
                 if self.belongs_to_a_dynamic_array(position, &cell) {
                     found.push((position, cell.into_owned()));
+                }
+            }
+        }
+        found
+    }
+
+    /// A dynamic anchor and the cells it spilled into, as they are now, in
+    /// natural order. Nothing if there is no dynamic anchor at `anchor`.
+    fn array_cells(&self, anchor: CellReferenceIndex) -> Vec<(CellReferenceIndex, Cell)> {
+        let Some(cell) = self.fetch_cell(anchor) else {
+            return Vec::new();
+        };
+        let Cell::ArrayFormula {
+            r: (width, height),
+            kind: ArrayKind::Dynamic,
+            ..
+        } = &*cell
+        else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for row in anchor.row..anchor.row + height {
+            for column in anchor.column..anchor.column + width {
+                let position = CellReferenceIndex {
+                    sheet: anchor.sheet,
+                    row,
+                    column,
+                };
+                if position == anchor {
+                    found.push((position, cell.clone().into_owned()));
+                } else if let Some(spill) = self.fetch_cell(position) {
+                    if matches!(&*spill, Cell::SpillCell { a, .. } if *a == (anchor.row, anchor.column))
+                    {
+                        found.push((position, spill.into_owned()));
+                    }
                 }
             }
         }
@@ -703,16 +795,24 @@ impl<'a> Model<'a> {
     /// Brings `anchor_order` in line with the dynamic anchors that exist now,
     /// given in natural order: anchors that are gone are dropped, new ones are
     /// appended in natural order, the rest keep their relative order.
+    ///
+    /// With a scope, `current` are the anchors in it. The others are not
+    /// evaluated and keep their place for as long as they are anchors.
     fn sync_anchor_order(&mut self, current: Vec<CellReferenceIndex>) {
         let current_set: HashSet<CellReferenceIndex> = current.iter().copied().collect();
+        let mut order = std::mem::take(&mut self.evaluation.anchor_order);
+        order.retain(|anchor| {
+            current_set.contains(anchor)
+                || (self.out_of_scope(key(*anchor)) && !self.array_cells(*anchor).is_empty())
+        });
+        self.evaluation.anchor_order = order;
         let order = &mut self.evaluation.anchor_order;
-        order.retain(|anchor| current_set.contains(anchor));
         let known: HashSet<CellReferenceIndex> = order.iter().copied().collect();
         order.extend(current.into_iter().filter(|a| !known.contains(a)));
     }
 
     /// One pass over the workbook: anchors first, then every formula, given
-    /// in natural order. Returns the reason the pass had to be abandoned, if
+    /// in natural order. With a scope, the anchors and the formulas in it. Returns the reason the pass had to be abandoned, if
     /// any.
     fn run_pass(
         &mut self,
@@ -733,13 +833,22 @@ impl<'a> Model<'a> {
         // anchor's spill. With no dynamic anchor in the workbook nothing
         // spills and nothing can contradict a read, so none is recorded: on a
         // large sheet the records were a good part of the pass.
-        state.record_reads = !state.anchor_order.is_empty();
-        // dynamic links (HYPERLINK) are rebuilt on every evaluation
-        self.links.clear();
+        let anchors: Vec<CellReferenceIndex> = self
+            .evaluation
+            .anchor_order
+            .iter()
+            .filter(|anchor| !self.out_of_scope(key(**anchor)))
+            .copied()
+            .collect();
+        self.evaluation.record_reads = !anchors.is_empty();
+        // Dynamic links (HYPERLINK) are made again by the formulas that run:
+        // each drops its own as it starts, see `run_top`.
+        if self.evaluation.scope.is_none() {
+            self.links.clear();
+        }
         self.clear_variable_stack();
         self.clear_lambdas();
 
-        let anchors = self.evaluation.anchor_order.clone();
         let mut restart = None;
         for cell in anchors.into_iter().chain(formulas.iter().copied()) {
             self.evaluation.root = Some(cell);
@@ -752,44 +861,6 @@ impl<'a> Model<'a> {
         self.evaluation.in_pass = false;
         self.evaluation.root = None;
         restart
-    }
-
-    /// A pass over the formulas of `scope` alone, `roots` being the same
-    /// formulas in natural order (see `recalc`). The others are read as they
-    /// were stored, and so are the cells of any array: a scope never holds an
-    /// anchor, so nothing spills and nothing is put on record for spills.
-    /// Returns `false` if the pass had to be abandoned all the same; then
-    /// only a full evaluation can say what the sheet holds.
-    pub(crate) fn run_scoped_pass(
-        &mut self,
-        roots: Vec<CellReferenceIndex>,
-        scope: HashSet<CellKey, KeyBuild>,
-    ) -> bool {
-        let state = &mut self.evaluation;
-        state.cells.clear();
-        state.stack.clear();
-        state.seen.clear();
-        state.seen_ranges.clear();
-        state.restart = None;
-        state.depth = 0;
-        state.unwinding = false;
-        state.circular.clear();
-        state.in_pass = true;
-        state.record_reads = false;
-        state.scope = Some(scope);
-        state.restarts_in_last_evaluation = 0;
-        self.clear_variable_stack();
-        self.clear_lambdas();
-        for cell in roots {
-            self.evaluation.root = Some(cell);
-            self.evaluate_cell(cell);
-            if self.evaluation.restart.is_some() {
-                break;
-            }
-        }
-        self.evaluation.in_pass = false;
-        self.evaluation.root = None;
-        self.evaluation.restart.take().is_none()
     }
 
     /// Whether the formula at `key` is left out of the current evaluation.
@@ -864,6 +935,9 @@ impl<'a> Model<'a> {
             self.record_seen(cell_reference, Seen::Empty);
             return CalcResult::EmptyCell;
         };
+        // What a spill cell holds is what its anchor wrote: reading one is
+        // reading the other, whichever of them was evaluated first.
+        self.trace_cell(key(anchor_reference));
         // An anchor the evaluation does not run wrote its cells before.
         let anchor_state = if self.out_of_scope(key(anchor_reference)) {
             Some(CellState::Evaluated)
@@ -1046,7 +1120,7 @@ impl<'a> Model<'a> {
             // A cell already known to be circular did not run and read
             // nothing, yet an edit can end its being circular: it is
             // evaluated every time until it runs again.
-            reads.beyond_cells |= !computed;
+            reads.always |= !computed;
             self.commit_reads(key, reads);
         }
         self.evaluation.cells.insert(key, CellState::Evaluated);

@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use bitcode::{Decode, Encode};
 
 use super::row::Row;
-use super::writes::Writes;
+use super::writes::{Write, Writes};
 use crate::constants::LAST_ROW;
 use crate::types::Cell;
 
@@ -119,19 +119,19 @@ impl SheetData {
 
     /// The cell at a position, to be changed in place.
     pub fn cell_mut(&mut self, row: i32, column: i32) -> Option<&mut Cell> {
-        self.writes.cell(row, column);
+        self.writes.push(Write::Cell(row, column));
         self.row_mut(row)?.get_mut(column)
     }
 
     /// Puts a cell at a position and returns the one that was there.
     pub fn set_cell(&mut self, row: i32, column: i32, cell: Cell) -> Option<Cell> {
-        self.writes.cell(row, column);
+        self.writes.push(Write::Cell(row, column));
         self.row_or_insert(row)?.insert(column, cell)
     }
 
     /// Removes the cell at a position and returns it.
     pub fn remove_cell(&mut self, row: i32, column: i32) -> Option<Cell> {
-        self.writes.cell(row, column);
+        self.writes.push(Write::Cell(row, column));
         let row_data = self.row_mut(row)?;
         let cell = row_data.remove(column)?;
         if row_data.is_empty() {
@@ -218,7 +218,7 @@ impl SheetData {
 
     /// Removes every cell of a row, and the row.
     pub fn remove_row(&mut self, row: i32) {
-        self.writes.structural();
+        self.writes.push(Write::Row(row));
         self.take_row(row);
     }
 
@@ -253,7 +253,10 @@ impl SheetData {
         if delta == 0 {
             return;
         }
-        self.writes.structural();
+        self.writes.push(Write::Rows {
+            first: first_row,
+            delta,
+        });
         let rows: Vec<i32> = self
             .rows_in_order()
             .map(|(row, _)| row)
@@ -269,7 +272,7 @@ impl SheetData {
         } else {
             for row in rows {
                 if row < first_row {
-                    self.remove_row(row);
+                    self.take_row(row);
                 } else if let Some(data) = self.take_row(row) {
                     self.put_row(row + delta, data);
                 }
@@ -288,7 +291,10 @@ impl SheetData {
         if delta == 0 {
             return;
         }
-        self.writes.structural();
+        self.writes.push(Write::Columns {
+            first: first_column,
+            delta,
+        });
         let mut emptied = Vec::new();
         for (chunk_index, chunk) in self.chunks.iter_mut().enumerate() {
             let Some(chunk) = chunk else {
@@ -306,14 +312,14 @@ impl SheetData {
             }
         }
         for row in emptied {
-            self.remove_row(row);
+            self.take_row(row);
         }
     }
 
     /// Replaces the cells of a row. The row exists afterwards, even with no
     /// cells. If a column is given twice the last one stays.
     pub fn set_row(&mut self, row: i32, cells: impl IntoIterator<Item = (i32, Cell)>) {
-        self.writes.structural();
+        self.writes.push(Write::Row(row));
         let Some(row_data) = self.row_or_insert(row) else {
             return;
         };

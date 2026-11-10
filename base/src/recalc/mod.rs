@@ -1,43 +1,41 @@
 //! Incremental recalculation: evaluating only the formulas an edit can change.
 //!
-//! The algorithm in short:
+//! There is one evaluation, the one in `evaluation.rs`, and it runs the
+//! formulas it is given. What it is given is decided here, in `plan`: every
+//! formula, or a *scope*, the formulas an edit can have changed. Any other
+//! formula holds what the last evaluation stored, and a formula reading it
+//! gets that. In short:
 //!
 //! * While a formula runs, the cells and the rectangles it reads are put on
 //!   record. When it stores its result, they replace what it read the last
 //!   time in the dependency graph (`graph.rs`).
-//! * Every sheet logs the positions written to it (`sheet_data::Writes`). An
-//!   evaluation takes the logs: the formulas that read a written position,
-//!   the formulas that read those, and so on, are the *scope*, the formulas
-//!   to run. So are written positions that hold a formula, and the formulas
-//!   that read what no write announces, such as the clock.
-//! * The pass is the ordinary one (`evaluation.rs`) with its roots limited to
-//!   the scope. A formula outside the scope is not run: it holds what the
-//!   last evaluation stored, and a formula reading it gets that.
+//! * Every sheet logs what is written to it (`sheet_data::Writes`): a cell, a
+//!   whole row, rows or columns moving. `plan` takes the logs in order. A
+//!   written position is a seed. Rows or columns that moved are followed in
+//!   the graph, and a formula that no longer reads what it read is a seed.
+//! * The scope is the seeds that are formulas, the formulas that read a seed,
+//!   the formulas that read those, and so on, and the formulas that read what
+//!   no write announces, such as the clock. An array in the scope brings in
+//!   the formulas that read the area it fills.
+//! * An array can come to fill an area it did not fill. That is known only
+//!   once it has run, so the scope is then grown by the formulas that read
+//!   the cells that changed hands, and evaluated again (`grow_scope`).
 //!
-//! Everything else is left to a full evaluation, which also builds the graph
-//! anew: the first evaluation; a change to anything but the contents of cells
-//! (sheets, names, tables, hidden rows and columns, merged cells, settings);
-//! inserting,
-//! deleting or moving rows and columns; and a scope that touches an array
-//! formula or the cells it spilled into, since what spills where is decided
-//! by the order of a full pass. A full evaluation is what `RecalcMode::Full`
-//! always runs, so falling back can make an evaluation slower, never different.
-//!
-//! A scope of more than half the formulas is evaluated in full as well: past
-//! that, finding it costs about what it saves.
+//! Every formula is evaluated only when nothing is on record, the first time,
+//! and when what formulas mean may have changed: sheets added, removed or
+//! renamed, names, tables, settings. `Everything` lists the cases.
 
 mod graph;
 #[cfg(feature = "recalc_verify")]
 mod verify;
 
-use std::collections::HashSet;
-
-use crate::evaluation::{CellKey, KeyBuild};
-use crate::expressions::types::CellReferenceIndex;
+use crate::constants::LAST_COLUMN;
+use crate::evaluation::CellKey;
 use crate::model::Model;
-use crate::types::{Cell, DefinedName, MergedCell, SheetState, Table, WorkbookSettings};
+use crate::sheet_data::Write;
+use crate::types::{Cell, DefinedName, MergedCell, Table, WorkbookSettings};
 
-pub(crate) use graph::{Graph, Reads, Rect};
+pub(crate) use graph::{Graph, Holds, Reads, Rect, Scope, Seeds, Shift};
 
 /// How `Model::evaluate` recalculates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -47,8 +45,8 @@ pub enum RecalcMode {
     Full,
     /// Only the formulas an edit can change. Gives the same results as `Full`.
     Incremental,
-    /// `Incremental`, followed by a full evaluation that must find nothing to
-    /// change. For tests.
+    /// `Incremental`, followed by an evaluation of every formula that must
+    /// find nothing to change. For tests.
     #[cfg(feature = "recalc_verify")]
     Verify,
 }
@@ -69,26 +67,35 @@ impl RecalcMode {
     }
 }
 
-/// Everything about a workbook that formulas can read besides the contents of
-/// its cells. While it stays the same, the logs of writes say all that
-/// changed.
+/// Why an evaluation ran every formula.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Everything {
+    /// The model recalculates in full.
+    FullMode,
+    /// Nothing is on record yet.
+    FirstEvaluation,
+    /// Sheets, names, tables or settings changed.
+    WorkbookChanged,
+}
+
+/// What the last evaluation ran.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ran {
+    Everything(Everything),
+    /// This many formulas.
+    Only(usize),
+}
+
+/// Everything about a workbook that formulas can read and that neither the
+/// cells nor the logs of writes tell. While it stays the same, the logs say
+/// all that changed.
 #[derive(PartialEq)]
 struct Shape {
-    sheets: Vec<SheetShape>,
+    /// The id and the name of every sheet, in order.
+    sheets: Vec<(u32, String)>,
     defined_names: Vec<DefinedName>,
     tables: std::collections::HashMap<String, Table>,
     settings: WorkbookSettings,
-}
-
-#[derive(PartialEq)]
-struct SheetShape {
-    sheet_id: u32,
-    name: String,
-    state: SheetState,
-    hidden_rows: Vec<i32>,
-    hidden_columns: Vec<(i32, i32)>,
-    /// A merged area blocks a spill.
-    merged_cells: Vec<MergedCell>,
 }
 
 impl Shape {
@@ -98,24 +105,7 @@ impl Shape {
             sheets: workbook
                 .worksheets
                 .iter()
-                .map(|worksheet| SheetShape {
-                    sheet_id: worksheet.sheet_id,
-                    name: worksheet.name.clone(),
-                    state: worksheet.state.clone(),
-                    hidden_rows: worksheet
-                        .rows
-                        .iter()
-                        .filter(|row| row.hidden)
-                        .map(|row| row.r)
-                        .collect(),
-                    hidden_columns: worksheet
-                        .cols
-                        .iter()
-                        .filter(|col| col.hidden)
-                        .map(|col| (col.min, col.max))
-                        .collect(),
-                    merged_cells: worksheet.merged_cells.clone(),
-                })
+                .map(|worksheet| (worksheet.sheet_id, worksheet.name.clone()))
                 .collect(),
             defined_names: workbook.defined_names.clone(),
             tables: workbook.tables.clone(),
@@ -128,17 +118,19 @@ impl Shape {
 #[derive(Default)]
 pub(crate) struct Recalc {
     pub(crate) mode: RecalcMode,
-    /// `None` until a full evaluation in a mode that keeps it has built it.
+    /// `None` until an evaluation of every formula has built it.
     graph: Option<Graph>,
-    /// The shape of the workbook when the graph was built.
+    /// The shape of the workbook when the graph was last brought up to date.
     shape: Option<Shape>,
-    /// The array anchors and the cells they spilled into, as the last full
-    /// evaluation left them.
-    arrays: HashSet<CellKey, KeyBuild>,
+    /// The merged cells of every sheet at that time. A merged area blocks a
+    /// spill, so merging and unmerging is a change to the cells of the area.
+    merged: Vec<Vec<MergedCell>>,
     /// What each formula running now has read so far, innermost last. Empty
     /// unless reads are being put on record.
     frames: Vec<Reads>,
     tracing: bool,
+    /// What the last evaluation ran.
+    pub(crate) ran: Option<Ran>,
 }
 
 impl Recalc {
@@ -209,138 +201,246 @@ impl Model<'_> {
         }
     }
 
-    pub(crate) fn trace_beyond_cells(&mut self) {
+    /// The formula running reads what no write announces: see `Reads::always`.
+    pub(crate) fn trace_always(&mut self) {
         if let Some(frame) = self.recalc.frames.last_mut() {
-            frame.beyond_cells = true;
+            frame.always = true;
         }
     }
 
-    /// Starts or stops the logs of writes of every sheet, dropping what they hold.
-    fn record_writes(&mut self, recording: bool) {
-        for worksheet in &mut self.workbook.worksheets {
-            worksheet.sheet_data.writes.record(recording);
+    /// The formula running reads where cells are: see `Reads::positional`.
+    pub(crate) fn trace_positional(&mut self) {
+        if let Some(frame) = self.recalc.frames.last_mut() {
+            frame.positional = true;
         }
     }
 
-    /// The positions written since the last evaluation, and whether rows or
-    /// columns were moved. Stops the logs: what the evaluation itself writes
+    /// Starts or stops the logs of writes of every sheet, and returns what
+    /// each held, with the index of its sheet.
+    fn record_writes(&mut self, recording: bool) -> Vec<(u32, Vec<Write>)> {
+        self.workbook
+            .worksheets
+            .iter_mut()
+            .enumerate()
+            .map(|(sheet, worksheet)| (sheet as u32, worksheet.sheet_data.writes.record(recording)))
+            .collect()
+    }
+
+    /// Decides what the evaluation about to start runs: `None` for every
+    /// formula, or the formulas the edits since the last evaluation can have
+    /// changed. Stops the logs of writes: what the evaluation itself writes
     /// is not an edit.
-    fn take_writes(&mut self) -> (Vec<CellKey>, bool) {
-        let mut cells = Vec::new();
-        let mut structural = false;
-        for (sheet, worksheet) in self.workbook.worksheets.iter_mut().enumerate() {
-            let writes = &mut worksheet.sheet_data.writes;
-            cells.extend(
-                writes
-                    .cells
-                    .iter()
-                    .map(|&(row, column)| (sheet as u32, row, column)),
-            );
-            structural |= writes.structural;
-            writes.record(false);
+    pub(crate) fn plan(&mut self) -> Option<Scope> {
+        if self.recalc.mode == RecalcMode::Full {
+            self.recalc.ran = Some(Ran::Everything(Everything::FullMode));
+            return None;
         }
-        cells.sort_unstable();
-        cells.dedup();
-        (cells, structural)
-    }
-
-    /// Evaluates the formulas the edits since the last evaluation can change,
-    /// if that can be told, and returns `true`. Otherwise gets ready for the
-    /// full evaluation that must follow, which builds the graph, and returns
-    /// `false`.
-    pub(crate) fn evaluate_incrementally(&mut self) -> bool {
-        let (written, structural) = self.take_writes();
+        let logs = self.record_writes(false);
         let shape = Shape::of(self);
-        let ready = !structural
-            && self.recalc.graph.is_some()
-            && self.recalc.shape.as_ref() == Some(&shape);
-        if ready {
-            if let Some(scope) = self.scope_of(&written) {
-                let mut roots: Vec<CellReferenceIndex> = scope
-                    .iter()
-                    .map(|&(sheet, row, column)| CellReferenceIndex { sheet, row, column })
-                    .collect();
-                roots.sort_unstable_by_key(|cell| (cell.sheet, cell.row, cell.column));
-                self.recalc.tracing = true;
-                let completed = self.run_scoped_pass(roots, scope);
-                self.recalc.tracing = false;
-                if completed {
-                    self.evaluate_conditional_formatting();
-                    self.record_writes(true);
-                    #[cfg(feature = "recalc_verify")]
-                    if self.recalc.mode == RecalcMode::Verify {
-                        self.verify_against_full();
+        let everything = if self.recalc.graph.is_none() {
+            Some(Everything::FirstEvaluation)
+        } else if self.recalc.shape.as_ref() != Some(&shape) {
+            Some(Everything::WorkbookChanged)
+        } else {
+            None
+        };
+        self.recalc.tracing = true;
+        if let Some(why) = everything {
+            self.recalc.graph = Some(Graph::default());
+            self.recalc.shape = Some(shape);
+            self.recalc.merged = self.merged_cells();
+            self.recalc.ran = Some(Ran::Everything(why));
+            return None;
+        }
+        let mut graph = self.recalc.graph.take()?;
+        let mut seeds = Seeds::default();
+        for (sheet, log) in logs {
+            for write in log {
+                match write {
+                    Write::Cell(row, column) => seeds.cells.push((sheet, row, column)),
+                    Write::Row(row) => self.seed_row(sheet, row, &graph, &mut seeds),
+                    Write::Rows { first, delta } => {
+                        let shift = Shift {
+                            sheet,
+                            rows: true,
+                            first,
+                            delta,
+                        };
+                        self.displace(&shift, &mut graph, &mut seeds);
                     }
-                    return true;
+                    Write::Columns { first, delta } => {
+                        let shift = Shift {
+                            sheet,
+                            rows: false,
+                            first,
+                            delta,
+                        };
+                        self.displace(&shift, &mut graph, &mut seeds);
+                    }
                 }
             }
         }
-        self.recalc.graph = Some(Graph::default());
-        self.recalc.shape = Some(shape);
-        self.recalc.tracing = true;
-        false
+        self.seed_merged_cells(&mut seeds);
+        seeds.cells.sort_unstable();
+        seeds.cells.dedup();
+        for &position in &seeds.cells {
+            if self.holds(position) == Holds::NoFormula {
+                // Not a formula, or no longer one: it reads nothing.
+                graph.remove(position);
+                self.links.remove(&position);
+            } else {
+                seeds.formulas.push(position);
+            }
+        }
+        seeds.formulas.extend(graph.always());
+        let mut scope = Scope::default();
+        graph.grow(&mut scope, seeds, |position| self.holds(position));
+        self.recalc.graph = Some(graph);
+        self.recalc.ran = Some(Ran::Only(scope.len()));
+        Some(scope)
     }
 
-    /// Called at the end of every full evaluation.
-    pub(crate) fn after_full_evaluation(&mut self) {
+    /// The evaluation ran the formulas of `scope`. `areas` are the arrays
+    /// among them and the area each filled before. Where an array now fills
+    /// another area, cells changed hands that the scope did not reckon with:
+    /// the formulas that read them are added to it. Returns whether any was,
+    /// and then the evaluation has to run again.
+    pub(crate) fn grow_scope(
+        &mut self,
+        scope: &mut Scope,
+        areas: &[(CellKey, (i32, i32))],
+    ) -> bool {
+        let mut seeds = Seeds::default();
+        for &(anchor, before) in areas {
+            let after = match self.holds(anchor) {
+                Holds::Array(area) => area,
+                _ => Rect::sized(anchor, (1, 1)),
+            };
+            let before = Rect::sized(anchor, before);
+            if before != after {
+                seeds.rects.push(before);
+                seeds.rects.push(after);
+            }
+        }
+        if seeds.rects.is_empty() {
+            return false;
+        }
+        let Some(mut graph) = self.recalc.graph.take() else {
+            return false;
+        };
+        let grew = graph.grow(scope, seeds, |position| self.holds(position));
+        self.recalc.graph = Some(graph);
+        if grew {
+            self.recalc.ran = Some(Ran::Only(scope.len()));
+        }
+        grew
+    }
+
+    /// Called when an evaluation is over, before conditional formatting.
+    pub(crate) fn after_evaluation(&mut self) {
         if self.recalc.mode == RecalcMode::Full {
             return;
         }
         self.recalc.tracing = false;
         self.recalc.frames.clear();
-        self.recalc.arrays.clear();
-        for (sheet, worksheet) in self.workbook.worksheets.iter().enumerate() {
-            // Only a formula makes an array.
-            if worksheet.shared_formulas.is_empty() {
-                continue;
-            }
-            for (row, column, cell) in worksheet.sheet_data.cells() {
-                if matches!(*cell, Cell::ArrayFormula { .. } | Cell::SpillCell { .. }) {
-                    self.recalc.arrays.insert((sheet as u32, row, column));
-                }
-            }
+        #[cfg(feature = "recalc_verify")]
+        if self.recalc.mode == RecalcMode::Verify && matches!(self.recalc.ran, Some(Ran::Only(_))) {
+            self.verify_against_everything();
         }
         self.record_writes(true);
     }
 
-    /// The formulas to run after writes at `written`, or `None` if the
-    /// evaluation must be full.
-    fn scope_of(&mut self, written: &[CellKey]) -> Option<HashSet<CellKey, KeyBuild>> {
-        let mut formulas = Vec::new();
-        for &position in written {
-            if self.recalc.arrays.contains(&position) {
-                return None;
-            }
-            match self.cell_at(position) {
-                Some(Cell::CellFormula { .. }) => formulas.push(position),
-                Some(Cell::ArrayFormula { .. } | Cell::SpillCell { .. }) => return None,
-                _ => {
-                    // Not a formula, or no longer one: it reads nothing.
-                    if let Some(graph) = &mut self.recalc.graph {
-                        graph.remove(position);
-                    }
-                    self.links.remove(&position);
-                }
-            }
+    /// What the cell at a position holds.
+    pub(crate) fn holds(&self, position: CellKey) -> Holds {
+        let (sheet, row, column) = position;
+        let Some(worksheet) = self.workbook.worksheets.get(sheet as usize) else {
+            return Holds::NoFormula;
+        };
+        match worksheet.sheet_data.cell(row, column).as_deref() {
+            Some(Cell::CellFormula { .. }) => Holds::Formula,
+            Some(Cell::ArrayFormula { r, .. }) if *r == (1, 1) => Holds::Formula,
+            Some(Cell::ArrayFormula { r, .. }) => Holds::Array(Rect::sized(position, *r)),
+            _ => Holds::NoFormula,
         }
-        let graph = self.recalc.graph.as_mut()?;
-        let limit = (graph.formula_count() / 2).max(1024);
-        let mut scope = graph.scope(written, limit)?;
-        scope.extend(formulas);
-        if scope
-            .iter()
-            .any(|position| self.recalc.arrays.contains(position))
-        {
-            return None;
-        }
-        Some(scope)
     }
 
-    fn cell_at(&self, (sheet, row, column): CellKey) -> Option<Cell> {
-        let worksheet = self.workbook.worksheets.get(sheet as usize)?;
-        worksheet
-            .sheet_data
-            .cell(row, column)
-            .map(|cell| cell.into_owned())
+    /// The cells of a row were replaced. Anything in it may have changed, the
+    /// formulas it holds are new, and the ones it held may be gone.
+    fn seed_row(&self, sheet: u32, row: i32, graph: &Graph, seeds: &mut Seeds) {
+        let rect = Rect {
+            sheet,
+            row1: row,
+            column1: 1,
+            row2: row,
+            column2: LAST_COLUMN,
+        };
+        seeds.cells.extend(graph.formulas_in(&rect));
+        if let Some(worksheet) = self.workbook.worksheets.get(sheet as usize) {
+            let columns = worksheet.sheet_data.columns_in_row(row);
+            seeds
+                .cells
+                .extend(columns.into_iter().map(|column| (sheet, row, column)));
+        }
+        seeds.rects.push(rect);
+    }
+
+    /// Rows or columns moved. Everything kept by position follows them: the
+    /// graph, the seeds found so far, the links formulas made and the order
+    /// of the anchors. The formulas the move cut off from what they read are
+    /// seeds.
+    fn displace(&mut self, shift: &Shift, graph: &mut Graph, seeds: &mut Seeds) {
+        seeds.cells = seeds
+            .cells
+            .iter()
+            .filter_map(|cell| shift.cell(*cell))
+            .collect();
+        seeds.formulas = seeds
+            .formulas
+            .iter()
+            .filter_map(|cell| shift.cell(*cell))
+            .collect();
+        // A rectangle that did not move whole stays: more is run than needed.
+        for rect in &mut seeds.rects {
+            if let Some(moved) = shift.rect(rect) {
+                *rect = moved;
+            }
+        }
+        seeds.formulas.extend(graph.displace(shift));
+        self.links = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter_map(|(position, link)| Some((shift.cell(position)?, link)))
+            .collect();
+        for anchor in &mut self.evaluation.anchor_order {
+            if let Some((_, row, column)) = shift.cell((anchor.sheet, anchor.row, anchor.column)) {
+                anchor.row = row;
+                anchor.column = column;
+            }
+        }
+    }
+
+    fn merged_cells(&self) -> Vec<Vec<MergedCell>> {
+        self.workbook
+            .worksheets
+            .iter()
+            .map(|worksheet| worksheet.merged_cells.clone())
+            .collect()
+    }
+
+    /// Makes a seed of every area that was merged or unmerged.
+    fn seed_merged_cells(&mut self, seeds: &mut Seeds) {
+        let merged = self.merged_cells();
+        for (sheet, (before, after)) in self.recalc.merged.iter().zip(&merged).enumerate() {
+            let changed = before
+                .iter()
+                .filter(|area| !after.contains(area))
+                .chain(after.iter().filter(|area| !before.contains(area)));
+            for area in changed {
+                seeds.rects.push(Rect::sized(
+                    (sheet as u32, area.row, area.column),
+                    (area.width, area.height),
+                ));
+            }
+        }
+        self.recalc.merged = merged;
     }
 }

@@ -2317,7 +2317,11 @@ impl<'a> Model<'a> {
         cell: CellReferenceIndex,
     ) -> CalcResult {
         if reads_beyond_cells(kind) {
-            self.trace_beyond_cells();
+            self.trace_always();
+        }
+        if matches!(kind, Function::Row | Function::Column) {
+            // What they give is a position, not what is in it.
+            self.trace_positional();
         }
         match kind {
             Function::And => self.fn_and(args, cell),
