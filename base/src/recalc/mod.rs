@@ -33,7 +33,9 @@ use crate::constants::LAST_COLUMN;
 use crate::evaluation::CellKey;
 use crate::model::Model;
 use crate::sheet_data::Write;
-use crate::types::{Cell, DefinedName, MergedCell, Table, WorkbookSettings};
+use crate::types::{
+    ArrayKind, Cell, DefinedName, FormulaValue, MergedCell, Table, WorkbookSettings,
+};
 
 pub(crate) use graph::{Graph, Holds, Reads, Rect, Scope, Seeds, Shift};
 
@@ -127,10 +129,58 @@ pub(crate) struct Recalc {
     merged: Vec<Vec<MergedCell>>,
     /// What each formula running now has read so far, innermost last. Empty
     /// unless reads are being put on record.
-    frames: Vec<Reads>,
+    frames: Vec<Frame>,
+    /// Records no longer needed, kept for the room they hold: a formula that
+    /// reads what it read before leaves nothing behind.
+    spare: Vec<Reads>,
     tracing: bool,
     /// What the last evaluation ran.
     pub(crate) ran: Option<Ran>,
+}
+
+/// A formula that reads more single cells than this has them put on record
+/// as the rectangle they lie in.
+const MANY_CELLS: usize = 64;
+
+/// What the formula running has read so far.
+#[derive(Default)]
+struct Frame {
+    reads: Reads,
+    /// The rectangle in `reads.rects` that stands for the single cells read
+    /// once there were too many of them, if there is one.
+    rest: Option<usize>,
+}
+
+impl Frame {
+    fn cell(&mut self, cell: CellKey) {
+        // A cell of a rectangle already on record is read as part of it.
+        // Looking at the last few is enough: a walk reads the rectangles it
+        // just recorded.
+        let rects = &mut self.reads.rects;
+        if rects.iter().rev().take(16).any(|rect| rect.contains(cell)) {
+            return;
+        }
+        // A function that walks a range cell by cell, a million of them in a
+        // whole column, must not leave a million cells on record. Past a few,
+        // the cells of a sheet are kept as the rectangle around them: more
+        // than was read, never less.
+        if let Some(rest) = self.rest.filter(|rest| rects[*rest].sheet == cell.0) {
+            rects[rest].include(cell);
+            return;
+        }
+        self.reads.cells.push(cell);
+        if self.reads.cells.len() > MANY_CELLS {
+            let mut around = Rect::sized(cell, (1, 1));
+            self.reads.cells.retain(|other| {
+                if other.0 == cell.0 {
+                    around.include(*other);
+                }
+                other.0 != cell.0
+            });
+            self.rest = Some(rects.len());
+            rects.push(around);
+        }
+    }
 }
 
 impl Recalc {
@@ -159,36 +209,32 @@ impl Model<'_> {
     /// A formula starts running: what it reads from now on is its own.
     pub(crate) fn begin_reads(&mut self) {
         if self.recalc.tracing {
-            self.recalc.frames.push(Reads::default());
+            let mut reads = self.recalc.spare.pop().unwrap_or_default();
+            reads.cells.clear();
+            reads.rects.clear();
+            reads.always = false;
+            reads.positional = false;
+            self.recalc.frames.push(Frame { reads, rest: None });
         }
     }
 
     /// The formula that began last stopped running. Returns what it read.
     pub(crate) fn end_reads(&mut self) -> Option<Reads> {
-        self.recalc.frames.pop()
+        self.recalc.frames.pop().map(|frame| frame.reads)
     }
 
     /// The formula that ran at `cell` stored a result computed from `reads`.
     pub(crate) fn commit_reads(&mut self, cell: CellKey, reads: Reads) {
         if let Some(graph) = &mut self.recalc.graph {
-            graph.set_reads(cell, reads);
+            if let Some(unchanged) = graph.set_reads(cell, reads) {
+                self.recalc.spare.push(unchanged);
+            }
         }
     }
 
     pub(crate) fn trace_cell(&mut self, cell: CellKey) {
         if let Some(frame) = self.recalc.frames.last_mut() {
-            // A cell of a rectangle already on record is read as part of it.
-            // Looking at the last few is enough: a walk reads the rectangle it
-            // just recorded.
-            if !frame
-                .rects
-                .iter()
-                .rev()
-                .take(4)
-                .any(|rect| rect.contains(cell))
-            {
-                frame.cells.push(cell);
-            }
+            frame.cell(cell);
         }
     }
 
@@ -197,21 +243,21 @@ impl Model<'_> {
             return;
         }
         if let Some(frame) = self.recalc.frames.last_mut() {
-            frame.rects.push(rect);
+            frame.reads.rects.push(rect);
         }
     }
 
     /// The formula running reads what no write announces: see `Reads::always`.
     pub(crate) fn trace_always(&mut self) {
         if let Some(frame) = self.recalc.frames.last_mut() {
-            frame.always = true;
+            frame.reads.always = true;
         }
     }
 
     /// The formula running reads where cells are: see `Reads::positional`.
     pub(crate) fn trace_positional(&mut self) {
         if let Some(frame) = self.recalc.frames.last_mut() {
-            frame.positional = true;
+            frame.reads.positional = true;
         }
     }
 
@@ -300,29 +346,34 @@ impl Model<'_> {
         Some(scope)
     }
 
-    /// The evaluation ran the formulas of `scope`. `areas` are the arrays
-    /// among them and the area each filled before. Where an array now fills
-    /// another area, cells changed hands that the scope did not reckon with:
-    /// the formulas that read them are added to it. Returns whether any was,
-    /// and then the evaluation has to run again.
+    /// The evaluation ran the formulas of `scope`. `arrays` are the arrays
+    /// among them and the cells each had filled before. Where an array now
+    /// fills other cells, cells changed hands that the scope did not reckon
+    /// with: the formulas that read them are added to it. Returns whether any
+    /// was, and then the evaluation has to run again.
     pub(crate) fn grow_scope(
         &mut self,
         scope: &mut Scope,
-        areas: &[(CellKey, (i32, i32))],
+        arrays: &[(CellKey, Vec<CellKey>)],
     ) -> bool {
         let mut seeds = Seeds::default();
-        for &(anchor, before) in areas {
-            let after = match self.holds(anchor) {
-                Holds::Array(area) => area,
-                _ => Rect::sized(anchor, (1, 1)),
-            };
-            let before = Rect::sized(anchor, before);
-            if before != after {
-                seeds.rects.push(before);
-                seeds.rects.push(after);
+        // An array of a fixed area (CSE) that had lost cells got them back.
+        // Nothing restarts a pass for those: a formula of the scope that ran
+        // before the array read them empty.
+        let mut again = false;
+        for (anchor, before) in arrays {
+            let after = self.spilled_cells(*anchor);
+            if *before != after {
+                seeds
+                    .cells
+                    .extend(before.iter().filter(|cell| !after.contains(cell)));
+                seeds
+                    .cells
+                    .extend(after.iter().filter(|cell| !before.contains(cell)));
+                again |= self.array_kind(*anchor) == Some(ArrayKind::Cse);
             }
         }
-        if seeds.rects.is_empty() {
+        if seeds.cells.is_empty() {
             return false;
         }
         let Some(mut graph) = self.recalc.graph.take() else {
@@ -333,7 +384,66 @@ impl Model<'_> {
         if grew {
             self.recalc.ran = Some(Ran::Only(scope.len()));
         }
-        grew
+        grew || again
+    }
+
+    fn holds_error(&self, (sheet, row, column): CellKey) -> bool {
+        let cell = self
+            .workbook
+            .worksheets
+            .get(sheet as usize)
+            .and_then(|worksheet| worksheet.sheet_data.cell(row, column));
+        matches!(
+            cell.as_deref(),
+            Some(
+                Cell::CellFormula {
+                    v: FormulaValue::Error { .. },
+                    ..
+                } | Cell::ArrayFormula {
+                    v: FormulaValue::Error { .. },
+                    ..
+                }
+            )
+        )
+    }
+
+    fn array_kind(&self, (sheet, row, column): CellKey) -> Option<ArrayKind> {
+        let worksheet = self.workbook.worksheets.get(sheet as usize)?;
+        match worksheet.sheet_data.cell(row, column).as_deref() {
+            Some(Cell::ArrayFormula { kind, .. }) => Some(kind.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the cell at a position is the anchor of an array, whatever
+    /// the array fills now.
+    pub(crate) fn is_array(&self, position: CellKey) -> bool {
+        self.array_kind(position).is_some()
+    }
+
+    /// The cells the array at `anchor` fills now, the anchor left out, in
+    /// natural order.
+    pub(crate) fn spilled_cells(&self, anchor: CellKey) -> Vec<CellKey> {
+        let Holds::Array(area) = self.holds(anchor) else {
+            return Vec::new();
+        };
+        let (sheet, row, column) = anchor;
+        let Some(worksheet) = self.workbook.worksheets.get(sheet as usize) else {
+            return Vec::new();
+        };
+        let mut cells = Vec::new();
+        for r in area.row1..=area.row2 {
+            for (c, cell) in
+                worksheet
+                    .sheet_data
+                    .cells_in_row_between(r, area.column1, area.column2)
+            {
+                if matches!(&*cell, Cell::SpillCell { a, .. } if *a == (row, column)) {
+                    cells.push((sheet, r, c));
+                }
+            }
+        }
+        cells
     }
 
     /// Called when an evaluation is over, before conditional formatting.
@@ -384,10 +494,12 @@ impl Model<'_> {
         seeds.rects.push(rect);
     }
 
-    /// Rows or columns moved. Everything kept by position follows them: the
-    /// graph, the seeds found so far, the links formulas made and the order
-    /// of the anchors. The formulas the move cut off from what they read are
-    /// seeds.
+    /// Rows or columns moved. What is kept by position follows them: the
+    /// graph, the seeds found so far and the links formulas made. The formulas
+    /// the move cut off from what they read are seeds. The order of the
+    /// anchors does not follow: the anchors of the sheet were all reset, they
+    /// are in the scope, and they find their place as they do when every
+    /// formula runs.
     fn displace(&mut self, shift: &Shift, graph: &mut Graph, seeds: &mut Seeds) {
         seeds.cells = seeds
             .cells
@@ -405,17 +517,20 @@ impl Model<'_> {
                 *rect = moved;
             }
         }
-        seeds.formulas.extend(graph.displace(shift));
+        let displaced = graph.displace(shift);
+        seeds.formulas.extend(displaced.cut_off);
+        // An error says in which cell it arose, by name. A formula that moved
+        // with an error in it runs again to say it right.
+        seeds.formulas.extend(
+            displaced
+                .moved
+                .into_iter()
+                .filter(|formula| self.holds_error(*formula)),
+        );
         self.links = std::mem::take(&mut self.links)
             .into_iter()
             .filter_map(|(position, link)| Some((shift.cell(position)?, link)))
             .collect();
-        for anchor in &mut self.evaluation.anchor_order {
-            if let Some((_, row, column)) = shift.cell((anchor.sheet, anchor.row, anchor.column)) {
-                anchor.row = row;
-                anchor.column = column;
-            }
-        }
     }
 
     fn merged_cells(&self) -> Vec<Vec<MergedCell>> {

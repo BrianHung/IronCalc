@@ -519,11 +519,11 @@ impl<'a> Model<'a> {
     pub fn evaluate(&mut self) {
         self.evaluation.scope = self.plan();
         loop {
-            let areas = self.run();
+            let arrays = self.run();
             let Some(mut scope) = self.evaluation.scope.take() else {
                 break;
             };
-            let grew = self.grow_scope(&mut scope, &areas);
+            let grew = self.grow_scope(&mut scope, &arrays);
             self.evaluation.scope = Some(scope);
             if !grew {
                 break;
@@ -541,22 +541,25 @@ impl<'a> Model<'a> {
     /// `#CIRC!` and keeps no spill cells: its stale cells are dropped when it
     /// is marked, so there is nothing of it to read or to contradict.
     ///
-    /// Returns the dynamic anchors that were evaluated, with the area each
-    /// filled before.
-    pub(crate) fn run(&mut self) -> Vec<(CellKey, (i32, i32))> {
+    /// With a scope, returns the arrays that were evaluated, with the cells
+    /// each had filled before.
+    pub(crate) fn run(&mut self) -> Vec<(CellKey, Vec<CellKey>)> {
         let Survey {
             formulas,
             dynamic_anchors,
             dynamic_spills,
         } = self.survey();
         self.sync_anchor_order(dynamic_anchors);
-        let areas = dynamic_spills
-            .iter()
-            .filter_map(|(position, cell)| match cell {
-                Cell::ArrayFormula { r, .. } => Some((key(*position), *r)),
-                _ => None,
-            })
-            .collect();
+        let arrays = if self.evaluation.scope.is_some() {
+            formulas
+                .iter()
+                .map(|formula| key(*formula))
+                .filter(|formula| self.is_array(*formula))
+                .map(|anchor| (anchor, self.spilled_cells(anchor)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Every pass starts from the same sheet: what an abandoned pass wrote
         // is undone. This is what makes a pass a function of the anchor order.
         // The only changes to that sheet within an evaluation are the dropping
@@ -583,7 +586,7 @@ impl<'a> Model<'a> {
             self.restore_dynamic_spills(&spills_before);
         }
         self.evaluation.restarts_in_last_evaluation = log.restarts;
-        areas
+        arrays
     }
 
     /// Sets how many formulas deep the evaluation may recurse. A formula that
@@ -1205,13 +1208,6 @@ impl<'a> Model<'a> {
         row2: i32,
         column2: i32,
     ) {
-        self.trace_rect(Rect {
-            sheet,
-            row1,
-            column1,
-            row2,
-            column2,
-        });
         if !self.evaluation.in_pass
             || !self.evaluation.record_reads
             || row1 > row2

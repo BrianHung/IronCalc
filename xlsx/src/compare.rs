@@ -440,6 +440,7 @@ fn reads_random(model: &Model) -> bool {
 
 /// Tests that incremental recalculation agrees with full recalculation on the
 /// file in file_path, and that after the edits are undone it agrees with Excel.
+/// Then rows and columns are inserted and deleted, checked the same way.
 ///
 /// Every input cell (up to `MAX_EDITED_INPUTS`) is changed, then cleared, then
 /// restored, one at a time. Each edit is applied to a model in incremental
@@ -491,5 +492,51 @@ pub fn test_file_incremental(file_path: &str) -> Result<(), String> {
     }
     compare_models(&excel, &incremental).map_err(|diff| {
         format!("After every edit was undone, incremental differs from Excel.\n{diff}")
-    })
+    })?;
+
+    // Rows and columns are inserted and deleted again, at the top, in the
+    // middle and past the end of what each sheet uses. A sheet that refuses,
+    // because it would break an array, refuses in both models.
+    for (sheet, name) in sheet_names.iter().enumerate() {
+        let sheet = sheet as u32;
+        let dimension = excel.workbook.worksheet(sheet)?.dimension();
+        let rows = [1, 2, (dimension.max_row + 1) / 2, dimension.max_row + 1];
+        let columns = [
+            1,
+            2,
+            (dimension.max_column + 1) / 2,
+            dimension.max_column + 1,
+        ];
+        type Edit = fn(&mut Model, u32, i32, i32) -> Result<(), String>;
+        let insert_rows: Edit = |model, sheet, at, count| model.insert_rows(sheet, at, count);
+        let delete_rows: Edit = |model, sheet, at, count| model.delete_rows(sheet, at, count);
+        let insert_columns: Edit = |model, sheet, at, count| model.insert_columns(sheet, at, count);
+        let delete_columns: Edit = |model, sheet, at, count| model.delete_columns(sheet, at, count);
+        let edits: [(&str, &[i32], Edit, Edit); 2] = [
+            ("row", &rows, insert_rows, delete_rows),
+            ("column", &columns, insert_columns, delete_columns),
+        ];
+        for (what, places, insert, delete) in edits {
+            for &at in places {
+                for (step, edit) in [("inserted", insert), ("deleted", delete)] {
+                    let in_full = edit(&mut full, sheet, at.max(1), 1);
+                    let in_incremental = edit(&mut incremental, sheet, at.max(1), 1);
+                    if in_full != in_incremental {
+                        return Err(format!(
+                            "{name}: a {what} at {at} was {step} in one model and not in the other"
+                        ));
+                    }
+                    if in_full.is_err() {
+                        break;
+                    }
+                    full.evaluate();
+                    incremental.evaluate();
+                    compare_models(&full, &incremental).map_err(|diff| {
+                        format!("Incremental differs from full after a {what} was {step} at {at} in {name}.\n(Excel = full, IronCalc = incremental)\n{diff}")
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
 }

@@ -121,6 +121,7 @@ impl<'a> Model<'a> {
             let sheet = range.left.sheet;
             let (top, left) = (range.left.row, range.left.column);
             let (bottom, right) = (range.right.row, range.right.column);
+            self.trace_rect(crate::recalc::Rect::between(range.left, range.right));
             if open_row {
                 let first_skipped = top + (max_row + 1 - left_row);
                 self.record_seen_empty_range(sheet, first_skipped, left, bottom, right);

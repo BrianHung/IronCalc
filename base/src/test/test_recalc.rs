@@ -343,3 +343,59 @@ fn a_cycle_outside_the_edit_keeps_its_error() {
     assert_eq!(model._get_text("C1"), "8");
     assert_eq!(model._get_text("A1"), "#CIRC!");
 }
+
+#[test]
+fn a_reference_worked_out_by_a_function_does_not_follow_the_rows() {
+    let mut model = incremental_model();
+    model._set("A1", "7");
+    // Above the first row there is nothing: an error, not a reference.
+    model._set("C1", "=IFERROR(OFFSET(A1,-1,0),\"caught\")");
+    model.evaluate();
+    assert_eq!(model._get_text("C1"), "caught");
+
+    // The formula moves along with the cell it names, and reads another.
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    assert_eq!(
+        model._get_formula("C2"),
+        "=IFERROR(OFFSET(A2,-1,0),\"caught\")"
+    );
+    assert_eq!(model._get_text("C2"), "0");
+}
+
+#[test]
+fn a_name_does_not_follow_the_rows() {
+    let mut model = incremental_model();
+    model._set("A1", "1");
+    model._set("A2", "7");
+    model
+        .new_defined_name(crate::model::DefinedNameEntry {
+            name: "Seven".to_string(),
+            scope: None,
+            formula: "Sheet1!$A$2".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    model._set("C5", "=Seven+1");
+    model.evaluate();
+    assert_eq!(model._get_text("C5"), "8");
+
+    let mut full = new_empty_model().with_recalc_mode(RecalcMode::Full);
+    full._set("A1", "1");
+    full._set("A2", "7");
+    full.new_defined_name(crate::model::DefinedNameEntry {
+        name: "Seven".to_string(),
+        scope: None,
+        formula: "Sheet1!$A$2".to_string(),
+        ..Default::default()
+    })
+    .unwrap();
+    full._set("C5", "=Seven+1");
+    full.evaluate();
+
+    model.insert_rows(0, 1, 1).unwrap();
+    model.evaluate();
+    full.insert_rows(0, 1, 1).unwrap();
+    full.evaluate();
+    assert_eq!(model._get_text("C6"), full._get_text("C6"));
+}
