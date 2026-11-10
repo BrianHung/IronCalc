@@ -178,7 +178,9 @@ fn conflict_restart_through_a_deep_chain() {
 #[test]
 fn stale_read_at_the_bottom_of_a_deep_chain() {
     for max_depth in [1, 2, usize::MAX] {
-        let mut model = new_empty_model();
+        // The restart counted below happens when every formula runs: an
+        // evaluation that runs only what the edit changed has no need of it.
+        let mut model = new_empty_model().with_recalc_mode(crate::RecalcMode::Full);
         model.set_max_evaluation_depth(max_depth);
         model._set("A1", "=SEQUENCE(1,1,5)");
         model._set("B1", "=SEQUENCE(3)");

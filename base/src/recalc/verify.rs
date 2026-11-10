@@ -1,31 +1,93 @@
-//! `RecalcMode::Verify`: every incremental evaluation is followed by a full
-//! one, which must leave every cell as it found it.
+//! `RecalcMode::Verify`: an evaluation that ran only some formulas is
+//! followed by one that runs them all, which must leave every cell as it
+//! found it and read what is on record.
 
 use crate::evaluation::CellKey;
+use crate::expressions::token::Error;
 use crate::model::Model;
-use crate::types::Cell;
+use crate::types::{Cell, FormulaValue};
+
+use super::{Graph, Scope, Seeds};
 
 impl Model<'_> {
-    pub(crate) fn verify_against_full(&mut self) {
-        let incremental = self.formula_cells();
+    pub(crate) fn verify_against_everything(&mut self) {
+        let Some(kept) = self.recalc.graph.take() else {
+            return;
+        };
+        let scope = self.evaluation.scope.take();
+        let restarts = self.evaluation.restarts_in_last_evaluation;
+        let before = self.formula_cells();
         let links = self.links.clone();
-        // Not ready: the next evaluation is full.
-        self.recalc.graph = None;
-        self.evaluate();
-        let full = self.formula_cells();
-        let differences: Vec<String> = incremental
+
+        self.recalc.graph = Some(Graph::default());
+        self.recalc.tracing = true;
+        self.run();
+        self.recalc.tracing = false;
+        self.recalc.frames.clear();
+        let after = self.formula_cells();
+        let fresh = self.recalc.graph.take();
+
+        // What reads the clock or a random number differs, and so does what
+        // reads that.
+        let mut kept = kept;
+        let mut unsteady = Scope::default();
+        let seeds = Seeds {
+            formulas: kept.always(),
+            ..Seeds::default()
+        };
+        kept.grow(&mut unsteady, seeds, |position| self.holds(position));
+        self.recalc.graph = Some(kept);
+        let unsteady_formulas = unsteady;
+        let unsteady = |position: &CellKey, cell: &Cell| match cell {
+            Cell::SpillCell { a, .. } => unsteady_formulas.contains(&(position.0, a.0, a.1)),
+            _ => unsteady_formulas.contains(position),
+        };
+        let any_unsteady = before
             .iter()
-            .zip(full.iter())
-            .filter(|(a, b)| a != b)
-            .take(10)
-            .map(|(a, b)| format!("{:?}: incremental {:?}, full {:?}", a.0, a.1, b.1))
+            .any(|(position, cell)| unsteady(position, cell));
+        let after_at: std::collections::HashMap<CellKey, &Cell> = after
+            .iter()
+            .map(|(position, cell)| (*position, cell))
             .collect();
+        let before_at: std::collections::HashMap<CellKey, &Cell> = before
+            .iter()
+            .map(|(position, cell)| (*position, cell))
+            .collect();
+        let mut differences: Vec<String> = Vec::new();
+        for (position, cell) in &before {
+            if unsteady(position, cell) {
+                continue;
+            }
+            match after_at.get(position) {
+                Some(full) if *full == cell => {}
+                Some(full) if unsteady(position, full) => {}
+                full => differences.push(format!("{position:?}: {cell:?}, in full {full:?}")),
+            }
+        }
+        for (position, cell) in &after {
+            if !before_at.contains_key(position) && !unsteady(position, cell) {
+                differences.push(format!("{position:?}: nothing, in full {cell:?}"));
+            }
+        }
+        differences.truncate(10);
         assert!(
-            differences.is_empty() && incremental.len() == full.len(),
-            "incremental evaluation differs from a full one:\n{}",
+            differences.is_empty(),
+            "an incremental evaluation differs from a full one:\n{}",
             differences.join("\n")
         );
-        assert_eq!(links, self.links, "incremental evaluation left other links");
+        if !any_unsteady {
+            assert_eq!(
+                links, self.links,
+                "an incremental evaluation left other links"
+            );
+        }
+        if let (Some(graph), Some(fresh)) = (&self.recalc.graph, &fresh) {
+            if let Some(difference) = graph.difference(fresh, &unsteady_formulas) {
+                panic!("the graph is not the one a full evaluation builds: {difference}");
+            }
+        }
+        self.evaluation.scope = scope;
+        self.evaluation.restarts_in_last_evaluation = restarts;
     }
 
     /// Every formula cell and every cell an array spilled into, in natural order.
@@ -37,7 +99,18 @@ impl Model<'_> {
                     *cell,
                     Cell::CellFormula { .. } | Cell::ArrayFormula { .. } | Cell::SpillCell { .. }
                 ) {
-                    cells.push(((sheet as u32, row, column), cell.into_owned()));
+                    let mut cell = cell.into_owned();
+                    // Which cell of a loop a `#CIRC!` is traced back to
+                    // depends on where the evaluation entered the loop.
+                    if let Cell::CellFormula { v, .. } | Cell::ArrayFormula { v, .. } = &mut cell {
+                        if let FormulaValue::Error {
+                            ei: Error::CIRC, d, ..
+                        } = v
+                        {
+                            d.o.clear();
+                        }
+                    }
+                    cells.push(((sheet as u32, row, column), cell));
                 }
             }
         }

@@ -44,3 +44,4 @@ mod test;
 mod writes;
 
 pub use chunks::SheetData;
+pub(crate) use writes::Write;

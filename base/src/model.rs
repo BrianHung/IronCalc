@@ -885,7 +885,15 @@ impl<'a> Model<'a> {
                 }),
             },
             OpPowerKind { left, right } => self.handle_arithmetic(left, right, cell, &power),
-            FunctionKind { kind, args } => self.evaluate_function(kind, args, cell),
+            FunctionKind { kind, args } => {
+                let result = self.evaluate_function(kind, args, cell);
+                if matches!(result, CalcResult::Range { .. }) {
+                    // A reference worked out by a function, not written in
+                    // the formula: it does not follow the cells when they move.
+                    self.trace_positional();
+                }
+                result
+            }
             NamedFunctionKind { name, args, id } => {
                 let lambda_result = if let Some(var_id) = id {
                     // Bound by LET — look up the variable, which should be a Lambda.
@@ -928,6 +936,8 @@ impl<'a> Model<'a> {
             }
             ArrayKind(s) => CalcResult::Array(s.to_owned()),
             DefinedNameKind { name, scope, .. } => {
+                // A name says where to read, the formula does not.
+                self.trace_positional();
                 if let Ok(Some(parsed_defined_name)) = self.get_parsed_defined_name(name, *scope) {
                     match parsed_defined_name {
                         ParsedDefinedName::CellReference(reference) => {

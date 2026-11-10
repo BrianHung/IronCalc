@@ -1,6 +1,23 @@
 //! What was written to a sheet since someone last asked.
 
-/// The writes to a sheet since the log was last taken, while it is recording.
+/// One change to the cells of a sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Write {
+    /// The cell at `(row, column)` was replaced, removed or handed out to be
+    /// changed in place.
+    Cell(i32, i32),
+    /// The cells of a row were replaced or removed, all of them.
+    Row(i32),
+    /// Every row from `first` on moved by `delta` rows. With a negative
+    /// `delta` the rows they landed on, `first + delta` to `first - 1`, are
+    /// gone.
+    Rows { first: i32, delta: i32 },
+    /// The same for columns.
+    Columns { first: i32, delta: i32 },
+}
+
+/// The writes to a sheet since the log was last taken, in the order they were
+/// made, while it is recording.
 ///
 /// Incremental recalculation reads it to find what an edit changed (see
 /// `recalc`). It is not part of the sheet: it is not saved, and two sheets
@@ -9,31 +26,19 @@
 #[derive(Debug, Clone, Default)]
 pub struct Writes {
     recording: bool,
-    /// Positions `(row, column)` whose cell was replaced, removed or handed
-    /// out to be changed in place. A position can appear more than once.
-    pub(crate) cells: Vec<(i32, i32)>,
-    /// Whether rows or columns were moved, removed or replaced whole, which
-    /// moves cells rather than writing them.
-    pub(crate) structural: bool,
+    log: Vec<Write>,
 }
 
 impl Writes {
-    pub(crate) fn cell(&mut self, row: i32, column: i32) {
-        if self.recording {
-            self.cells.push((row, column));
+    pub(crate) fn push(&mut self, write: Write) {
+        if self.recording && self.log.last() != Some(&write) {
+            self.log.push(write);
         }
     }
 
-    pub(crate) fn structural(&mut self) {
-        if self.recording {
-            self.structural = true;
-        }
-    }
-
-    /// Starts or stops recording. Either way what was recorded is dropped.
-    pub(crate) fn record(&mut self, recording: bool) {
+    /// Starts or stops recording, and returns what was recorded so far.
+    pub(crate) fn record(&mut self, recording: bool) -> Vec<Write> {
         self.recording = recording;
-        self.cells.clear();
-        self.structural = false;
+        std::mem::take(&mut self.log)
     }
 }
