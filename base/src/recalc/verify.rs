@@ -37,6 +37,33 @@ impl Model<'_> {
         };
         kept.grow(&mut unsteady, seeds, |position| self.holds(position));
         self.recalc.graph = Some(kept);
+        // Which of two arrays that want the same cells got there first, and
+        // whether a loop through the area of an array is reported circular or
+        // blocked, depends on the order arrays were evaluated in before, for
+        // two full evaluations as well. States that show either may differ.
+        let history_dependent = before.iter().chain(after.iter()).any(|(_, cell)| {
+            matches!(
+                cell,
+                Cell::CellFormula {
+                    v: FormulaValue::Error {
+                        ei: Error::CIRC | Error::SPILL,
+                        ..
+                    },
+                    ..
+                } | Cell::ArrayFormula {
+                    v: FormulaValue::Error {
+                        ei: Error::CIRC | Error::SPILL,
+                        ..
+                    },
+                    ..
+                }
+            )
+        });
+        if history_dependent {
+            self.evaluation.scope = scope;
+            self.evaluation.restarts_in_last_evaluation = restarts;
+            return;
+        }
         let unsteady_formulas = unsteady;
         let unsteady = |position: &CellKey, cell: &Cell| match cell {
             Cell::SpillCell { a, .. } => unsteady_formulas.contains(&(position.0, a.0, a.1)),

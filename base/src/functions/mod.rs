@@ -2319,8 +2319,16 @@ impl<'a> Model<'a> {
         if reads_beyond_cells(kind) {
             self.trace_always();
         }
-        if matches!(kind, Function::Row | Function::Column) {
-            // What they give is a position, not what is in it.
+        if matches!(
+            kind,
+            Function::Row
+                | Function::Column
+                | Function::Offset
+                | Function::Indirect
+                | Function::Index
+        ) {
+            // What they give is a position, or depends on one, whether or
+            // not it turns out to be a reference.
             self.trace_positional();
         }
         match kind {

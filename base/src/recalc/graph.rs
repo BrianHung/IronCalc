@@ -1,5 +1,6 @@
 //! What every formula read the last time it ran, and who reads a position.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use crate::constants::{LAST_COLUMN, LAST_ROW};
@@ -40,6 +41,14 @@ impl Rect {
             row2: row + height - 1,
             column2: column + width - 1,
         }
+    }
+
+    /// Grows the rectangle to hold a cell of its sheet.
+    pub(crate) fn include(&mut self, (_, row, column): CellKey) {
+        self.row1 = self.row1.min(row);
+        self.row2 = self.row2.max(row);
+        self.column1 = self.column1.min(column);
+        self.column2 = self.column2.max(column);
     }
 
     pub(crate) fn contains(&self, (sheet, row, column): CellKey) -> bool {
@@ -171,39 +180,134 @@ pub(crate) struct Seeds {
     pub(crate) formulas: Vec<CellKey>,
 }
 
+/// The formulas that read one cell. Most cells are read by one formula, and
+/// a list for each of those cost more than everything else kept here.
+enum Readers {
+    One(CellKey),
+    Many(Vec<CellKey>),
+}
+
+impl Readers {
+    fn as_slice(&self) -> &[CellKey] {
+        match self {
+            Readers::One(reader) => std::slice::from_ref(reader),
+            Readers::Many(readers) => readers,
+        }
+    }
+
+    fn add(&mut self, formula: CellKey) {
+        // A formula that reads a cell twice reads it twice in a row more
+        // often than not.
+        match self {
+            Readers::One(reader) if *reader == formula => {}
+            Readers::One(reader) => *self = Readers::Many(vec![*reader, formula]),
+            Readers::Many(readers) => {
+                if readers.last() != Some(&formula) {
+                    readers.push(formula);
+                }
+            }
+        }
+    }
+
+    /// Takes a formula out. Returns whether none is left.
+    fn remove(&mut self, formula: CellKey) -> bool {
+        match self {
+            Readers::One(reader) => *reader == formula,
+            Readers::Many(readers) => {
+                readers.retain(|reader| *reader != formula);
+                readers.is_empty()
+            }
+        }
+    }
+}
+
+/// What `Graph::displace` found.
+#[derive(Default)]
+pub(crate) struct Displaced {
+    pub(crate) cut_off: Vec<CellKey>,
+    pub(crate) moved: Vec<CellKey>,
+}
+
 /// A rectangle at most this many columns wide is filed under each of its
 /// columns; a wider one is looked at for every position.
 const NARROW: i32 = 64;
+
+/// A rectangle at most this many rows high is found by its first row; a
+/// higher one is looked at for every position of its columns.
+const SHORT: i32 = 256;
+
+/// The rectangles filed under one column of a sheet, each with the formula
+/// that read it.
+#[derive(Default)]
+struct Filed {
+    /// Those at most `SHORT` rows high, sorted by their first row: the ones
+    /// that hold a row start at most `SHORT` rows above it.
+    short: Vec<(Rect, CellKey)>,
+    tall: Vec<(Rect, CellKey)>,
+}
+
+impl Filed {
+    /// The short rectangles that can reach into the rows `row1..=row2`.
+    fn short_near(&self, row1: i32, row2: i32) -> &[(Rect, CellKey)] {
+        let from = self
+            .short
+            .partition_point(|(rect, _)| rect.row1 <= row1 - SHORT);
+        let to = self.short.partition_point(|(rect, _)| rect.row1 <= row2);
+        &self.short[from..to]
+    }
+}
+
+/// The lists of rectangles that have nothing left to give while a scope is
+/// being grown: every formula in them is in the scope already. A column read
+/// whole by ten thousand formulas is gone through once, not once for every
+/// cell of it that changed.
+#[derive(Default)]
+struct Spent {
+    tall: HashSet<(u32, i32), KeyBuild>,
+    wide: bool,
+}
 
 /// The dependency graph: for every formula, what it read when it last ran,
 /// and the way back, from a position to the formulas that read it.
 #[derive(Default)]
 pub(crate) struct Graph {
     reads: HashMap<CellKey, Reads, KeyBuild>,
-    readers: HashMap<CellKey, HashSet<CellKey, KeyBuild>, KeyBuild>,
+    /// The formulas that read a cell, as a cell and not as part of a
+    /// rectangle.
+    readers: HashMap<CellKey, Readers, KeyBuild>,
     /// The rectangles read, filed by `(sheet, column)` when they are narrow,
     /// with the formula that read them. Built when it is needed, from `reads`.
-    narrow: HashMap<(u32, i32), Vec<(Rect, CellKey)>, KeyBuild>,
+    narrow: HashMap<(u32, i32), Filed, KeyBuild>,
     wide: Vec<(Rect, CellKey)>,
+    /// The last column a narrow rectangle is filed under, in any sheet.
+    last_filed_column: i32,
     rects_stale: bool,
     always: HashSet<CellKey, KeyBuild>,
     positional: HashSet<CellKey, KeyBuild>,
 }
 
 impl Graph {
-    /// Puts what `formula` read in place of what it read before.
-    pub(crate) fn set_reads(&mut self, formula: CellKey, reads: Reads) {
+    /// Puts what `formula` read in place of what it read before. If that is
+    /// what it read before, as it mostly is, nothing changes and `reads` is
+    /// handed back, to be used again.
+    pub(crate) fn set_reads(&mut self, formula: CellKey, reads: Reads) -> Option<Reads> {
         if self.reads.get(&formula) == Some(&reads) {
-            return;
+            return Some(reads);
         }
         self.remove(formula);
         self.insert(formula, reads);
+        None
     }
 
     fn insert(&mut self, formula: CellKey, reads: Reads) {
         for cell in &reads.cells {
             if *cell != formula {
-                self.readers.entry(*cell).or_default().insert(formula);
+                match self.readers.entry(*cell) {
+                    Entry::Occupied(mut readers) => readers.get_mut().add(formula),
+                    Entry::Vacant(none) => {
+                        none.insert(Readers::One(formula));
+                    }
+                }
             }
         }
         if !reads.rects.is_empty() {
@@ -226,8 +330,7 @@ impl Graph {
         };
         for cell in &old.cells {
             if let Some(readers) = self.readers.get_mut(cell) {
-                readers.remove(&formula);
-                if readers.is_empty() {
+                if readers.remove(formula) {
                     self.readers.remove(cell);
                 }
             }
@@ -248,21 +351,59 @@ impl Graph {
             .collect()
     }
 
-    /// Follows cells to where they moved. Returns the formulas, where they
-    /// are now, that no longer read what they read: one that read a cell that
-    /// is gone, or a rectangle that did not move whole, or that is positional.
-    /// What is on record for those is not to be trusted until they run.
-    pub(crate) fn displace(&mut self, shift: &Shift) -> Vec<CellKey> {
-        let old = std::mem::take(&mut self.reads);
-        self.readers.clear();
-        self.always.clear();
-        self.positional.clear();
-        self.rects_stale = true;
-        let mut cut_off = Vec::new();
-        for (formula, mut reads) in old {
+    /// Follows cells to where they moved. Returns, where they are now, the
+    /// formulas that no longer read what they read, one that read a cell that
+    /// is gone, or a rectangle that did not move whole, or that is positional:
+    /// what is on record for those is not to be trusted until they run. And
+    /// the formulas that changed place themselves.
+    pub(crate) fn displace(&mut self, shift: &Shift) -> Displaced {
+        // Most formulas neither moved nor read anything that did, when rows
+        // are put in near the end of a sheet: those are left where they are.
+        let touched: Vec<CellKey> = self
+            .reads
+            .iter()
+            .filter(|(formula, reads)| {
+                reads.positional
+                    || shift.cell(**formula) != Some(**formula)
+                    || reads
+                        .cells
+                        .iter()
+                        .any(|cell| shift.cell(*cell) != Some(*cell))
+                    || reads
+                        .rects
+                        .iter()
+                        .any(|rect| shift.rect(rect) != Some(*rect))
+            })
+            .map(|(formula, _)| *formula)
+            .collect();
+        let moved: Vec<(CellKey, Reads)> = if touched.len() > self.reads.len() / 2 {
+            // Nearly everything is touched: taking it all out at once is
+            // cheaper than taking it out formula by formula.
+            self.readers.clear();
+            self.always.clear();
+            self.positional.clear();
+            self.rects_stale = true;
+            std::mem::take(&mut self.reads).into_iter().collect()
+        } else {
+            let mut moved = Vec::with_capacity(touched.len());
+            for formula in touched {
+                if let Some(reads) = self.reads.get(&formula).cloned() {
+                    self.remove(formula);
+                    moved.push((formula, reads));
+                }
+            }
+            moved
+        };
+        self.reads.reserve(moved.len());
+        let mut displaced = Displaced::default();
+        for (formula, mut reads) in moved {
+            let was = formula;
             let Some(formula) = shift.cell(formula) else {
                 continue;
             };
+            if formula != was {
+                displaced.moved.push(formula);
+            }
             let mut cut = reads.positional;
             for cell in &mut reads.cells {
                 match shift.cell(*cell) {
@@ -277,11 +418,11 @@ impl Graph {
                 }
             }
             if cut {
-                cut_off.push(formula);
+                displaced.cut_off.push(formula);
             }
             self.insert(formula, reads);
         }
-        cut_off
+        displaced
     }
 
     /// Adds to `scope` the formulas that must run given `seeds`: the formulas
@@ -303,6 +444,7 @@ impl Graph {
             formulas,
         } = seeds;
         let mut found = formulas;
+        let mut spent = Spent::default();
         loop {
             for formula in found.drain(..) {
                 if scope.insert(formula) {
@@ -313,9 +455,14 @@ impl Graph {
                 }
             }
             if let Some(cell) = cells.pop() {
-                self.readers_of(cell, &mut found);
-            } else if let Some(rect) = rects.pop() {
-                self.readers_of_rect(&rect, &mut found);
+                let area = Rect::sized(cell, (1, 1));
+                if let Some(readers) = self.readers.get(&cell) {
+                    found.extend_from_slice(readers.as_slice());
+                }
+                self.readers_of_rects(&area, scope, &mut spent, &mut found);
+            } else if let Some(area) = rects.pop() {
+                self.readers_of_cells(&area, &mut found);
+                self.readers_of_rects(&area, scope, &mut spent, &mut found);
             } else {
                 break;
             }
@@ -328,44 +475,63 @@ impl Graph {
         self.always.iter().copied().collect()
     }
 
-    fn readers_of(&self, position: CellKey, found: &mut Vec<CellKey>) {
-        if let Some(readers) = self.readers.get(&position) {
-            found.extend(readers.iter().copied());
-        }
-        let (sheet, _, column) = position;
-        let narrow = self.narrow.get(&(sheet, column)).into_iter().flatten();
-        for (rect, reader) in narrow.chain(self.wide.iter()) {
-            if rect.contains(position) {
-                found.push(*reader);
-            }
-        }
-    }
-
-    fn readers_of_rect(&self, area: &Rect, found: &mut Vec<CellKey>) {
+    /// The formulas that read, as a cell, a cell of `area`.
+    fn readers_of_cells(&self, area: &Rect, found: &mut Vec<CellKey>) {
         if area.cell_count() <= self.readers.len() as i64 {
             for cell in area.cells() {
                 if let Some(readers) = self.readers.get(&cell) {
-                    found.extend(readers.iter().copied());
+                    found.extend_from_slice(readers.as_slice());
                 }
             }
         } else {
             for (cell, readers) in &self.readers {
                 if area.contains(*cell) {
-                    found.extend(readers.iter().copied());
+                    found.extend_from_slice(readers.as_slice());
                 }
             }
         }
-        let narrow = self
-            .narrow
-            .iter()
-            .filter(|((sheet, column), _)| {
-                *sheet == area.sheet && (area.column1..=area.column2).contains(column)
-            })
-            .flat_map(|(_, rects)| rects.iter());
-        for (rect, reader) in narrow.chain(self.wide.iter()) {
-            if rect.intersects(area) {
-                found.push(*reader);
+    }
+
+    /// The formulas that read a rectangle with a cell in `area`.
+    fn readers_of_rects(
+        &self,
+        area: &Rect,
+        scope: &Scope,
+        spent: &mut Spent,
+        found: &mut Vec<CellKey>,
+    ) {
+        // Goes through a list no row tells apart, and says whether it is
+        // spent: whether every formula in it is in the scope or on its way.
+        let all = |list: &[(Rect, CellKey)], found: &mut Vec<CellKey>| {
+            let mut spent = true;
+            for (rect, reader) in list {
+                if rect.intersects(area) {
+                    found.push(*reader);
+                } else if !scope.contains(reader) {
+                    spent = false;
+                }
             }
+            spent
+        };
+        for column in area.column1..=area.column2 {
+            let Some(filed) = self.narrow.get(&(area.sheet, column)) else {
+                // Past the columns anything was filed under there is nothing.
+                if column > self.last_filed_column {
+                    break;
+                }
+                continue;
+            };
+            for (rect, reader) in filed.short_near(area.row1, area.row2) {
+                if rect.intersects(area) {
+                    found.push(*reader);
+                }
+            }
+            if !spent.tall.contains(&(area.sheet, column)) && all(&filed.tall, found) {
+                spent.tall.insert((area.sheet, column));
+            }
+        }
+        if !spent.wide && all(&self.wide, found) {
+            spent.wide = true;
         }
     }
 
@@ -375,19 +541,26 @@ impl Graph {
         }
         self.narrow.clear();
         self.wide.clear();
+        self.last_filed_column = 0;
         for (formula, reads) in &self.reads {
             for rect in &reads.rects {
-                if rect.column2 - rect.column1 < NARROW {
-                    for column in rect.column1..=rect.column2 {
-                        self.narrow
-                            .entry((rect.sheet, column))
-                            .or_default()
-                            .push((*rect, *formula));
-                    }
-                } else {
+                if rect.column2 - rect.column1 >= NARROW {
                     self.wide.push((*rect, *formula));
+                    continue;
+                }
+                self.last_filed_column = self.last_filed_column.max(rect.column2);
+                for column in rect.column1..=rect.column2 {
+                    let filed = self.narrow.entry((rect.sheet, column)).or_default();
+                    if rect.row2 - rect.row1 < SHORT {
+                        filed.short.push((*rect, *formula));
+                    } else {
+                        filed.tall.push((*rect, *formula));
+                    }
                 }
             }
+        }
+        for filed in self.narrow.values_mut() {
+            filed.short.sort_unstable_by_key(|(rect, _)| rect.row1);
         }
         self.rects_stale = false;
     }

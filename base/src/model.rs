@@ -512,6 +512,8 @@ impl<'a> Model<'a> {
             // A defined name that stands for a reference is that reference,
             // to a single cell as well
             Node::DefinedNameKind { name, scope, .. } => {
+                // A name says where to read, the formula does not.
+                self.trace_positional();
                 if let Ok(Some(parsed_defined_name)) = self.get_parsed_defined_name(name, *scope) {
                     match parsed_defined_name {
                         ParsedDefinedName::CellReference(reference) => {
@@ -912,6 +914,7 @@ impl<'a> Model<'a> {
                     // Prefer sheet-local (current sheet) over global (scope = None),
                     // matching Excel's name resolution order.
                     let name_lower = name.to_lowercase();
+                    self.trace_positional();
                     let found = self
                         .parsed_defined_names
                         .get(&(Some(cell.sheet), name_lower.clone()))
