@@ -51,6 +51,7 @@ impl Rect {
         self.column2 = self.column2.max(column);
     }
 
+    #[inline]
     pub(crate) fn contains(&self, (sheet, row, column): CellKey) -> bool {
         sheet == self.sheet
             && (self.row1..=self.row2).contains(&row)
@@ -291,15 +292,40 @@ impl Graph {
     /// what it read before, as it mostly is, nothing changes and `reads` is
     /// handed back, to be used again.
     pub(crate) fn set_reads(&mut self, formula: CellKey, reads: Reads) -> Option<Reads> {
-        if self.reads.get(&formula) == Some(&reads) {
-            return Some(reads);
+        match self.reads.get_mut(&formula) {
+            Some(before) if *before == reads => return Some(reads),
+            Some(before) => {
+                let before = std::mem::take(before);
+                self.unlink(formula, &before);
+            }
+            None => {}
         }
-        self.remove(formula);
         self.insert(formula, reads);
         None
     }
 
+    /// Makes room for what this many formulas are about to read.
+    pub(crate) fn reserve(&mut self, formulas: usize) {
+        self.reads
+            .reserve(formulas.saturating_sub(self.reads.len()));
+        self.readers
+            .reserve(formulas.saturating_sub(self.readers.len()));
+    }
+
     fn insert(&mut self, formula: CellKey, reads: Reads) {
+        self.link(formula, &reads);
+        self.reads.insert(formula, reads);
+    }
+
+    /// Forgets `formula`: it is no longer a formula.
+    pub(crate) fn remove(&mut self, formula: CellKey) {
+        if let Some(reads) = self.reads.remove(&formula) {
+            self.unlink(formula, &reads);
+        }
+    }
+
+    /// Enters `formula` under everything it read.
+    fn link(&mut self, formula: CellKey, reads: &Reads) {
         for cell in &reads.cells {
             if *cell != formula {
                 match self.readers.entry(*cell) {
@@ -319,27 +345,26 @@ impl Graph {
         if reads.positional {
             self.positional.insert(formula);
         }
-        self.reads.insert(formula, reads);
     }
 
-    /// Forgets `formula`: it is no longer a formula, or it is about to read
-    /// something else.
-    pub(crate) fn remove(&mut self, formula: CellKey) {
-        let Some(old) = self.reads.remove(&formula) else {
-            return;
-        };
-        for cell in &old.cells {
+    /// Undoes `link`.
+    fn unlink(&mut self, formula: CellKey, reads: &Reads) {
+        for cell in &reads.cells {
             if let Some(readers) = self.readers.get_mut(cell) {
                 if readers.remove(formula) {
                     self.readers.remove(cell);
                 }
             }
         }
-        if !old.rects.is_empty() {
+        if !reads.rects.is_empty() {
             self.rects_stale = true;
         }
-        self.always.remove(&formula);
-        self.positional.remove(&formula);
+        if reads.always {
+            self.always.remove(&formula);
+        }
+        if reads.positional {
+            self.positional.remove(&formula);
+        }
     }
 
     /// The formulas on record whose own position is in `rect`.

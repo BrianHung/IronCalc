@@ -550,6 +550,7 @@ impl<'a> Model<'a> {
             dynamic_spills,
         } = self.survey();
         self.sync_anchor_order(dynamic_anchors);
+        self.expect_reads(formulas.len());
         let arrays = if self.evaluation.scope.is_some() {
             formulas
                 .iter()
