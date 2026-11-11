@@ -152,10 +152,21 @@ struct Frame {
 }
 
 impl Frame {
+    /// Called for every cell a formula reads, the cells of the ranges it
+    /// walks among them: nothing but the check for those is done here.
+    #[inline]
     fn cell(&mut self, cell: CellKey) {
+        // A walk reads the cells of the rectangle it just put on record.
+        if matches!(self.reads.rects.last(), Some(rect) if rect.contains(cell)) {
+            return;
+        }
+        self.cell_outside_last_rect(cell);
+    }
+
+    fn cell_outside_last_rect(&mut self, cell: CellKey) {
         // A cell of a rectangle already on record is read as part of it.
-        // Looking at the last few is enough: a walk reads the rectangles it
-        // just recorded.
+        // Looking at the last few is enough: a function that walks several
+        // ranges side by side records them one after the other.
         let rects = &mut self.reads.rects;
         if rects.iter().rev().take(16).any(|rect| rect.contains(cell)) {
             return;
@@ -223,6 +234,13 @@ impl Model<'_> {
         self.recalc.frames.pop().map(|frame| frame.reads)
     }
 
+    /// An evaluation is about to run this many formulas.
+    pub(crate) fn expect_reads(&mut self, formulas: usize) {
+        if let Some(graph) = &mut self.recalc.graph {
+            graph.reserve(formulas);
+        }
+    }
+
     /// The formula that ran at `cell` stored a result computed from `reads`.
     pub(crate) fn commit_reads(&mut self, cell: CellKey, reads: Reads) {
         if let Some(graph) = &mut self.recalc.graph {
@@ -232,6 +250,7 @@ impl Model<'_> {
         }
     }
 
+    #[inline]
     pub(crate) fn trace_cell(&mut self, cell: CellKey) {
         if let Some(frame) = self.recalc.frames.last_mut() {
             frame.cell(cell);
