@@ -2,12 +2,14 @@
 //! followed by one that runs them all, which must leave every cell as it
 //! found it and read what is on record.
 
-use crate::evaluation::CellKey;
+use std::collections::HashSet;
+
+use crate::evaluation::{CellKey, KeyBuild};
 use crate::expressions::token::Error;
 use crate::model::Model;
 use crate::types::{Cell, FormulaValue};
 
-use super::{Graph, Scope, Seeds};
+use super::{Graph, Seeds};
 
 impl Model<'_> {
     pub(crate) fn verify_against_everything(&mut self) {
@@ -30,12 +32,17 @@ impl Model<'_> {
         // What reads the clock or a random number differs, and so does what
         // reads that.
         let mut kept = kept;
-        let mut unsteady = Scope::default();
+        let mut unsteady = kept.new_scope();
         let seeds = Seeds {
             formulas: kept.always(),
             ..Seeds::default()
         };
         kept.grow(&mut unsteady, seeds, |position| self.holds(position));
+        let unsteady: HashSet<CellKey, KeyBuild> = unsteady.formulas().iter().copied().collect();
+        // The marks of the scope that was evaluated are put back.
+        if let Some(scope) = &scope {
+            kept.restore(scope);
+        }
         self.recalc.graph = Some(kept);
         // Which of two arrays that want the same cells got there first, and
         // whether a loop through the area of an array is reported circular or

@@ -649,7 +649,7 @@ impl<'a> Model<'a> {
     fn survey(&self) -> Survey {
         let mut survey = Survey::default();
         if let Some(scope) = &self.evaluation.scope {
-            let mut positions: Vec<CellKey> = scope.iter().copied().collect();
+            let mut positions = scope.formulas().to_vec();
             positions.sort_unstable();
             for (sheet, row, column) in positions {
                 let position = CellReferenceIndex { sheet, row, column };
@@ -872,7 +872,7 @@ impl<'a> Model<'a> {
         self.evaluation
             .scope
             .as_ref()
-            .is_some_and(|scope| !scope.contains(&key))
+            .is_some_and(|scope| !self.recalc.in_scope(scope, key))
     }
 
     /// The value of a cell, evaluating it first if it is a formula that has

@@ -201,6 +201,13 @@ impl Recalc {
             ..Recalc::default()
         }
     }
+
+    /// Whether the formula at a position is one of those `scope` runs.
+    pub(crate) fn in_scope(&self, scope: &Scope, formula: CellKey) -> bool {
+        self.graph
+            .as_ref()
+            .is_some_and(|graph| graph.in_scope(scope, formula))
+    }
 }
 
 impl Model<'_> {
@@ -301,6 +308,7 @@ impl Model<'_> {
             return None;
         }
         let logs = self.record_writes(false);
+        self.recalc.tracing = true;
         let shape = Shape::of(self);
         let everything = if self.recalc.graph.is_none() {
             Some(Everything::FirstEvaluation)
@@ -309,8 +317,8 @@ impl Model<'_> {
         } else {
             None
         };
-        self.recalc.tracing = true;
         if let Some(why) = everything {
+            // Every formula runs and says again what it reads.
             self.recalc.graph = Some(Graph::default());
             self.recalc.shape = Some(shape);
             self.recalc.merged = self.merged_cells();
@@ -318,12 +326,24 @@ impl Model<'_> {
             return None;
         }
         let mut graph = self.recalc.graph.take()?;
+        let seeds = self.seeds(logs, &mut graph);
+        let mut scope = graph.new_scope();
+        graph.grow(&mut scope, seeds, |position| self.holds(position));
+        self.recalc.graph = Some(graph);
+        self.recalc.ran = Some(Ran::Only(scope.len()));
+        Some(scope)
+    }
+
+    /// Where the edits in `logs` changed something, as it is now: the writes
+    /// are gone through in order, and rows or columns that moved take with
+    /// them the graph and the seeds found before they did.
+    fn seeds(&mut self, logs: Vec<(u32, Vec<Write>)>, graph: &mut Graph) -> Seeds {
         let mut seeds = Seeds::default();
         for (sheet, log) in logs {
             for write in log {
                 match write {
                     Write::Cell(row, column) => seeds.cells.push((sheet, row, column)),
-                    Write::Row(row) => self.seed_row(sheet, row, &graph, &mut seeds),
+                    Write::Row(row) => self.seed_row(sheet, row, graph, &mut seeds),
                     Write::Rows { first, delta } => {
                         let shift = Shift {
                             sheet,
@@ -331,7 +351,7 @@ impl Model<'_> {
                             first,
                             delta,
                         };
-                        self.displace(&shift, &mut graph, &mut seeds);
+                        self.displace(&shift, graph, &mut seeds);
                     }
                     Write::Columns { first, delta } => {
                         let shift = Shift {
@@ -340,7 +360,7 @@ impl Model<'_> {
                             first,
                             delta,
                         };
-                        self.displace(&shift, &mut graph, &mut seeds);
+                        self.displace(&shift, graph, &mut seeds);
                     }
                 }
             }
@@ -358,11 +378,7 @@ impl Model<'_> {
             }
         }
         seeds.formulas.extend(graph.always());
-        let mut scope = Scope::default();
-        graph.grow(&mut scope, seeds, |position| self.holds(position));
-        self.recalc.graph = Some(graph);
-        self.recalc.ran = Some(Ran::Only(scope.len()));
-        Some(scope)
+        seeds
     }
 
     /// The evaluation ran the formulas of `scope`. `arrays` are the arrays
