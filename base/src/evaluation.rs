@@ -511,6 +511,8 @@ struct Survey {
     formulas: Vec<CellReferenceIndex>,
     dynamic_anchors: Vec<CellReferenceIndex>,
     dynamic_spills: Vec<(CellReferenceIndex, Cell)>,
+    /// With a scope, the anchors of the arrays among `formulas`.
+    arrays: Vec<CellKey>,
 }
 
 impl<'a> Model<'a> {
@@ -548,19 +550,14 @@ impl<'a> Model<'a> {
             formulas,
             dynamic_anchors,
             dynamic_spills,
+            arrays,
         } = self.survey();
         self.sync_anchor_order(dynamic_anchors);
         self.expect_reads(formulas.len());
-        let arrays = if self.evaluation.scope.is_some() {
-            formulas
-                .iter()
-                .map(|formula| key(*formula))
-                .filter(|formula| self.is_array(*formula))
-                .map(|anchor| (anchor, self.spilled_cells(anchor)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let arrays = arrays
+            .into_iter()
+            .map(|anchor| (anchor, self.spilled_cells(anchor)))
+            .collect();
         // Every pass starts from the same sheet: what an abandoned pass wrote
         // is undone. This is what makes a pass a function of the anchor order.
         // The only changes to that sheet within an evaluation are the dropping
@@ -657,6 +654,7 @@ impl<'a> Model<'a> {
                     Some(Cell::CellFormula { .. }) => survey.formulas.push(position),
                     Some(Cell::ArrayFormula { kind, .. }) => {
                         survey.formulas.push(position);
+                        survey.arrays.push(key(position));
                         if matches!(kind, ArrayKind::Dynamic) {
                             survey.dynamic_anchors.push(position);
                             survey.dynamic_spills.extend(self.array_cells(position));
@@ -1125,7 +1123,7 @@ impl<'a> Model<'a> {
             // nothing, yet an edit can end its being circular: it is
             // evaluated every time until it runs again.
             reads.always |= !computed;
-            self.commit_reads(key, reads);
+            self.commit_reads(key, reads, cell.array.is_some());
         }
         self.evaluation.cells.insert(key, CellState::Evaluated);
         // Return what was stored, so that a dependent evaluated in this pass

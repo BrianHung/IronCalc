@@ -249,9 +249,10 @@ impl Model<'_> {
     }
 
     /// The formula that ran at `cell` stored a result computed from `reads`.
-    pub(crate) fn commit_reads(&mut self, cell: CellKey, reads: Reads) {
+    /// `array` says whether it is the anchor of an array.
+    pub(crate) fn commit_reads(&mut self, cell: CellKey, reads: Reads, array: bool) {
         if let Some(graph) = &mut self.recalc.graph {
-            if let Some(unchanged) = graph.set_reads(cell, reads) {
+            if let Some(unchanged) = graph.set_reads(cell, reads, array) {
                 self.recalc.spare.push(unchanged);
             }
         }
@@ -369,12 +370,19 @@ impl Model<'_> {
         seeds.cells.sort_unstable();
         seeds.cells.dedup();
         for &position in &seeds.cells {
-            if self.holds(position) == Holds::NoFormula {
-                // Not a formula, or no longer one: it reads nothing.
-                graph.remove(position);
-                self.links.remove(&position);
-            } else {
-                seeds.formulas.push(position);
+            match self.holds(position) {
+                Holds::NoFormula => {
+                    // Not a formula, or no longer one: it reads nothing.
+                    graph.remove(position);
+                    self.links.remove(&position);
+                }
+                Holds::Formula => seeds.formulas.push(position),
+                // What reads the area an array fills runs with the array. The
+                // graph says so of the arrays it knows; this one may be new.
+                Holds::Array(area) => {
+                    seeds.formulas.push(position);
+                    seeds.rects.push(area);
+                }
             }
         }
         seeds.formulas.extend(graph.always());
@@ -448,12 +456,6 @@ impl Model<'_> {
             Some(Cell::ArrayFormula { kind, .. }) => Some(kind.clone()),
             _ => None,
         }
-    }
-
-    /// Whether the cell at a position is the anchor of an array, whatever
-    /// the array fills now.
-    pub(crate) fn is_array(&self, position: CellKey) -> bool {
-        self.array_kind(position).is_some()
     }
 
     /// The cells the array at `anchor` fills now, the anchor left out, in

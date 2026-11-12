@@ -271,11 +271,11 @@ struct Node {
     reads: Reads,
     /// Whether a formula ran here: whether `reads` is a record.
     ran: bool,
+    /// Whether the formula that ran here is the anchor of an array.
+    array: bool,
     /// The formulas that read this cell, as a cell and not as part of a
     /// rectangle.
     readers: Readers,
-    /// The mark of the last scope this node was put in.
-    mark: u32,
     /// Whether the node is out of use, waiting to be one again.
     spare: bool,
 }
@@ -440,6 +440,9 @@ impl RectReaders {
             }
             spent
         };
+        if self.narrow.is_empty() && self.wide.is_empty() {
+            return;
+        }
         for column in area.column1..=area.column2 {
             let Some(filed) = self.narrow.get(&(area.sheet, column)) else {
                 // Past the columns anything was filed under there is nothing.
@@ -471,6 +474,10 @@ impl RectReaders {
 #[derive(Default)]
 pub(crate) struct Graph {
     nodes: Vec<Node>,
+    /// For every node, the mark of the last scope it was put in. Apart from
+    /// the nodes: an evaluation asks of every formula it meets whether it is
+    /// in the scope, and this is all it needs to look at.
+    marks: Vec<u32>,
     places: Places,
     /// The nodes out of use.
     spare: Vec<NodeId>,
@@ -491,9 +498,11 @@ impl Graph {
             Some(node) => node,
             None => {
                 self.nodes.push(Node::default());
+                self.marks.push(0);
                 (self.nodes.len() - 1) as NodeId
             }
         };
+        self.marks[node as usize] = 0;
         self.nodes[node as usize] = Node {
             position,
             ..Node::default()
@@ -506,8 +515,9 @@ impl Graph {
     /// ran there, no formula reads it, and it is not waiting to run, as a
     /// formula just typed in is.
     fn retire(&mut self, node: NodeId) {
+        let waiting = self.marks[node as usize] == self.mark;
         let kept = &mut self.nodes[node as usize];
-        if kept.ran || !kept.readers.is_empty() || kept.mark == self.mark || kept.spare {
+        if kept.ran || !kept.readers.is_empty() || waiting || kept.spare {
             return;
         }
         self.places.remove(kept.position);
@@ -521,9 +531,16 @@ impl Graph {
     /// Puts what `formula` read in place of what it read before. If that is
     /// what it read before, as it mostly is, nothing changes and `reads` is
     /// handed back, to be used again.
-    pub(crate) fn set_reads(&mut self, formula: CellKey, reads: Reads) -> Option<Reads> {
+    /// `array` says whether the formula is the anchor of an array.
+    pub(crate) fn set_reads(
+        &mut self,
+        formula: CellKey,
+        reads: Reads,
+        array: bool,
+    ) -> Option<Reads> {
         let node = self.node_at(formula);
         let kept = &mut self.nodes[node as usize];
+        kept.array = array;
         if kept.ran && kept.reads == reads {
             return Some(reads);
         }
@@ -536,8 +553,9 @@ impl Graph {
 
     /// Makes room for what this many formulas are about to read.
     pub(crate) fn reserve(&mut self, formulas: usize) {
-        self.nodes
-            .reserve(formulas.saturating_sub(self.nodes.len()));
+        let more = formulas.saturating_sub(self.nodes.len());
+        self.nodes.reserve(more);
+        self.marks.reserve(more);
     }
 
     /// Forgets the formula at a position: it is no longer one.
@@ -548,6 +566,7 @@ impl Graph {
         let kept = &mut self.nodes[node as usize];
         let before = std::mem::take(&mut kept.reads);
         kept.ran = false;
+        kept.array = false;
         self.unlink(node, &before);
         self.retire(node);
     }
@@ -711,7 +730,7 @@ impl Graph {
     pub(crate) fn in_scope(&self, scope: &Scope, formula: CellKey) -> bool {
         self.places
             .get(formula)
-            .is_some_and(|node| self.nodes[node as usize].mark == scope.mark)
+            .is_some_and(|node| self.marks[node as usize] == scope.mark)
     }
 
     /// Marks the formulas of `scope` again, after another scope was grown.
@@ -719,7 +738,7 @@ impl Graph {
     pub(crate) fn restore(&mut self, scope: &Scope) {
         for formula in &scope.formulas {
             if let Some(node) = self.places.get(*formula) {
-                self.nodes[node as usize].mark = scope.mark;
+                self.marks[node as usize] = scope.mark;
             }
         }
     }
@@ -728,7 +747,8 @@ impl Graph {
     /// named there, those that read a position that changed, those that read
     /// one of those, and so on; and with every array among them, those that
     /// read a cell of the area it fills. `holds` says what a position holds
-    /// now. Returns whether the scope grew.
+    /// now; an array that has not run yet has its area among the seeds.
+    /// Returns whether the scope grew.
     pub(crate) fn grow(
         &mut self,
         scope: &mut Scope,
@@ -754,18 +774,21 @@ impl Graph {
         rects.extend(cells.into_iter().map(|cell| Rect::sized(cell, (1, 1))));
         loop {
             for formula in found.drain(..) {
-                let node = &mut self.nodes[formula as usize];
-                if node.mark != mark {
-                    node.mark = mark;
+                if self.marks[formula as usize] != mark {
+                    self.marks[formula as usize] = mark;
+                    let node = &self.nodes[formula as usize];
                     scope.formulas.push(node.position);
                     unread.push(formula);
-                    if let Holds::Array(area) = holds(node.position) {
-                        rects.push(area);
+                    // Only an array is looked up in its sheet, for its area.
+                    if node.array {
+                        if let Holds::Array(area) = holds(node.position) {
+                            rects.push(area);
+                        }
                     }
                 }
             }
-            let nodes = &self.nodes;
-            let in_scope = |formula: NodeId| nodes[formula as usize].mark == mark;
+            let (nodes, marks) = (&self.nodes, &self.marks);
+            let in_scope = |formula: NodeId| marks[formula as usize] == mark;
             if let Some(formula) = unread.pop() {
                 let node = &nodes[formula as usize];
                 found.extend_from_slice(node.readers.as_slice());
